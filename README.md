@@ -51,8 +51,6 @@ BepInEx plugins are executable .NET code. Only trust AutoModSync server fingerpr
 
 Each AutoModSync server has its own signing identity. The server signs its synchronization manifest, and files are checked against that manifest before being applied. A server's private signing key must not be distributed to clients.
 
-The generated server signing key (`ValheimAutoModSync.key`) is intentionally excluded by `.gitignore` and should never be committed.
-
 ## Repository layout
 
 ```text
@@ -67,8 +65,6 @@ CHECKSUMS.txt             SHA-256 hashes for repository/package files
 LICENSE                   MIT license for AutoModSync-authored code
 THIRD-PARTY-NOTICES.md    Bundled dependency attribution and license information
 ```
-
-There are intentionally no nested `README.txt` files; this root `README.md` is the project documentation.
 
 ## Building from source
 
