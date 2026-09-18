@@ -4,9 +4,9 @@
 
 AutoModSync provides server-driven BepInEx plugin synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's installed plugins, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
 
-- Website: https://gordonfreesay.com/AutoModSync.html
-- Repository: https://github.com/gordonfreesay/AutoModSync
-- Releases: https://github.com/gordonfreesay/AutoModSync/releases
+- Website: https://gordonfreesay.com/AutoModSync
+- Repository: https://github.com/gordonfreesay/ValheimAutoModSync
+- Releases: https://github.com/gordonfreesay/ValheimAutoModSync/releases
 
 ## Features
 
