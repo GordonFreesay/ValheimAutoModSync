@@ -1,0 +1,32 @@
+# Visual Studio / C# build output
+.vs/
+**/bin/
+**/obj/
+**/Debug/
+**/Release/
+**/x64/
+**/x86/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.pdb
+*.mdb
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Runtime/generated files
+*.log
+*.tmp
+*.bak
+BepInEx/
+**/ValheimAutoModSync.key
+*.key
+
+# Local release scratch
+_dist/
+_work/

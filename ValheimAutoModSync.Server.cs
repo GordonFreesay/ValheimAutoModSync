@@ -1,0 +1,547 @@
+using BepInEx;
+using BepInEx.Configuration;
+using HarmonyLib;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace ValheimAutoModSync
+{
+    [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
+    public sealed class ServerPlugin : BaseUnityPlugin
+    {
+        public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.server";
+        public const string PluginName = "Valheim AutoModSync Server";
+        public const string PluginVersion = "2.4.4";
+        public const int ProtocolVersion = 4;
+
+        internal const string RpcHello = "AMS4_Hello";
+        internal const string RpcManifestBegin = "AMS4_ManifestBegin";
+        internal const string RpcManifestChunk = "AMS4_ManifestChunk";
+        internal const string RpcManifestEnd = "AMS4_ManifestEnd";
+        internal const string RpcGetBundle = "AMS4_GetBundle";
+        internal const string RpcGetBundleChunk = "AMS4_GetBundleChunk";
+        internal const string RpcBundleBegin = "AMS4_BundleBegin";
+        internal const string RpcBundleChunk = "AMS4_BundleChunk";
+        internal const string RpcBundleEnd = "AMS4_BundleEnd";
+        internal const string RpcError = "AMS4_Error";
+
+        private static ServerPlugin _instance;
+        private static ConfigEntry<bool> _enabled;
+        private static ConfigEntry<string> _excludePatterns;
+        private static ConfigEntry<int> _manifestCacheSeconds;
+        private static ConfigEntry<int> _chunkBytes;
+        private static ConfigEntry<int> _maxFileMiB;
+        private static ConfigEntry<int> _maxBundleMiB;
+
+        private static readonly object ManifestLock = new object();
+        private static readonly HashSet<ZRpc> Registered = new HashSet<ZRpc>();
+        private static DateTime _manifestBuiltUtc = DateTime.MinValue;
+        private static string _manifestText = "";
+        private static string _manifestSignature = "";
+        private static string _publicKeyXml = "";
+        private static string _publicFingerprint = "";
+        private static RSACryptoServiceProvider _signer;
+        private static Dictionary<string, FileRecord> _files = new Dictionary<string, FileRecord>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<ZRpc, string> ClientVersions = new Dictionary<ZRpc, string>();
+        private static readonly Dictionary<ZRpc, BundleTransfer> BundleTransfers = new Dictionary<ZRpc, BundleTransfer>();
+        
+        private sealed class FileRecord
+        {
+            public string RelativePath;
+            public string FullPath;
+            public long Size;
+            public string Sha256;
+            public char Kind;
+        }
+
+        private sealed class BundleTransfer
+        {
+            public string ZipPath;
+            public long Size;
+            public string Sha256;
+            public int ChunkBytes;
+            public int TotalChunks;
+            public int FileCount;
+        }
+
+        private void Awake()
+        {
+            _instance = this;
+            _enabled = Config.Bind("General", "Enabled", true, "Enable the AutoModSync server role on this Valheim instance.");
+            _excludePatterns = Config.Bind("General", "ExcludePatterns",
+                "ValheimAutoModSync.Server.dll;ValheimAutoModSync.Client.dll;*.pdb;*.mdb;*.log;*.tmp;*.bak;*.md",
+                "Semicolon-separated wildcard patterns that will not be sent to clients. Match is checked against both the relative path and file name.");
+            _manifestCacheSeconds = Config.Bind("General", "ManifestCacheSeconds", 5, "How long the server caches plugin hashes before rescanning BepInEx\\plugins.");
+            _chunkBytes = Config.Bind("Transfer", "ChunkBytes", 24576, "Raw file bytes per RPC chunk before Base64 encoding. 24576 is conservative for Valheim's RPC transport.");
+            _maxFileMiB = Config.Bind("Transfer", "MaxFileMiB", 128, "Refuse to transfer a single file larger than this many MiB.");
+            _maxBundleMiB = Config.Bind("Transfer", "MaxBundleMiB", 2048, "Refuse to build a compressed change package larger than this many MiB.");
+
+            try
+            {
+                LoadIdentity();
+                CleanupOldBundleCache();
+                Logger.LogInfo("AutoModSync uses Valheim's existing ZRpc connection; no additional listening port is opened.");
+                Logger.LogInfo("AutoModSync server fingerprint: " + _publicFingerprint);
+                new Harmony(PluginGuid).PatchAll(typeof(NetworkPatches));
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("AutoModSync startup failed: " + ex);
+            }
+        }
+
+        private static void LoadIdentity()
+        {
+            string path = Path.Combine(Paths.ConfigPath, "ValheimAutoModSync.private.xml");
+            if (!File.Exists(path))
+                throw new FileNotFoundException("AutoModSync server identity is missing. Re-run install.bat and choose the appropriate server/host option.", path);
+
+            string xml = File.ReadAllText(path).Trim();
+            RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048);
+            rsa.PersistKeyInCsp = false;
+            rsa.FromXmlString(xml);
+            _signer = rsa;
+            _publicKeyXml = rsa.ToXmlString(false);
+            using (SHA256 sha = SHA256.Create()) _publicFingerprint = ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(_publicKeyXml)));
+        }
+
+        [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
+        private static class NetworkPatches
+        {
+            private static void Prefix(ZNet __instance, ZNetPeer peer)
+            {
+                if (__instance == null || !__instance.IsServer()) return;
+                if (_enabled == null || !_enabled.Value || peer == null || peer.m_rpc == null) return;
+                RegisterRpc(peer.m_rpc);
+            }
+
+            private static void Postfix(ZNet __instance, ZNetPeer peer)
+            {
+                if (__instance == null || !__instance.IsServer()) return;
+                if (_enabled == null || !_enabled.Value || peer == null || peer.m_rpc == null) return;
+                RegisterRpc(peer.m_rpc);
+            }
+        }
+
+        private static void RegisterRpc(ZRpc rpc)
+        {
+            if (rpc == null || Registered.Contains(rpc)) return;
+            try
+            {
+                rpc.Register<ZPackage>(RpcHello, new Action<ZRpc, ZPackage>(RPC_Hello));
+                rpc.Register<ZPackage>(RpcGetBundle, new Action<ZRpc, ZPackage>(RPC_GetBundle));
+                rpc.Register<ZPackage>(RpcGetBundleChunk, new Action<ZRpc, ZPackage>(RPC_GetBundleChunk));
+                rpc.Register<ZPackage>(RpcManifestBegin, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcManifestChunk, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcManifestEnd, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcBundleBegin, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcBundleChunk, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcBundleEnd, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcError, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                Registered.Add(rpc);
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Could not register AutoModSync RPCs for a peer: " + ex.Message);
+            }
+        }
+
+        private static void RPC_NoOp(ZRpc rpc, ZPackage pkg) { }
+
+        private static void RPC_Hello(ZRpc rpc, ZPackage pkg)
+        {
+            try
+            {
+                if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                int protocol = pkg.ReadInt();
+                string clientVersion = "";
+                try { clientVersion = pkg.ReadString(); } catch { clientVersion = ""; }
+                ClientVersions[rpc] = clientVersion ?? "";
+                if (protocol != ProtocolVersion)
+                {
+                    SendError(rpc, "AutoModSync protocol mismatch. Server=" + ProtocolVersion + " Client=" + protocol);
+                    return;
+                }
+
+                EnsureManifest(false);
+                byte[] bytes = Encoding.UTF8.GetBytes(_manifestText);
+                int partChars = 24000;
+                int totalParts = Math.Max(1, (_manifestText.Length + partChars - 1) / partChars);
+
+                ZPackage begin = new ZPackage();
+                begin.Write(ProtocolVersion);
+                begin.Write(totalParts);
+                begin.Write(bytes.Length.ToString(CultureInfo.InvariantCulture));
+                begin.Write(_publicKeyXml);
+                begin.Write(_manifestSignature);
+                begin.Write("bundle1");
+                rpc.Invoke(RpcManifestBegin, new object[] { begin });
+
+                int part;
+                for (part = 0; part < totalParts; part++)
+                {
+                    int start = part * partChars;
+                    int len = Math.Min(partChars, _manifestText.Length - start);
+                    string text = len > 0 ? _manifestText.Substring(start, len) : "";
+                    ZPackage chunk = new ZPackage();
+                    chunk.Write(part);
+                    chunk.Write(text);
+                    rpc.Invoke(RpcManifestChunk, new object[] { chunk });
+                }
+
+                ZPackage end = new ZPackage();
+                end.Write(totalParts);
+                rpc.Invoke(RpcManifestEnd, new object[] { end });
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Manifest send failed: " + ex);
+                SendError(rpc, "Server failed to create the AutoModSync manifest.");
+            }
+        }
+
+        private static void RPC_GetBundle(ZRpc rpc, ZPackage pkg)
+        {
+            try
+            {
+                if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                int count = pkg.ReadInt();
+                if (count < 1 || count > 4096) throw new InvalidDataException("Invalid AutoModSync bundle request size.");
+
+                EnsureManifest(false);
+                List<FileRecord> records = new List<FileRecord>();
+                HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                int i;
+                for (i = 0; i < count; i++)
+                {
+                    string requested = pkg.ReadString();
+                    FileRecord record = ResolveBundleRecord(requested);
+                    string key = record.Kind + ":" + record.RelativePath;
+                    if (!seen.Add(key)) throw new InvalidDataException("Duplicate file in AutoModSync bundle request.");
+                    records.Add(record);
+                }
+
+                CleanupBundle(rpc);
+                string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
+                if (!Directory.Exists(cacheRoot)) Directory.CreateDirectory(cacheRoot);
+                string zipPath = Path.Combine(cacheRoot, "bundle-" + Guid.NewGuid().ToString("N") + ".zip");
+
+                using (FileStream output = new FileStream(zipPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+                using (ZipArchive archive = new ZipArchive(output, ZipArchiveMode.Create, false))
+                {
+                    for (i = 0; i < records.Count; i++)
+                    {
+                        FileRecord record = records[i];
+                        string entryName = (record.Kind == 'R' ? "root/" : "plugins/") + record.RelativePath.Replace('\\', '/');
+                        ZipArchiveEntry entry = archive.CreateEntry(entryName, CompressionLevel.Fastest);
+                        using (Stream entryStream = entry.Open())
+                        using (FileStream input = new FileStream(record.FullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        {
+                            input.CopyTo(entryStream);
+                        }
+                    }
+                }
+
+                FileInfo fi = new FileInfo(zipPath);
+                long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
+                if (fi.Length > maxBundleBytes)
+                {
+                    try { File.Delete(zipPath); } catch { }
+                    throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
+                }
+
+                int rawChunk = Math.Max(4096, Math.Min(49152, _chunkBytes.Value));
+                BundleTransfer transfer = new BundleTransfer();
+                transfer.ZipPath = zipPath;
+                transfer.Size = fi.Length;
+                transfer.Sha256 = Sha256File(zipPath);
+                transfer.ChunkBytes = rawChunk;
+                transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
+                transfer.FileCount = records.Count;
+                BundleTransfers[rpc] = transfer;
+
+                ZPackage begin = new ZPackage();
+                begin.Write(transfer.Size.ToString(CultureInfo.InvariantCulture));
+                begin.Write(transfer.Sha256);
+                begin.Write(transfer.TotalChunks);
+                begin.Write(transfer.FileCount);
+                rpc.Invoke(RpcBundleBegin, new object[] { begin });
+
+                if (_instance != null) _instance.Logger.LogInfo("Prepared compressed AutoModSync package for " + records.Count + " changed file(s): " + FormatBytes(transfer.Size));
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Bundle preparation failed: " + ex);
+                CleanupBundle(rpc);
+                SendError(rpc, "Server failed while preparing the compressed AutoModSync package: " + ex.Message);
+            }
+        }
+
+        private static void RPC_GetBundleChunk(ZRpc rpc, ZPackage pkg)
+        {
+            try
+            {
+                if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                int index = pkg.ReadInt();
+                BundleTransfer transfer;
+                if (!BundleTransfers.TryGetValue(rpc, out transfer) || transfer == null || !File.Exists(transfer.ZipPath))
+                    throw new InvalidDataException("No active AutoModSync package exists for this client.");
+                if (index < 0 || index > transfer.TotalChunks) throw new InvalidDataException("Invalid AutoModSync package chunk request.");
+
+                if (index == transfer.TotalChunks)
+                {
+                    ZPackage end = new ZPackage();
+                    end.Write(transfer.Sha256);
+                    end.Write(transfer.FileCount);
+                    rpc.Invoke(RpcBundleEnd, new object[] { end });
+                    CleanupBundle(rpc);
+                    return;
+                }
+
+                byte[] buffer = new byte[transfer.ChunkBytes];
+                int read;
+                using (FileStream stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    stream.Seek((long)index * transfer.ChunkBytes, SeekOrigin.Begin);
+                    read = stream.Read(buffer, 0, buffer.Length);
+                }
+                if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
+
+                ZPackage chunk = new ZPackage();
+                chunk.Write(index);
+                chunk.Write(Convert.ToBase64String(buffer, 0, read));
+                rpc.Invoke(RpcBundleChunk, new object[] { chunk });
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Bundle chunk transfer failed: " + ex);
+                CleanupBundle(rpc);
+                SendError(rpc, "Server failed while transferring the compressed AutoModSync package: " + ex.Message);
+            }
+        }
+
+        private static FileRecord ResolveBundleRecord(string requested)
+        {
+            if (String.IsNullOrEmpty(requested) || requested.Length < 3 || requested[1] != ':')
+                throw new InvalidDataException("Invalid AutoModSync file request.");
+            char kind = requested[0];
+            if (kind != 'P' && kind != 'R') throw new InvalidDataException("Invalid AutoModSync file kind.");
+            string relative = NormalizeRelative(requested.Substring(2));
+            if (relative.Length == 0) throw new InvalidDataException("Invalid AutoModSync relative path.");
+            string lookup = kind + ":" + relative;
+            FileRecord record;
+            if (!_files.TryGetValue(lookup, out record) || !File.Exists(record.FullPath))
+            {
+                EnsureManifest(true);
+                if (!_files.TryGetValue(lookup, out record) || !File.Exists(record.FullPath))
+                    throw new FileNotFoundException("Requested plugin file is not available: " + relative);
+            }
+            long maxBytes = (long)Math.Max(1, _maxFileMiB.Value) * 1024L * 1024L;
+            if (record.Size > maxBytes) throw new InvalidDataException("File exceeds server transfer limit: " + relative);
+            return record;
+        }
+
+        private static void CleanupBundle(ZRpc rpc)
+        {
+            BundleTransfer transfer;
+            if (!BundleTransfers.TryGetValue(rpc, out transfer)) return;
+            BundleTransfers.Remove(rpc);
+            if (transfer != null && !String.IsNullOrEmpty(transfer.ZipPath))
+            {
+                try { if (File.Exists(transfer.ZipPath)) File.Delete(transfer.ZipPath); } catch { }
+            }
+        }
+
+        private static void CleanupOldBundleCache()
+        {
+            try
+            {
+                string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
+                if (!Directory.Exists(cacheRoot)) return;
+                string[] files = Directory.GetFiles(cacheRoot, "bundle-*.zip", SearchOption.TopDirectoryOnly);
+                int i;
+                for (i = 0; i < files.Length; i++)
+                {
+                    try
+                    {
+                        FileInfo fi = new FileInfo(files[i]);
+                        if ((DateTime.UtcNow - fi.LastWriteTimeUtc).TotalHours > 6.0) fi.Delete();
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
+        private static string FormatBytes(long value)
+        {
+            double n = value;
+            string[] units = new string[] { "B", "KB", "MB", "GB" };
+            int unit = 0;
+            while (n >= 1024.0 && unit < units.Length - 1) { n /= 1024.0; unit++; }
+            return n.ToString(unit == 0 ? "0" : "0.0", CultureInfo.InvariantCulture) + " " + units[unit];
+        }
+
+        private static void SendError(ZRpc rpc, string message)
+        {
+            try
+            {
+                ZPackage p = new ZPackage();
+                p.Write(message ?? "AutoModSync error");
+                rpc.Invoke(RpcError, new object[] { p });
+            }
+            catch { }
+        }
+
+        private static void EnsureManifest(bool force)
+        {
+            lock (ManifestLock)
+            {
+                int seconds = _manifestCacheSeconds == null ? 5 : Math.Max(0, _manifestCacheSeconds.Value);
+                if (!force && _manifestBuiltUtc != DateTime.MinValue && (DateTime.UtcNow - _manifestBuiltUtc).TotalSeconds <= seconds) return;
+
+                string root = Paths.PluginPath;
+                List<FileRecord> records = new List<FileRecord>();
+                if (Directory.Exists(root))
+                {
+                    string[] files = Directory.GetFiles(root, "*", SearchOption.AllDirectories);
+                    int i;
+                    for (i = 0; i < files.Length; i++)
+                    {
+                        string full = files[i];
+                        string rel = MakeRelative(root, full).Replace('\\', '/');
+                        if (IsExcluded(rel, Path.GetFileName(full))) continue;
+                        FileInfo fi = new FileInfo(full);
+                        FileRecord r = new FileRecord();
+                        r.Kind = 'P';
+                        r.RelativePath = rel;
+                        r.FullPath = full;
+                        r.Size = fi.Length;
+                        r.Sha256 = Sha256File(full);
+                        records.Add(r);
+                    }
+                }
+
+                string releaseClient = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "version.dll");
+                if (File.Exists(releaseClient))
+                {
+                    FileInfo rfi = new FileInfo(releaseClient);
+                    FileRecord rr = new FileRecord();
+                    rr.Kind = 'R';
+                    rr.RelativePath = "version.dll";
+                    rr.FullPath = releaseClient;
+                    rr.Size = rfi.Length;
+                    rr.Sha256 = Sha256File(releaseClient);
+                    records.Add(rr);
+                }
+
+                string releaseClientPlugin = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "ValheimAutoModSync.Client.dll");
+                if (File.Exists(releaseClientPlugin))
+                {
+                    records.RemoveAll(delegate(FileRecord x) { return x.Kind == 'P' && String.Equals(x.RelativePath, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase); });
+                    FileInfo cfi = new FileInfo(releaseClientPlugin);
+                    FileRecord cr = new FileRecord();
+                    cr.Kind = 'P';
+                    cr.RelativePath = "ValheimAutoModSync.Client.dll";
+                    cr.FullPath = releaseClientPlugin;
+                    cr.Size = cfi.Length;
+                    cr.Sha256 = Sha256File(releaseClientPlugin);
+                    records.Add(cr);
+                }
+
+                records.Sort(delegate(FileRecord a, FileRecord b) { return StringComparer.OrdinalIgnoreCase.Compare(a.RelativePath, b.RelativePath); });
+                Dictionary<string, FileRecord> map = new Dictionary<string, FileRecord>(StringComparer.OrdinalIgnoreCase);
+                StringBuilder sb = new StringBuilder();
+                int j;
+                for (j = 0; j < records.Count; j++)
+                {
+                    FileRecord r = records[j];
+                    if (r.RelativePath.IndexOf('\t') >= 0 || r.RelativePath.IndexOf('\r') >= 0 || r.RelativePath.IndexOf('\n') >= 0) continue;
+                    map[r.Kind + ":" + r.RelativePath] = r;
+                    sb.Append(r.Kind).Append('\t').Append(r.Sha256).Append('\t').Append(r.Size.ToString(CultureInfo.InvariantCulture)).Append('\t').Append(r.RelativePath).Append('\n');
+                }
+
+                _files = map;
+                _manifestText = sb.ToString();
+                _manifestSignature = SignManifest(Encoding.UTF8.GetBytes(_manifestText));
+                _manifestBuiltUtc = DateTime.UtcNow;
+                if (_instance != null) _instance.Logger.LogDebug("AutoModSync manifest: " + map.Count + " files.");
+            }
+        }
+
+        private static bool IsExcluded(string relative, string name)
+        {
+            if (String.Equals(name, "ValheimAutoModSync.Server.dll", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)) return true;
+            string raw = _excludePatterns == null ? "" : (_excludePatterns.Value ?? "");
+            string[] patterns = raw.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            int i;
+            for (i = 0; i < patterns.Length; i++)
+            {
+                string p = patterns[i].Trim().Replace('\\', '/');
+                if (p.Length == 0) continue;
+                if (WildcardMatch(relative, p) || WildcardMatch(name, p)) return true;
+            }
+            return false;
+        }
+
+        private static bool WildcardMatch(string text, string pattern)
+        {
+            text = (text ?? "").Replace('\\', '/');
+            pattern = (pattern ?? "").Replace('\\', '/');
+            int t = 0, p = 0, star = -1, mark = -1;
+            while (t < text.Length)
+            {
+                if (p < pattern.Length && (pattern[p] == '?' || char.ToLowerInvariant(pattern[p]) == char.ToLowerInvariant(text[t]))) { t++; p++; continue; }
+                if (p < pattern.Length && pattern[p] == '*') { star = p++; mark = t; continue; }
+                if (star != -1) { p = star + 1; t = ++mark; continue; }
+                return false;
+            }
+            while (p < pattern.Length && pattern[p] == '*') p++;
+            return p == pattern.Length;
+        }
+
+        private static string NormalizeRelative(string value)
+        {
+            if (value == null) return "";
+            value = value.Replace('\\', '/').TrimStart('/');
+            if (value.IndexOf("../", StringComparison.Ordinal) >= 0 || value == ".." || value.IndexOf(':') >= 0) return "";
+            return value;
+        }
+
+        private static string MakeRelative(string root, string full)
+        {
+            string r = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string f = Path.GetFullPath(full);
+            if (!f.StartsWith(r, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Path escaped plugin root.");
+            return f.Substring(r.Length);
+        }
+
+        private static string Sha256File(string path)
+        {
+            using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (SHA256 sha = SHA256.Create()) return ToHex(sha.ComputeHash(fs));
+        }
+
+        private static string SignManifest(byte[] data)
+        {
+            if (_signer == null) throw new InvalidOperationException("AutoModSync signing identity is not loaded.");
+            byte[] sig = _signer.SignData(data, CryptoConfig.MapNameToOID("SHA256"));
+            return Convert.ToBase64String(sig);
+        }
+
+
+        private static string ToHex(byte[] bytes)
+        {
+            StringBuilder sb = new StringBuilder(bytes.Length * 2);
+            int i;
+            for (i = 0; i < bytes.Length; i++) sb.Append(bytes[i].ToString("x2", CultureInfo.InvariantCulture));
+            return sb.ToString();
+        }
+    }
+}
