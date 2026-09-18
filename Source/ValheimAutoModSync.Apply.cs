@@ -53,18 +53,9 @@ internal static class Program
 
                     string src;
                     string dst;
-                    if (kind == 'P')
-                    {
-                        src = SafeUnder(Path.Combine(stagingRoot, "plugins"), rel) + ".amsnew";
-                        dst = SafeUnder(pluginRoot, rel);
-                    }
-                    else if (kind == 'R')
-                    {
-                        if (!String.Equals(rel, "version.dll", StringComparison.OrdinalIgnoreCase)) continue;
-                        src = SafeUnder(Path.Combine(stagingRoot, "root"), rel) + ".amsnew";
-                        dst = Path.Combine(gameRoot, "version.dll");
-                    }
-                    else continue;
+                    if (kind != 'P') continue;
+                    src = SafeUnder(Path.Combine(stagingRoot, "plugins"), rel) + ".amsnew";
+                    dst = SafeUnder(pluginRoot, rel);
 
                     if (!File.Exists(src)) continue;
                     string parent = Path.GetDirectoryName(dst);

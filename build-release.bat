@@ -1,106 +1,75 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 cd /d "%~dp0"
-title AutoModSync Release Builder
+title Valheim AutoModSync Release Builder
 
-echo.
-echo ============================================================
-echo   AutoModSync 2.4.4 - Release Builder
-echo ============================================================
-echo.
-
+set "AMS_VERSION=2.4.5"
 set "ROOT=%~dp0"
 set "SOURCE=%ROOT%Source"
-set "TEMPLATE=%ROOT%Client\\version.template.dll"
-set "OUTPUT=%ROOT%Client\\version.dll"
-set "CLIENTOUTPUT=%ROOT%Client\\ValheimAutoModSync.Client.dll"
-set "SERVEROUTPUT=%ROOT%Server\\ValheimAutoModSync.Server.dll"
-set "TOOLOUTPUT=%ROOT%Tools\\AutoModSync.BuildTool.exe"
-set "DETECTPS=%ROOT%Detect-Valheim.ps1"
+set "CLIENTDIR=%ROOT%Client"
+set "SERVERDIR=%ROOT%Server"
+set "TOOLSDIR=%ROOT%Tools"
+set "DIST=%ROOT%Dist"
 set "BEPINEX_VERSION=5.4.2350"
 set "BEPINEX_URL=https://gcdn.thunderstore.io/live/repository/packages/denikson-BepInExPack_Valheim-5.4.2350.zip"
 set "BEPINEX_SHA256=37a91c000b4e88f2ed7a4bd7d812239852d2e36cbf0ff0a9f5faacfba46b105f"
 
+echo.
+echo ============================================================
+echo   Valheim AutoModSync %AMS_VERSION% - Transparent Build
+ echo ============================================================
+echo.
+
 set "CSC="
-if exist "%WINDIR%\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe" set "CSC=%WINDIR%\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe"
-if not defined CSC if exist "%WINDIR%\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe" set "CSC=%WINDIR%\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe"
+if exist "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if not defined CSC if exist "%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe" set "CSC=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 if not defined CSC goto :NoCompiler
 
-set "WORK=%TEMP%\\ValheimAutoModSync_Build_%RANDOM%_%RANDOM%"
+set "WORK=%TEMP%\ValheimAutoModSync_Build_%RANDOM%_%RANDOM%"
 mkdir "%WORK%" >nul 2>&1
-set "BUILDTOOL=%WORK%\\AutoModSync.BuildTool.exe"
-"%CSC%" /nologo /target:exe /optimize+ /langversion:5 /out:"%BUILDTOOL%" "%SOURCE%\\AutoModSync.BuildTool.cs"
+if not exist "%CLIENTDIR%" mkdir "%CLIENTDIR%" >nul 2>&1
+if not exist "%SERVERDIR%" mkdir "%SERVERDIR%" >nul 2>&1
+if not exist "%TOOLSDIR%" mkdir "%TOOLSDIR%" >nul 2>&1
+
+set "BUILDTOOL=%WORK%\AutoModSync.BuildTool.exe"
+"%CSC%" /nologo /target:exe /optimize+ /langversion:5 /out:"%BUILDTOOL%" "%SOURCE%\AutoModSync.BuildTool.cs"
 if errorlevel 1 goto :Fail
-if not exist "%ROOT%Tools" mkdir "%ROOT%Tools" >nul 2>&1
-copy /y "%BUILDTOOL%" "%TOOLOUTPUT%" >nul
+copy /y "%BUILDTOOL%" "%TOOLSDIR%\AutoModSync.BuildTool.exe" >nul
 if errorlevel 1 goto :Fail
 
-set "DETECTEDROOT="
-echo Detecting normal Valheim installation...
-if exist "%DETECTPS%" (
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%DETECTPS%" >"%WORK%\\client.txt" 2>nul
-    if exist "%WORK%\\client.txt" set /p "DETECTEDROOT="<"%WORK%\\client.txt"
+set "VALHEIMROOT="
+if exist "%ProgramFiles(x86)%\Steam\steamapps\common\Valheim\valheim.exe" set "VALHEIMROOT=%ProgramFiles(x86)%\Steam\steamapps\common\Valheim"
+if not defined VALHEIMROOT if exist "%ProgramFiles%\Steam\steamapps\common\Valheim\valheim.exe" set "VALHEIMROOT=%ProgramFiles%\Steam\steamapps\common\Valheim"
+for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if not defined VALHEIMROOT if exist "%%D:\SteamLibrary\steamapps\common\Valheim\valheim.exe" set "VALHEIMROOT=%%D:\SteamLibrary\steamapps\common\Valheim"
+if not defined VALHEIMROOT (
+  echo Enter the folder containing valheim.exe.
+  set /p "VALHEIMROOT=Valheim path: "
 )
-echo.
-if defined DETECTEDROOT goto :HaveDetectedClient
-set "VALHEIMROOT="
-set /p "VALHEIMROOT=Enter the folder containing valheim.exe: "
-goto :ValidateClient
-
-:HaveDetectedClient
-echo Valheim path: "%DETECTEDROOT%"
-echo If correct, hit Enter.
-echo Do NOT use quotation marks if entering a different path.
-echo.
-set "VALHEIMROOT="
-set /p "VALHEIMROOT=If not, enter Valheim client path: "
-if not defined VALHEIMROOT set "VALHEIMROOT=%DETECTEDROOT%"
-
-:ValidateClient
 set "VALHEIMROOT=%VALHEIMROOT:"=%"
-if not defined VALHEIMROOT goto :BadClient
-pushd "%VALHEIMROOT%" >nul 2>&1
-if errorlevel 1 goto :BadClient
-set "VALHEIMROOT=%CD%"
-popd
-if not exist "%VALHEIMROOT%\\valheim.exe" goto :BadClient
-if not exist "%VALHEIMROOT%\\valheim_Data\\Managed\\assembly_valheim.dll" goto :BadClient
+if not exist "%VALHEIMROOT%\valheim.exe" goto :BadClient
+if not exist "%VALHEIMROOT%\valheim_Data\Managed\assembly_valheim.dll" goto :BadClient
 
-echo.
-echo Verified Valheim path:
-echo   "%VALHEIMROOT%"
-echo.
+echo Valheim path: "%VALHEIMROOT%"
 call :PreparePinnedBepInEx
 if errorlevel 1 goto :Fail
 
-set "BEPINEX_DLL=%BEPSOURCE%\\BepInEx\\core\\BepInEx.dll"
-set "HARMONY_DLL=%BEPSOURCE%\\BepInEx\\core\\0Harmony.dll"
-set "GAME_DLL=%VALHEIMROOT%\\valheim_Data\\Managed\\assembly_valheim.dll"
-set "ASSEMBLY_UTILS=%VALHEIMROOT%\\valheim_Data\\Managed\\assembly_utils.dll"
-set "SPLATFORM_DLL=%VALHEIMROOT%\\valheim_Data\\Managed\\Splatform.dll"
-set "STEAMWORKS_DLL=%VALHEIMROOT%\\valheim_Data\\Managed\\com.rlabrecque.steamworks.net.dll"
-set "NETSTANDARD_DLL=%VALHEIMROOT%\\valheim_Data\\Managed\\netstandard.dll"
-set "UNITY_ENGINE=%BEPSOURCE%\\unstripped_corlib\\UnityEngine.dll"
-if not exist "%UNITY_ENGINE%" set "UNITY_ENGINE=%VALHEIMROOT%\\valheim_Data\\Managed\\UnityEngine.dll"
-set "UNITY_CORE=%BEPSOURCE%\\unstripped_corlib\\UnityEngine.CoreModule.dll"
-if not exist "%UNITY_CORE%" set "UNITY_CORE=%VALHEIMROOT%\\valheim_Data\\Managed\\UnityEngine.CoreModule.dll"
-set "UNITY_IMGUI=%BEPSOURCE%\\unstripped_corlib\\UnityEngine.IMGUIModule.dll"
-if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%VALHEIMROOT%\\valheim_Data\\Managed\\UnityEngine.IMGUIModule.dll"
-set "UNITY_TEXT=%BEPSOURCE%\\unstripped_corlib\\UnityEngine.TextRenderingModule.dll"
-if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%VALHEIMROOT%\\valheim_Data\\Managed\\UnityEngine.TextRenderingModule.dll"
+set "BEPINEX_DLL=%BEPSOURCE%\BepInEx\core\BepInEx.dll"
+set "HARMONY_DLL=%BEPSOURCE%\BepInEx\core\0Harmony.dll"
+set "GAME_DLL=%VALHEIMROOT%\valheim_Data\Managed\assembly_valheim.dll"
+set "ASSEMBLY_UTILS=%VALHEIMROOT%\valheim_Data\Managed\assembly_utils.dll"
+set "SPLATFORM_DLL=%VALHEIMROOT%\valheim_Data\Managed\Splatform.dll"
+set "STEAMWORKS_DLL=%VALHEIMROOT%\valheim_Data\Managed\com.rlabrecque.steamworks.net.dll"
+set "NETSTANDARD_DLL=%VALHEIMROOT%\valheim_Data\Managed\netstandard.dll"
+set "UNITY_ENGINE=%BEPSOURCE%\unstripped_corlib\UnityEngine.dll"
+if not exist "%UNITY_ENGINE%" set "UNITY_ENGINE=%VALHEIMROOT%\valheim_Data\Managed\UnityEngine.dll"
+set "UNITY_CORE=%BEPSOURCE%\unstripped_corlib\UnityEngine.CoreModule.dll"
+if not exist "%UNITY_CORE%" set "UNITY_CORE=%VALHEIMROOT%\valheim_Data\Managed\UnityEngine.CoreModule.dll"
+set "UNITY_IMGUI=%BEPSOURCE%\unstripped_corlib\UnityEngine.IMGUIModule.dll"
+if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%VALHEIMROOT%\valheim_Data\Managed\UnityEngine.IMGUIModule.dll"
+set "UNITY_TEXT=%BEPSOURCE%\unstripped_corlib\UnityEngine.TextRenderingModule.dll"
+if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%VALHEIMROOT%\valheim_Data\Managed\UnityEngine.TextRenderingModule.dll"
 
-if not exist "%BEPINEX_DLL%" goto :MissingReference
-if not exist "%HARMONY_DLL%" goto :MissingReference
-if not exist "%GAME_DLL%" goto :MissingReference
-if not exist "%NETSTANDARD_DLL%" goto :MissingReference
-if not exist "%UNITY_ENGINE%" goto :MissingReference
-if not exist "%UNITY_CORE%" goto :MissingReference
-if not exist "%UNITY_IMGUI%" goto :MissingReference
-if not exist "%UNITY_TEXT%" goto :MissingReference
-if not exist "%SPLATFORM_DLL%" goto :MissingReference
-if not exist "%STEAMWORKS_DLL%" goto :MissingReference
-
-set "REFS=%WORK%\\refs.rsp"
+set "REFS=%WORK%\refs.rsp"
 >"%REFS%" echo /nologo
 >>"%REFS%" echo /optimize+
 >>"%REFS%" echo /langversion:5
@@ -118,102 +87,93 @@ set "REFS=%WORK%\\refs.rsp"
 >>"%REFS%" echo /reference:System.IO.Compression.FileSystem.dll
 if exist "%ASSEMBLY_UTILS%" >>"%REFS%" echo /reference:"%ASSEMBLY_UTILS%"
 
-set "CLIENTDLL=%WORK%\\ValheimAutoModSync.Client.dll"
-set "SERVERDLL=%WORK%\\ValheimAutoModSync.Server.dll"
-set "APPLYEXE=%WORK%\\ValheimAutoModSync.Apply.exe"
-echo Compiling AutoModSync runtime components...
-"%CSC%" @"%REFS%" /target:library /out:"%CLIENTDLL%" "%SOURCE%\\ValheimAutoModSync.Client.cs"
+set "CLIENTDLL=%WORK%\ValheimAutoModSync.Client.dll"
+set "SERVERDLL=%WORK%\ValheimAutoModSync.Server.dll"
+set "APPLYEXE=%WORK%\ValheimAutoModSync.Apply.exe"
+echo Compiling AutoModSync components...
+"%CSC%" @"%REFS%" /target:library /out:"%CLIENTDLL%" "%SOURCE%\ValheimAutoModSync.Client.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\\ValheimAutoModSync.Server.cs"
+"%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /out:"%APPLYEXE%" "%SOURCE%\\ValheimAutoModSync.Apply.cs"
-if errorlevel 1 goto :Fail
-
-if not exist "%ROOT%Client" mkdir "%ROOT%Client" >nul 2>&1
-if not exist "%ROOT%Server" mkdir "%ROOT%Server" >nul 2>&1
-copy /y "%CLIENTDLL%" "%CLIENTOUTPUT%" >nul
-if errorlevel 1 goto :Fail
-copy /y "%SERVERDLL%" "%SERVEROUTPUT%" >nul
+"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /out:"%APPLYEXE%" "%SOURCE%\ValheimAutoModSync.Apply.cs"
 if errorlevel 1 goto :Fail
 
-echo Building universal version.dll...
-"%BUILDTOOL%" pack "%TEMPLATE%" "%OUTPUT%" "%BEPSOURCE%" "%CLIENTDLL%" "%APPLYEXE%"
+rem Build a normal, transparent client layout. No packed version.dll.
+if exist "%CLIENTDIR%\BepInEx" rmdir /s /q "%CLIENTDIR%\BepInEx"
+if exist "%CLIENTDIR%\version.dll" del /f /q "%CLIENTDIR%\version.dll"
+if exist "%CLIENTDIR%\version.template.dll" del /f /q "%CLIENTDIR%\version.template.dll"
+copy /y "%BEPSOURCE%\winhttp.dll" "%CLIENTDIR%\winhttp.dll" >nul
+copy /y "%BEPSOURCE%\doorstop_config.ini" "%CLIENTDIR%\doorstop_config.ini" >nul
+mkdir "%CLIENTDIR%\BepInEx\core" >nul 2>&1
+mkdir "%CLIENTDIR%\BepInEx\AutoModSync" >nul 2>&1
+xcopy "%BEPSOURCE%\BepInEx\core\*" "%CLIENTDIR%\BepInEx\core\" /E /I /Y /Q >nul
+copy /y "%CLIENTDLL%" "%CLIENTDIR%\ValheimAutoModSync.Client.dll" >nul
+copy /y "%APPLYEXE%" "%CLIENTDIR%\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe" >nul
+copy /y "%SERVERDLL%" "%SERVERDIR%\ValheimAutoModSync.Server.dll" >nul
+if errorlevel 1 goto :Fail
+
+if exist "%DIST%" rmdir /s /q "%DIST%"
+mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client" >nul 2>&1
+mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Server" >nul 2>&1
+mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Tools" >nul 2>&1
+mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD_PARTY_LICENSES" >nul 2>&1
+copy /y "%ROOT%README.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\README.md" >nul
+copy /y "%ROOT%LICENSE" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\LICENSE" >nul
+copy /y "%ROOT%THIRD-PARTY-NOTICES.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD-PARTY-NOTICES.md" >nul
+copy /y "%ROOT%install.bat" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\install.bat" >nul
+copy /y "%CLIENTDIR%\ValheimAutoModSync.Client.dll" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\ValheimAutoModSync.Client.dll" >nul
+copy /y "%CLIENTDIR%\winhttp.dll" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\winhttp.dll" >nul
+copy /y "%CLIENTDIR%\doorstop_config.ini" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\doorstop_config.ini" >nul
+xcopy "%CLIENTDIR%\BepInEx\*" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\BepInEx\" /E /I /Y /Q >nul
+copy /y "%SERVERDIR%\ValheimAutoModSync.Server.dll" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Server\ValheimAutoModSync.Server.dll" >nul
+copy /y "%SERVERDIR%\server-config-example.cfg" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Server\server-config-example.cfg" >nul
+copy /y "%TOOLSDIR%\AutoModSync.BuildTool.exe" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Tools\AutoModSync.BuildTool.exe" >nul
+xcopy "%ROOT%THIRD_PARTY_LICENSES\*" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD_PARTY_LICENSES\" /E /I /Y /Q >nul
+
+powershell.exe -NoLogo -NoProfile -Command "Compress-Archive -Path '%DIST%\ValheimAutoModSync-%AMS_VERSION%\*' -DestinationPath '%DIST%\ValheimAutoModSync-%AMS_VERSION%.zip' -Force"
 if errorlevel 1 goto :Fail
 
 echo.
 echo ============================================================
-echo   RELEASE BUILD COMPLETE
+echo   BUILD COMPLETE
 echo ============================================================
+echo Release ZIP:
+echo   "%DIST%\ValheimAutoModSync-%AMS_VERSION%.zip"
 echo.
-echo Built:
-echo   "%OUTPUT%"
-echo   "%CLIENTOUTPUT%"
-echo   "%SERVEROUTPUT%"
-echo   "%TOOLOUTPUT%"
-echo.
-echo Copy Client\\, Server\\ and Tools\\ into the matching public staging folders.
-echo.
+echo This build contains no packed AutoModSync version.dll.
 rmdir /s /q "%WORK%" >nul 2>&1
 pause
 exit /b 0
 
 :PreparePinnedBepInEx
-set "BEPZIP=%WORK%\\BepInExPack_Valheim-%BEPINEX_VERSION%.zip"
-set "BEPEXTRACT=%WORK%\\BepInExExtract"
-set "BUNDLED=%ROOT%Bundled\\BepInExPack_Valheim-%BEPINEX_VERSION%.zip"
-if exist "%BUNDLED%" goto :UseBundledBepInEx
-where curl.exe >nul 2>&1
-if errorlevel 1 goto :NoCurl
+set "BEPZIP=%WORK%\BepInExPack_Valheim-%BEPINEX_VERSION%.zip"
+set "BEPEXTRACT=%WORK%\BepInExExtract"
 echo Downloading pinned BepInEx package...
 curl.exe -L --fail --retry 3 --retry-delay 2 -o "%BEPZIP%" "%BEPINEX_URL%"
 if errorlevel 1 exit /b 1
-goto :VerifyBepInEx
-
-:UseBundledBepInEx
-copy /y "%BUNDLED%" "%BEPZIP%" >nul
-if errorlevel 1 exit /b 1
-
-:VerifyBepInEx
 set "ACTUALSHA="
-"%BUILDTOOL%" sha256 "%BEPZIP%" >"%WORK%\\sha.txt"
+"%BUILDTOOL%" sha256 "%BEPZIP%" >"%WORK%\sha.txt"
 if errorlevel 1 exit /b 1
-set /p "ACTUALSHA="<"%WORK%\\sha.txt"
-if /i not "%ACTUALSHA%"=="%BEPINEX_SHA256%" goto :BadBepHash
+set /p "ACTUALSHA="<"%WORK%\sha.txt"
+if /i not "%ACTUALSHA%"=="%BEPINEX_SHA256%" (
+  echo ERROR: BepInEx SHA-256 verification failed.
+  exit /b 1
+)
 mkdir "%BEPEXTRACT%" >nul 2>&1
 where tar.exe >nul 2>&1
-if errorlevel 1 goto :ExpandWithPowerShell
-tar.exe -xf "%BEPZIP%" -C "%BEPEXTRACT%"
-if errorlevel 1 exit /b 1
-goto :BepExtracted
-
-:ExpandWithPowerShell
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%BEPZIP%' -DestinationPath '%BEPEXTRACT%' -Force"
-if errorlevel 1 exit /b 1
-
-:BepExtracted
-set "BEPSOURCE=%BEPEXTRACT%\\BepInExPack_Valheim"
-if not exist "%BEPSOURCE%\\BepInEx\\core\\BepInEx.dll" (
-    echo ERROR: The pinned BepInEx package did not contain the expected files.
-    exit /b 1
+if errorlevel 1 (
+  powershell.exe -NoLogo -NoProfile -Command "Expand-Archive -LiteralPath '%BEPZIP%' -DestinationPath '%BEPEXTRACT%' -Force"
+) else (
+  tar.exe -xf "%BEPZIP%" -C "%BEPEXTRACT%"
 )
-echo SHA-256 verified.
+if errorlevel 1 exit /b 1
+set "BEPSOURCE=%BEPEXTRACT%\BepInExPack_Valheim"
+if not exist "%BEPSOURCE%\BepInEx\core\BepInEx.dll" exit /b 1
+echo BepInEx SHA-256 verified.
 exit /b 0
 
-:NoCurl
-echo ERROR: curl.exe was not found.
-exit /b 1
-
-:BadBepHash
-echo ERROR: BepInEx SHA-256 verification failed.
-exit /b 1
-
 :BadClient
-echo ERROR: valheim.exe and its managed assemblies were not found in that folder.
-goto :Fail
-
-:MissingReference
-echo ERROR: A required compile reference could not be found.
-echo Verify the normal Valheim installation with Steam and try again.
+echo ERROR: A valid Valheim client installation was not found.
 goto :Fail
 
 :NoCompiler

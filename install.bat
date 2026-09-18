@@ -3,10 +3,12 @@ setlocal EnableExtensions DisableDelayedExpansion
 cd /d "%~dp0"
 title Valheim AutoModSync Installer
 
-set "AMS_VERSION=2.4.4"
+set "AMS_VERSION=2.4.5"
 set "PACKAGEROOT=%~dp0"
-set "CLIENTOUT=%PACKAGEROOT%Client\version.dll"
 set "CLIENTDLL_PAYLOAD=%PACKAGEROOT%Client\ValheimAutoModSync.Client.dll"
+set "CLIENTAPPLY_PAYLOAD=%PACKAGEROOT%Client\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe"
+set "CLIENTRUNTIME=%PACKAGEROOT%Client"
+set "LEGACY_BOOTSTRAP_SHA256=e5b15848829648dc97c7f40df2800c33372500e3b8047944ef1c84a2a107c3b8"
 set "SERVERDLL_PAYLOAD=%PACKAGEROOT%Server\ValheimAutoModSync.Server.dll"
 set "BUILDTOOL=%PACKAGEROOT%Tools\AutoModSync.BuildTool.exe"
 set "SERVERCFG_TEMPLATE=%PACKAGEROOT%Server\server-config-example.cfg"
@@ -43,7 +45,7 @@ call :FindClientRoot
 if errorlevel 1 goto :Fail
 call :ConfirmClientRoot
 if errorlevel 1 goto :Fail
-call :InstallClientBootstrap
+call :InstallClientRole
 if errorlevel 1 goto :Fail
 echo.
 echo ============================================================
@@ -77,7 +79,7 @@ call :FindClientRoot
 if errorlevel 1 goto :Fail
 call :ConfirmClientRoot
 if errorlevel 1 goto :Fail
-call :InstallClientBootstrap
+call :InstallClientRole
 if errorlevel 1 goto :Fail
 call :EnsureServerPayload
 if errorlevel 1 goto :Fail
@@ -96,16 +98,15 @@ goto :Success
 
 :FindClientRoot
 set "DETECTEDROOT="
-set "DETECTFILE=%TEMP%\ValheimAutoModSync_client_%RANDOM%_%RANDOM%.txt"
-set "AMS_INSTALLER_DIR=%PACKAGEROOT%"
 echo.
 echo Auto-detecting Valheim...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAUwBpAGwAZQBuAHQAbAB5AEMAbwBuAHQAaQBuAHUAZQAnAAoAJABjAGEAbgBkAGkAZABhAHQAZQBzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAFMAeQBzAHQAZQBtAC4AQwBvAGwAbABlAGMAdABpAG8AbgBzAC4ARwBlAG4AZQByAGkAYwAuAEwAaQBzAHQAWwBzAHQAcgBpAG4AZwBdAAoAJABzAHQAZQBhAG0AUgBvAG8AdABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAFMAeQBzAHQAZQBtAC4AQwBvAGwAbABlAGMAdABpAG8AbgBzAC4ARwBlAG4AZQByAGkAYwAuAEwAaQBzAHQAWwBzAHQAcgBpAG4AZwBdAAoAZgB1AG4AYwB0AGkAbwBuACAAQQBkAGQALQBDAGEAbgBkAGkAZABhAHQAZQAoAFsAcwB0AHIAaQBuAGcAXQAkAHAAKQB7AGkAZgAoAC0AbgBvAHQAIABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABwACkAKQB7ACQAcwBjAHIAaQBwAHQAOgBjAGEAbgBkAGkAZABhAHQAZQBzAC4AQQBkAGQAKAAkAHAAKQB9AH0ACgBmAHUAbgBjAHQAaQBvAG4AIABBAGQAZAAtAFMAdABlAGEAbQBSAG8AbwB0ACgAWwBzAHQAcgBpAG4AZwBdACQAcAApAHsAaQBmACgAWwBzAHQAcgBpAG4AZwBdADoAOgBJAHMATgB1AGwAbABPAHIAVwBoAGkAdABlAFMAcABhAGMAZQAoACQAcAApACkAewByAGUAdAB1AHIAbgB9ADsAJABwAD0AJABwAC4AVAByAGkAbQAoACkALgBUAHIAaQBtACgAJwAiACcAKQAuAFIAZQBwAGwAYQBjAGUAKAAnAC8AJwAsACcAXABcACcAKQAuAFQAcgBpAG0ARQBuAGQAKAAnAFwAXAAnACkAOwBpAGYAKAAkAHMAYwByAGkAcAB0ADoAcwB0AGUAYQBtAFIAbwBvAHQAcwAgAC0AbgBvAHQAYwBvAG4AdABhAGkAbgBzACAAJABwACkAewAkAHMAYwByAGkAcAB0ADoAcwB0AGUAYQBtAFIAbwBvAHQAcwAuAEEAZABkACgAJABwACkAfQB9AAoAQQBkAGQALQBDAGEAbgBkAGkAZABhAHQAZQAgACQAZQBuAHYAOgBBAE0AUwBfAEkATgBTAFQAQQBMAEwARQBSAF8ARABJAFIACgAkAHAAZgA4ADYAPQBbAEUAbgB2AGkAcgBvAG4AbQBlAG4AdABdADoAOgBHAGUAdABFAG4AdgBpAHIAbwBuAG0AZQBuAHQAVgBhAHIAaQBhAGIAbABlACgAJwBQAHIAbwBnAHIAYQBtAEYAaQBsAGUAcwAoAHgAOAA2ACkAJwApADsAJABwAGYANgA0AD0AWwBFAG4AdgBpAHIAbwBuAG0AZQBuAHQAXQA6ADoARwBlAHQARQBuAHYAaQByAG8AbgBtAGUAbgB0AFYAYQByAGkAYQBiAGwAZQAoACcAUAByAG8AZwByAGEAbQBGAGkAbABlAHMAJwApAAoAaQBmACgAJABwAGYAOAA2ACkAewBBAGQAZAAtAFMAdABlAGEAbQBSAG8AbwB0ACAAKABKAG8AaQBuAC0AUABhAHQAaAAgACQAcABmADgANgAgACcAUwB0AGUAYQBtACcAKQB9ADsAaQBmACgAJABwAGYANgA0ACkAewBBAGQAZAAtAFMAdABlAGEAbQBSAG8AbwB0ACAAKABKAG8AaQBuAC0AUABhAHQAaAAgACQAcABmADYANAAgACcAUwB0AGUAYQBtACcAKQB9AAoAdAByAHkAewBBAGQAZAAtAFMAdABlAGEAbQBSAG8AbwB0ACAAKAAoAEcAZQB0AC0ASQB0AGUAbQBQAHIAbwBwAGUAcgB0AHkAIAAtAEwAaQB0AGUAcgBhAGwAUABhAHQAaAAgACcASABLAEMAVQA6AFwAUwBvAGYAdAB3AGEAcgBlAFwAVgBhAGwAdgBlAFwAUwB0AGUAYQBtACcAKQAuAFMAdABlAGEAbQBQAGEAdABoACkAfQBjAGEAdABjAGgAewB9AAoAdAByAHkAewBBAGQAZAAtAFMAdABlAGEAbQBSAG8AbwB0ACAAKAAoAEcAZQB0AC0ASQB0AGUAbQBQAHIAbwBwAGUAcgB0AHkAIAAtAEwAaQB0AGUAcgBhAGwAUABhAHQAaAAgACcASABLAEwATQA6AFwAUwBPAEYAVABXAEEAUgBFAFwAVwBPAFcANgA0ADMAMgBOAG8AZABlAFwAVgBhAGwAdgBlAFwAUwB0AGUAYQBtACcAKQAuAEkAbgBzAHQAYQBsAGwAUABhAHQAaAApAH0AYwBhAHQAYwBoAHsAfQAKAHQAcgB5AHsAQQBkAGQALQBTAHQAZQBhAG0AUgBvAG8AdAAgACgAKABHAGUAdAAtAEkAdABlAG0AUAByAG8AcABlAHIAdAB5ACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAnAEgASwBMAE0AOgBcAFMATwBGAFQAVwBBAFIARQBcAFYAYQBsAHYAZQBcAFMAdABlAGEAbQAnACkALgBJAG4AcwB0AGEAbABsAFAAYQB0AGgAKQB9AGMAYQB0AGMAaAB7AH0ACgBmAG8AcgBlAGEAYwBoACgAJAByAG8AbwB0ACAAaQBuACAAQAAoACQAcwB0AGUAYQBtAFIAbwBvAHQAcwApACkAewBBAGQAZAAtAEMAYQBuAGQAaQBkAGEAdABlACAAKABKAG8AaQBuAC0AUABhAHQAaAAgACQAcgBvAG8AdAAgACcAcwB0AGUAYQBtAGEAcABwAHMAXABjAG8AbQBtAG8AbgBcAFYAYQBsAGgAZQBpAG0AJwApADsAJAB2AGQAZgA9AEoAbwBpAG4ALQBQAGEAdABoACAAJAByAG8AbwB0ACAAJwBzAHQAZQBhAG0AYQBwAHAAcwBcAGwAaQBiAHIAYQByAHkAZgBvAGwAZABlAHIAcwAuAHYAZABmACcAOwBpAGYAKABUAGUAcwB0AC0AUABhAHQAaAAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAJAB2AGQAZgApAHsAdAByAHkAewAkAHQAZQB4AHQAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoAUgBlAGEAZABBAGwAbABUAGUAeAB0ACgAJAB2AGQAZgApADsAZgBvAHIAZQBhAGMAaAAoACQAbQAgAGkAbgAgAFsAcgBlAGcAZQB4AF0AOgA6AE0AYQB0AGMAaABlAHMAKAAkAHQAZQB4AHQALAAnACIAcABhAHQAaAAiAFwAcwArACIAKABbAF4AXAAiAF0AKwApACIAJwApACkAewAkAGwAaQBiAD0AJABtAC4ARwByAG8AdQBwAHMAWwAxAF0ALgBWAGEAbAB1AGUAIAAtAHIAZQBwAGwAYQBjAGUAIAAnAFwAXABcAFwAJwAsACcAXABcACcAOwBBAGQAZAAtAEMAYQBuAGQAaQBkAGEAdABlACAAKABKAG8AaQBuAC0AUABhAHQAaAAgACQAbABpAGIAIAAnAHMAdABlAGEAbQBhAHAAcABzAFwAYwBvAG0AbQBvAG4AXABWAGEAbABoAGUAaQBtACcAKQB9AH0AYwBhAHQAYwBoAHsAfQB9AH0ACgBmAG8AcgBlAGEAYwBoACgAJABkACAAaQBuACAAWwBJAE8ALgBEAHIAaQB2AGUASQBuAGYAbwBdADoAOgBHAGUAdABEAHIAaQB2AGUAcwAoACkAKQB7AHQAcgB5AHsAaQBmACgALQBuAG8AdAAgACQAZAAuAEkAcwBSAGUAYQBkAHkAKQB7AGMAbwBuAHQAaQBuAHUAZQB9ADsAJAByAD0AJABkAC4AUgBvAG8AdABEAGkAcgBlAGMAdABvAHIAeQAuAEYAdQBsAGwATgBhAG0AZQA7AEEAZABkAC0AQwBhAG4AZABpAGQAYQB0AGUAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJAByACAAJwBTAHQAZQBhAG0ATABpAGIAcgBhAHIAeQBcAHMAdABlAGEAbQBhAHAAcABzAFwAYwBvAG0AbQBvAG4AXABWAGEAbABoAGUAaQBtACcAKQA7AEEAZABkAC0AQwBhAG4AZABpAGQAYQB0AGUAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJAByACAAJwBTAHQAZQBhAG0AXABzAHQAZQBhAG0AYQBwAHAAcwBcAGMAbwBtAG0AbwBuAFwAVgBhAGwAaABlAGkAbQAnACkAfQBjAGEAdABjAGgAewB9AH0ACgAkAHMAZQBlAG4APQBAAHsAfQA7AGYAbwByAGUAYQBjAGgAKAAkAGMAIABpAG4AIAAkAGMAYQBuAGQAaQBkAGEAdABlAHMAKQB7AGkAZgAoAFsAcwB0AHIAaQBuAGcAXQA6ADoASQBzAE4AdQBsAGwATwByAFcAaABpAHQAZQBTAHAAYQBjAGUAKAAkAGMAKQApAHsAYwBvAG4AdABpAG4AdQBlAH0AOwB0AHIAeQB7ACQAZgA9AFsASQBPAC4AUABhAHQAaABdADoAOgBHAGUAdABGAHUAbABsAFAAYQB0AGgAKAAkAGMALgBUAHIAaQBtAEUAbgBkACgAJwBcAFwAJwApACkAfQBjAGEAdABjAGgAewBjAG8AbgB0AGkAbgB1AGUAfQA7ACQAawA9ACQAZgAuAFQAbwBMAG8AdwBlAHIASQBuAHYAYQByAGkAYQBuAHQAKAApADsAaQBmACgAJABzAGUAZQBuAC4AQwBvAG4AdABhAGkAbgBzAEsAZQB5ACgAJABrACkAKQB7AGMAbwBuAHQAaQBuAHUAZQB9ADsAJABzAGUAZQBuAFsAJABrAF0APQAkAHQAcgB1AGUAOwBpAGYAKABUAGUAcwB0AC0AUABhAHQAaAAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAKABKAG8AaQBuAC0AUABhAHQAaAAgACQAZgAgACcAdgBhAGwAaABlAGkAbQAuAGUAeABlACcAKQApAHsAWwBDAG8AbgBzAG8AbABlAF0AOgA6AE8AdQB0AC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAGYAKQA7AGUAeABpAHQAIAAwAH0AfQAKAGUAeABpAHQAIAAxAA== >"%DETECTFILE%" 2>nul
-if exist "%DETECTFILE%" set /p "DETECTEDROOT="<"%DETECTFILE%"
-del /q "%DETECTFILE%" >nul 2>&1
-set "AMS_INSTALLER_DIR="
+if exist "%PACKAGEROOT%valheim.exe" set "DETECTEDROOT=%PACKAGEROOT:~0,-1%"
+if defined DETECTEDROOT exit /b 0
+for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if not defined DETECTEDROOT if exist "%%D:\Steam\steamapps\common\Valheim\valheim.exe" set "DETECTEDROOT=%%D:\Steam\steamapps\common\Valheim"
+for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if not defined DETECTEDROOT if exist "%%D:\SteamLibrary\steamapps\common\Valheim\valheim.exe" set "DETECTEDROOT=%%D:\SteamLibrary\steamapps\common\Valheim"
+for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if not defined DETECTEDROOT if exist "%%D:\Program Files (x86)\Steam\steamapps\common\Valheim\valheim.exe" set "DETECTEDROOT=%%D:\Program Files (x86)\Steam\steamapps\common\Valheim"
+for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if not defined DETECTEDROOT if exist "%%D:\Program Files\Steam\steamapps\common\Valheim\valheim.exe" set "DETECTEDROOT=%%D:\Program Files\Steam\steamapps\common\Valheim"
 exit /b 0
-
 :ConfirmClientRoot
 echo.
 if not defined DETECTEDROOT goto :AskClientRoot
@@ -147,52 +148,82 @@ exit /b 1
 echo ERROR: valheim.exe was not found in the selected folder.
 exit /b 1
 
-:InstallClientBootstrap
-if not exist "%CLIENTOUT%" goto :ClientPayloadMissing
-set "DEST_DLL=%VALHEIMROOT%\version.dll"
-if not exist "%DEST_DLL%" goto :CopyClientBootstrap
-fc /b "%CLIENTOUT%" "%DEST_DLL%" >nul 2>&1
-if not errorlevel 1 goto :ClientAlreadyCurrent
+:InstallClientRole
 echo.
-echo WARNING: A different version.dll already exists in the Valheim folder.
-echo It may be an older AutoModSync version or another proxy/mod loader.
-echo AutoModSync needs this filename. The existing file will be backed up.
-echo.
-choice /C YN /N /M "Continue and replace it? [Y/N]: "
-if errorlevel 2 exit /b 1
-set "BACKUP_DLL=%VALHEIMROOT%\version.dll.pre-AutoModSync-%RANDOM%-%RANDOM%.bak"
-copy /y "%DEST_DLL%" "%BACKUP_DLL%" >nul 2>&1
-if errorlevel 1 goto :ClientBackupFailed
-echo Existing version.dll backed up to:
-echo   "%BACKUP_DLL%"
-
-:CopyClientBootstrap
-copy /y "%CLIENTOUT%" "%DEST_DLL%" >nul 2>&1
+echo Installing transparent AutoModSync client runtime...
+if not exist "%CLIENTDLL_PAYLOAD%" goto :ClientPayloadMissing
+if not exist "%CLIENTAPPLY_PAYLOAD%" goto :ClientPayloadMissing
+if not exist "%CLIENTRUNTIME%\winhttp.dll" goto :ClientPayloadMissing
+if not exist "%CLIENTRUNTIME%\doorstop_config.ini" goto :ClientPayloadMissing
+if not exist "%CLIENTRUNTIME%\BepInEx\core\BepInEx.dll" goto :ClientPayloadMissing
+if exist "%VALHEIMROOT%\version.dll" call :RemoveKnownLegacyBootstrap
+if errorlevel 1 exit /b 1
+if exist "%VALHEIMROOT%\BepInEx\core\BepInEx.dll" goto :ClientBepPresent
+if exist "%VALHEIMROOT%\winhttp.dll" goto :ClientUnknownWinHttp
+echo Installing BepInEx runtime files as normal visible files...
+copy /y "%CLIENTRUNTIME%\winhttp.dll" "%VALHEIMROOT%\winhttp.dll" >nul 2>&1
 if errorlevel 1 goto :ClientCopyFailed
-echo Installed AutoModSync client bootstrap:
-echo   "%DEST_DLL%"
+copy /y "%CLIENTRUNTIME%\doorstop_config.ini" "%VALHEIMROOT%\doorstop_config.ini" >nul 2>&1
+if errorlevel 1 goto :ClientCopyFailed
+if not exist "%VALHEIMROOT%\BepInEx\core" mkdir "%VALHEIMROOT%\BepInEx\core" >nul 2>&1
+xcopy "%CLIENTRUNTIME%\BepInEx\core\*" "%VALHEIMROOT%\BepInEx\core\" /E /I /Y /Q >nul
+if errorlevel 1 goto :ClientCopyFailed
+goto :ClientBepReady
+
+:ClientBepPresent
+echo Existing BepInEx installation detected and preserved.
+
+:ClientBepReady
+if not exist "%VALHEIMROOT%\BepInEx\plugins" mkdir "%VALHEIMROOT%\BepInEx\plugins" >nul 2>&1
+if not exist "%VALHEIMROOT%\BepInEx\AutoModSync" mkdir "%VALHEIMROOT%\BepInEx\AutoModSync" >nul 2>&1
+copy /y "%CLIENTDLL_PAYLOAD%" "%VALHEIMROOT%\BepInEx\plugins\ValheimAutoModSync.Client.dll" >nul 2>&1
+if errorlevel 1 goto :ClientCopyFailed
+copy /y "%CLIENTAPPLY_PAYLOAD%" "%VALHEIMROOT%\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe" >nul 2>&1
+if errorlevel 1 goto :ClientCopyFailed
+echo Installed AutoModSync client plugin and apply helper.
 exit /b 0
 
-:ClientAlreadyCurrent
-echo AutoModSync client bootstrap is already current.
+:RemoveKnownLegacyBootstrap
+if not exist "%BUILDTOOL%" goto :LegacyBootstrapUnknown
+set "LEGACY_HASH_FILE=%TEMP%\ValheimAutoModSync_legacyhash_%RANDOM%_%RANDOM%.txt"
+"%BUILDTOOL%" sha256 "%VALHEIMROOT%\version.dll" >"%LEGACY_HASH_FILE%" 2>nul
+set "LEGACY_HASH="
+if exist "%LEGACY_HASH_FILE%" set /p "LEGACY_HASH="<"%LEGACY_HASH_FILE%"
+del /q "%LEGACY_HASH_FILE%" >nul 2>&1
+if /i not "%LEGACY_HASH%"=="%LEGACY_BOOTSTRAP_SHA256%" goto :LegacyBootstrapUnknown
+echo Removing legacy AutoModSync 2.4.4 packed version.dll...
+del /f /q "%VALHEIMROOT%\version.dll" >nul 2>&1
+if exist "%VALHEIMROOT%\version.dll" (
+  echo ERROR: Could not remove the legacy AutoModSync version.dll.
+  exit /b 1
+)
+echo Legacy packed bootstrap removed.
 exit /b 0
 
-:ClientPayloadMissing
-echo ERROR: Client\version.dll is missing from this release package.
+:LegacyBootstrapUnknown
+echo WARNING: Unknown version.dll found. AutoModSync will not delete or replace it:
+echo   "%VALHEIMROOT%\version.dll"
+exit /b 0
+
+:ClientUnknownWinHttp
+echo ERROR: winhttp.dll already exists, but BepInEx was not detected.
+echo AutoModSync will not overwrite an unknown proxy DLL:
+echo   "%VALHEIMROOT%\winhttp.dll"
 exit /b 1
 
-:ClientBackupFailed
-echo ERROR: Could not back up the existing version.dll.
+:ClientPayloadMissing
+echo ERROR: This release package is missing transparent client runtime files.
 exit /b 1
 
 :ClientCopyFailed
-echo ERROR: Could not copy version.dll into the Valheim folder.
+echo ERROR: Failed to install the AutoModSync client runtime into:
+echo   "%VALHEIMROOT%"
 exit /b 1
-
 :EnsureServerPayload
 if not exist "%BUILDTOOL%" goto :RuntimePayloadMissing
 if not exist "%SERVERDLL_PAYLOAD%" goto :RuntimePayloadMissing
 if not exist "%CLIENTDLL_PAYLOAD%" goto :RuntimePayloadMissing
+if not exist "%CLIENTAPPLY_PAYLOAD%" goto :RuntimePayloadMissing
 if not defined WORK set "WORK=%TEMP%\ValheimAutoModSync_%RANDOM%_%RANDOM%"
 if not exist "%WORK%" mkdir "%WORK%" >nul 2>&1
 exit /b 0
@@ -309,13 +340,8 @@ set "RELEASEDIR=%TARGETROOT%\BepInEx\AutoModSync\release"
 if not exist "%RELEASEDIR%" mkdir "%RELEASEDIR%" >nul 2>&1
 copy /y "%CLIENTDLL_PAYLOAD%" "%RELEASEDIR%\ValheimAutoModSync.Client.dll" >nul 2>&1
 if errorlevel 1 goto :ReleaseCopyFailed
-if not exist "%CLIENTOUT%" goto :NoBootstrapForRelease
-copy /y "%CLIENTOUT%" "%RELEASEDIR%\version.dll" >nul 2>&1
-if errorlevel 1 goto :ReleaseCopyFailed
-goto :ServerRoleComplete
-
-:NoBootstrapForRelease
-echo WARNING: Client\version.dll is not present. Bootstrap self-updates are unavailable.
+rem 2.4.5+: publish only the normal BepInEx client plugin.
+if exist "%RELEASEDIR%\version.dll" del /f /q "%RELEASEDIR%\version.dll" >nul 2>&1
 
 :ServerRoleComplete
 echo AutoModSync server role installed:

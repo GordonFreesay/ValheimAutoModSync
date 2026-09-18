@@ -1,6 +1,6 @@
 # Valheim AutoModSync
 
-**Current release: 2.4.4**
+**Current release: 2.4.5**
 
 AutoModSync provides server-driven BepInEx plugin synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's installed plugins, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
 
@@ -22,7 +22,7 @@ AutoModSync provides server-driven BepInEx plugin synchronization for Valheim ov
 
 ## Installation
 
-Close Valheim and any running Valheim Dedicated Server first. Download and extract `ValheimAutoModSync-2.4.4.zip`, then run:
+Close Valheim and any running Valheim Dedicated Server first. Download and extract `ValheimAutoModSync-2.4.5.zip`, then run:
 
 ```text
 install.bat
@@ -51,12 +51,14 @@ BepInEx plugins are executable .NET code. Only trust AutoModSync server fingerpr
 
 Each AutoModSync server has its own signing identity. The server signs its synchronization manifest, and files are checked against that manifest before being applied. A server's private signing key must not be distributed to clients.
 
+The generated server signing key (`ValheimAutoModSync.key`) is intentionally excluded by `.gitignore` and should never be committed.
+
 ## Repository layout
 
 ```text
-Client/                  Prebuilt client payload and bootstrap
+Client/                  Normal visible BepInEx client runtime, AutoModSync plugin, and apply helper
 Server/                  Prebuilt server plugin and example configuration
-Source/                  AutoModSync source, including apply helper and native proxy source
+Source/                  AutoModSync source, including client, server, build tool, and apply helper
 Tools/                   Prebuilt release build tool
 build-release.bat        Windows release builder
 Detect-Valheim.ps1       Valheim install detection used by the builder
@@ -65,6 +67,8 @@ CHECKSUMS.txt             SHA-256 hashes for repository/package files
 LICENSE                   MIT license for AutoModSync-authored code
 THIRD-PARTY-NOTICES.md    Bundled dependency attribution and license information
 ```
+
+There are intentionally no nested `README.txt` files; this root `README.md` is the project documentation.
 
 ## Building from source
 
@@ -76,8 +80,6 @@ The release builder pins **BepInExPack Valheim 5.4.2350** and verifies this SHA-
 37a91c000b4e88f2ed7a4bd7d812239852d2e36cbf0ff0a9f5faacfba46b105f
 ```
 
-`Source/version_proxy.c` is the source corresponding to the included native `Client/version.template.dll` bootstrap template. The template is used by the release builder when producing the one-file client bootstrap.
-
 Valheim and Unity assemblies required for compilation are taken from the user's local Valheim installation and are not redistributed as source dependencies in this repository.
 
 ## Checksums
@@ -88,14 +90,15 @@ Valheim and Unity assemblies required for compilation are taken from the user's 
 
 AutoModSync-authored source is released under the **MIT License**. See `LICENSE`.
 
-The client bootstrap also packages third-party runtime components. Those components remain under their respective upstream licenses; see `THIRD-PARTY-NOTICES.md` and `THIRD_PARTY_LICENSES/`.
+The client runtime includes third-party BepInEx/Unity Doorstop components as normal visible files. Those components remain under their respective upstream licenses; see `THIRD-PARTY-NOTICES.md` and `THIRD_PARTY_LICENSES/`.
 
-## 2.4.4 highlights
+## 2.4.5 highlights
 
-- Preserves the original join destination before restart for more reliable reconnect behavior.
-- Captures direct host/port state before Valheim replaces it with backend/socket state.
-- Retains current host/port and socket endpoint fallbacks.
-- Keeps compressed delta synchronization and package/file verification from the 2.4.x line.
+- Replaces the packed `version.dll` bootstrap with a transparent on-disk BepInEx layout.
+- Installs the AutoModSync client as a normal `BepInEx\plugins` DLL plus a visible apply helper.
+- Removes the encoded-PowerShell client detection path from the public installer.
+- Migrates the known 2.4.4 packed bootstrap by SHA-256 without deleting unknown `version.dll` files.
+- Keeps signed manifests, delta synchronization, restart/reconnect, and file verification.
 
 ## Disclaimer
 

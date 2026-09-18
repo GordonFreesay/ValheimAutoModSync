@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-AutoModSync-authored code is licensed under the root `LICENSE` (MIT). The prebuilt client bootstrap/runtime also carries third-party components supplied through the pinned BepInExPack Valheim runtime. Those components are not relicensed by the AutoModSync MIT license.
+AutoModSync-authored code is licensed under the root `LICENSE` (MIT). The prebuilt client runtime carries third-party components supplied through the pinned BepInExPack Valheim runtime as normal visible files. Those components are not relicensed by the AutoModSync MIT license.
 
 The current release builder pins:
 

@@ -19,7 +19,7 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.client";
         public const string PluginName = "Valheim AutoModSync Client";
-        public const string PluginVersion = "2.4.4";
+        public const string PluginVersion = "2.4.5";
         public const int ProtocolVersion = 4;
 
         private const string RpcHello = "AMS4_Hello";
@@ -502,7 +502,7 @@ namespace ValheimAutoModSync
                 string[] fields = lines[i].Split(new char[] { '\t' }, 4);
                 if (fields.Length != 4 || fields[0].Length != 1) continue;
                 char kind = fields[0][0];
-                if (kind != 'P' && kind != 'R') continue;
+                if (kind != 'P') continue;
                 long size;
                 if (!long.TryParse(fields[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size < 0) continue;
                 string rel = NormalizeRelative(fields[3]);
@@ -629,7 +629,7 @@ namespace ValheimAutoModSync
             for (i = 0; i < NeededFiles.Count; i++)
             {
                 ManifestEntry e = NeededFiles[i];
-                string entryName = (e.Kind == 'R' ? "root/" : "plugins/") + e.RelativePath.Replace('\\', '/');
+                string entryName = "plugins/" + e.RelativePath.Replace('\\', '/');
                 expected[entryName] = e;
             }
 
@@ -645,7 +645,7 @@ namespace ValheimAutoModSync
                     if (!expected.TryGetValue(name, out expectedEntry)) throw new InvalidDataException("Compressed package contained an unexpected file: " + name);
                     if (!extracted.Add(name)) throw new InvalidDataException("Compressed package contained a duplicate file: " + name);
 
-                    string stagingRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "staging", expectedEntry.Kind == 'R' ? "root" : "plugins");
+                    string stagingRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "staging", "plugins");
                     string output = SafeUnder(stagingRoot, expectedEntry.RelativePath) + ".amsnew";
                     string parent = Path.GetDirectoryName(output);
                     if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
@@ -1319,14 +1319,7 @@ namespace ValheimAutoModSync
         private static string SafeTargetPath(char kind, string relative)
         {
             if (kind == 'P') return SafePluginPath(relative);
-            if (kind == 'R')
-            {
-                string rel = NormalizeRelative(relative);
-                if (!String.Equals(rel, "version.dll", StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Unsupported game-root sync target.");
-                string gameRoot = Directory.GetParent(Paths.BepInExRootPath).FullName;
-                return Path.Combine(gameRoot, "version.dll");
-            }
-            throw new InvalidDataException("Unknown AutoModSync target kind.");
+            throw new InvalidDataException("Unsupported AutoModSync target kind.");
         }
 
         private static bool VerifyManifestSignature(string publicXml, string signatureBase64, byte[] data)
@@ -1530,7 +1523,6 @@ namespace ValheimAutoModSync
                     char kind = item[0];
                     string rel = NormalizeRelative(item.Substring(2));
                     if (rel.Length == 0) continue;
-                    if (kind == 'R') { remaining.Add(item); continue; } // version.dll is loaded; helper must replace it after exit.
                     if (kind != 'P') continue;
                     string src = Path.Combine(amsRoot, "staging", "plugins", rel.Replace('/', Path.DirectorySeparatorChar)) + ".amsnew";
                     string dst = SafeTargetPath(kind, rel);

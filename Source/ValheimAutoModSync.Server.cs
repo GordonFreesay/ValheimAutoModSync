@@ -16,7 +16,7 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.server";
         public const string PluginName = "Valheim AutoModSync Server";
-        public const string PluginVersion = "2.4.4";
+        public const string PluginVersion = "2.4.5";
         public const int ProtocolVersion = 4;
 
         internal const string RpcHello = "AMS4_Hello";
@@ -237,7 +237,7 @@ namespace ValheimAutoModSync
                     for (i = 0; i < records.Count; i++)
                     {
                         FileRecord record = records[i];
-                        string entryName = (record.Kind == 'R' ? "root/" : "plugins/") + record.RelativePath.Replace('\\', '/');
+                        string entryName = "plugins/" + record.RelativePath.Replace('\\', '/');
                         ZipArchiveEntry entry = archive.CreateEntry(entryName, CompressionLevel.Fastest);
                         using (Stream entryStream = entry.Open())
                         using (FileStream input = new FileStream(record.FullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
@@ -330,7 +330,7 @@ namespace ValheimAutoModSync
             if (String.IsNullOrEmpty(requested) || requested.Length < 3 || requested[1] != ':')
                 throw new InvalidDataException("Invalid AutoModSync file request.");
             char kind = requested[0];
-            if (kind != 'P' && kind != 'R') throw new InvalidDataException("Invalid AutoModSync file kind.");
+            if (kind != 'P') throw new InvalidDataException("Invalid AutoModSync file kind.");
             string relative = NormalizeRelative(requested.Substring(2));
             if (relative.Length == 0) throw new InvalidDataException("Invalid AutoModSync relative path.");
             string lookup = kind + ":" + relative;
@@ -427,18 +427,7 @@ namespace ValheimAutoModSync
                     }
                 }
 
-                string releaseClient = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "version.dll");
-                if (File.Exists(releaseClient))
-                {
-                    FileInfo rfi = new FileInfo(releaseClient);
-                    FileRecord rr = new FileRecord();
-                    rr.Kind = 'R';
-                    rr.RelativePath = "version.dll";
-                    rr.FullPath = releaseClient;
-                    rr.Size = rfi.Length;
-                    rr.Sha256 = Sha256File(releaseClient);
-                    records.Add(rr);
-                }
+                // 2.4.5+: no packed game-root bootstrap is distributed or synchronized.
 
                 string releaseClientPlugin = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "ValheimAutoModSync.Client.dll");
                 if (File.Exists(releaseClientPlugin))
