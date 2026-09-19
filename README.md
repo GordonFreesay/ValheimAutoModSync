@@ -61,7 +61,6 @@ Server/                  Prebuilt server plugin and example configuration
 Source/                  AutoModSync source, including client, server, build tool, and apply helper
 Tools/                   Prebuilt release build tool
 build-release.bat        Windows release builder
-Detect-Valheim.ps1       Valheim install detection used by the builder
 install.bat              End-user installer
 CHECKSUMS.txt             SHA-256 hashes for repository/package files
 LICENSE                   MIT license for AutoModSync-authored code
