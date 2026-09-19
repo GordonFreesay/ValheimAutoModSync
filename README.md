@@ -1,6 +1,6 @@
 # Valheim AutoModSync
 
-**Current release: 2.4.7**
+**Current release: 2.4.8**
 
 AutoModSync provides server-driven BepInEx plugin synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's installed plugins, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
 
@@ -23,7 +23,7 @@ AutoModSync provides server-driven BepInEx plugin synchronization for Valheim ov
 
 ## Installation
 
-Close Valheim and any running Valheim Dedicated Server first. Download and extract `ValheimAutoModSync-2.4.7.zip`, then run:
+Close Valheim and any running Valheim Dedicated Server first. Download and extract `ValheimAutoModSync-2.4.8.zip`, then run:
 
 ```text
 install.bat
@@ -92,6 +92,13 @@ AutoModSync-authored source is released under the **MIT License**. See `LICENSE`
 
 The client runtime includes third-party BepInEx/Unity Doorstop components as normal visible files. Those components remain under their respective upstream licenses; see `THIRD-PARTY-NOTICES.md` and `THIRD_PARTY_LICENSES/`.
 
+## 2.4.8 highlights
+
+- Fixes Thunderstore/r2modman package-managed synchronization state so it stays under the active profile's `BepInEx/AutoModSync` directory.
+- Saves the package-manager launch context before applying synchronized files and relaunches Valheim through Steam with the original Doorstop/BepInEx profile arguments.
+- Restores automatic one-shot reconnect after a synchronization restart, including automatic continuation through the previously selected character.
+- Prevents duplicate reconnect dispatches and the false reconnect-timeout loop seen during package-managed restarts.
+- Keeps standalone/manual installation behavior and protocol version 4 unchanged.
 ## 2.4.7 highlights
 
 - Replaces the packed `version.dll` bootstrap with a transparent on-disk BepInEx layout.

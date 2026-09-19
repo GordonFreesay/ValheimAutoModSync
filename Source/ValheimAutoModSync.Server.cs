@@ -16,7 +16,7 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.server";
         public const string PluginName = "Valheim AutoModSync Server";
-        public const string PluginVersion = "2.4.7";
+        public const string PluginVersion = "2.4.8";
         public const int ProtocolVersion = 4;
 
         internal const string RpcHello = "AMS4_Hello";

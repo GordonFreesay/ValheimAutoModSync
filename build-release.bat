@@ -3,7 +3,7 @@ setlocal EnableExtensions DisableDelayedExpansion
 cd /d "%~dp0"
 title Valheim AutoModSync Release Builder
 
-set "AMS_VERSION=2.4.7"
+set "AMS_VERSION=2.4.8"
 set "ROOT=%~dp0"
 set "SOURCE=%ROOT%Source"
 set "CLIENTDIR=%ROOT%Client"
