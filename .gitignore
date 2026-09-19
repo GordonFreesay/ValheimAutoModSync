@@ -30,3 +30,5 @@ BepInEx/
 # Local release scratch
 _dist/
 _work/
+
+Dist/

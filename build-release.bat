@@ -3,7 +3,7 @@ setlocal EnableExtensions DisableDelayedExpansion
 cd /d "%~dp0"
 title Valheim AutoModSync Release Builder
 
-set "AMS_VERSION=2.4.5"
+set "AMS_VERSION=2.4.7"
 set "ROOT=%~dp0"
 set "SOURCE=%ROOT%Source"
 set "CLIENTDIR=%ROOT%Client"
@@ -142,7 +142,7 @@ echo   "%DIST%\ValheimAutoModSync-%AMS_VERSION%.zip"
 echo.
 echo This build contains no packed AutoModSync version.dll.
 rmdir /s /q "%WORK%" >nul 2>&1
-pause
+if not defined AMS_NO_PAUSE pause
 exit /b 0
 
 :PreparePinnedBepInEx
@@ -185,5 +185,5 @@ echo.
 echo Build failed.
 if defined WORK if exist "%WORK%" rmdir /s /q "%WORK%" >nul 2>&1
 :FailNoWork
-pause
+if not defined AMS_NO_PAUSE pause
 exit /b 1

@@ -31,7 +31,12 @@ internal static class Program
             Thread.Sleep(1500);
 
             string self = typeof(Program).Assembly.Location;
-            string amsRoot = Path.GetDirectoryName(self);
+            string helperDir = Path.GetDirectoryName(self);
+            string amsRoot = helperDir;
+            if (args.Length > 1 && !String.IsNullOrEmpty(args[1]))
+            {
+                amsRoot = Path.GetFullPath(args[1]);
+            }
             string bepinexRoot = Directory.GetParent(amsRoot).FullName;
             string gameRoot = Directory.GetParent(bepinexRoot).FullName;
             string pluginRoot = Path.Combine(bepinexRoot, "plugins");

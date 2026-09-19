@@ -16,7 +16,7 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.server";
         public const string PluginName = "Valheim AutoModSync Server";
-        public const string PluginVersion = "2.4.5";
+        public const string PluginVersion = "2.4.7";
         public const int ProtocolVersion = 4;
 
         internal const string RpcHello = "AMS4_Hello";
@@ -74,7 +74,7 @@ namespace ValheimAutoModSync
             _instance = this;
             _enabled = Config.Bind("General", "Enabled", true, "Enable the AutoModSync server role on this Valheim instance.");
             _excludePatterns = Config.Bind("General", "ExcludePatterns",
-                "ValheimAutoModSync.Server.dll;ValheimAutoModSync.Client.dll;*.pdb;*.mdb;*.log;*.tmp;*.bak;*.md",
+                "ValheimAutoModSync.Server.dll;ValheimAutoModSync.Client.dll;ValheimAutoModSync.Apply.exe;manifest.json;icon.png;README.md;CHANGELOG.md;LICENSE;THIRD-PARTY-NOTICES.md;*.pdb;*.mdb;*.log;*.tmp;*.bak;*.md",
                 "Semicolon-separated wildcard patterns that will not be sent to clients. Match is checked against both the relative path and file name.");
             _manifestCacheSeconds = Config.Bind("General", "ManifestCacheSeconds", 5, "How long the server caches plugin hashes before rescanning BepInEx\\plugins.");
             _chunkBytes = Config.Bind("Transfer", "ChunkBytes", 24576, "Raw file bytes per RPC chunk before Base64 encoding. 24576 is conservative for Valheim's RPC transport.");
@@ -98,8 +98,24 @@ namespace ValheimAutoModSync
         private static void LoadIdentity()
         {
             string path = Path.Combine(Paths.ConfigPath, "ValheimAutoModSync.private.xml");
+            string publicPath = Path.Combine(Paths.ConfigPath, "ValheimAutoModSync.public.xml");
+
             if (!File.Exists(path))
-                throw new FileNotFoundException("AutoModSync server identity is missing. Re-run install.bat and choose the appropriate server/host option.", path);
+            {
+                string parent = Path.GetDirectoryName(path);
+                if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
+
+                using (RSACryptoServiceProvider generated = new RSACryptoServiceProvider(2048))
+                {
+                    generated.PersistKeyInCsp = false;
+                    string privateXml = generated.ToXmlString(true);
+                    string generatedPublicXml = generated.ToXmlString(false);
+                    File.WriteAllText(path, privateXml + Environment.NewLine, new UTF8Encoding(false));
+                    File.WriteAllText(publicPath, generatedPublicXml + Environment.NewLine, new UTF8Encoding(false));
+                }
+
+                if (_instance != null) _instance.Logger.LogInfo("Generated a new AutoModSync server signing identity at " + path + ". Back up this private identity to preserve the server fingerprint.");
+            }
 
             string xml = File.ReadAllText(path).Trim();
             RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048);
@@ -107,6 +123,8 @@ namespace ValheimAutoModSync
             rsa.FromXmlString(xml);
             _signer = rsa;
             _publicKeyXml = rsa.ToXmlString(false);
+            if (!File.Exists(publicPath))
+                File.WriteAllText(publicPath, _publicKeyXml + Environment.NewLine, new UTF8Encoding(false));
             using (SHA256 sha = SHA256.Create()) _publicFingerprint = ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(_publicKeyXml)));
         }
 
@@ -430,7 +448,7 @@ namespace ValheimAutoModSync
                 // 2.4.5+: no packed game-root bootstrap is distributed or synchronized.
 
                 string releaseClientPlugin = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "ValheimAutoModSync.Client.dll");
-                if (File.Exists(releaseClientPlugin))
+                if (!IsPackageManagedAutoModSync() && File.Exists(releaseClientPlugin))
                 {
                     records.RemoveAll(delegate(FileRecord x) { return x.Kind == 'P' && String.Equals(x.RelativePath, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase); });
                     FileInfo cfi = new FileInfo(releaseClientPlugin);
@@ -463,10 +481,37 @@ namespace ValheimAutoModSync
             }
         }
 
+        private static bool IsPackageManagedAutoModSync()
+        {
+            try
+            {
+                string assemblyDir = Path.GetDirectoryName(typeof(ServerPlugin).Assembly.Location);
+                if (String.IsNullOrEmpty(assemblyDir)) return false;
+
+                string pluginRoot = Path.GetFullPath(Paths.PluginPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string actualDir = Path.GetFullPath(assemblyDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+                if (String.Equals(pluginRoot, actualDir, StringComparison.OrdinalIgnoreCase)) return false;
+
+                return File.Exists(Path.Combine(actualDir, "ValheimAutoModSync.Apply.exe"));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static bool IsExcluded(string relative, string name)
         {
             if (String.Equals(name, "ValheimAutoModSync.Server.dll", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "ValheimAutoModSync.Apply.exe", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "manifest.json", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "icon.png", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "README.md", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "CHANGELOG.md", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "LICENSE", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "THIRD-PARTY-NOTICES.md", StringComparison.OrdinalIgnoreCase)) return true;
             string raw = _excludePatterns == null ? "" : (_excludePatterns.Value ?? "");
             string[] patterns = raw.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
             int i;

@@ -19,7 +19,7 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.client";
         public const string PluginName = "Valheim AutoModSync Client";
-        public const string PluginVersion = "2.4.5";
+        public const string PluginVersion = "2.4.7";
         public const int ProtocolVersion = 4;
 
         private const string RpcHello = "AMS4_Hello";
@@ -93,6 +93,11 @@ namespace ValheimAutoModSync
         private void Awake()
         {
             _instance = this;
+            if (IsDedicatedServerProcess())
+            {
+                Logger.LogInfo("AutoModSync client role disabled on the Valheim dedicated-server process.");
+                return;
+            }
             try
             {
                 HideBepInExConsoleAndDisableFutureConsole();
@@ -110,6 +115,19 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 Logger.LogError("AutoModSync client startup failed: " + ex);
+            }
+        }
+
+        private static bool IsDedicatedServerProcess()
+        {
+            try
+            {
+                string processName = Process.GetCurrentProcess().ProcessName ?? "";
+                return processName.IndexOf("valheim_server", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -507,6 +525,11 @@ namespace ValheimAutoModSync
                 if (!long.TryParse(fields[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size < 0) continue;
                 string rel = NormalizeRelative(fields[3]);
                 if (rel.Length == 0) continue;
+                if (IsPackageManagedAutoModSync() && IsAutoModSyncOwnedRelativePath(rel))
+                {
+                    if (_instance != null) _instance.Logger.LogDebug("Ignoring server-advertised package-managed AutoModSync file: " + rel);
+                    continue;
+                }
                 ManifestEntry e = new ManifestEntry();
                 e.Kind = kind;
                 e.Sha256 = fields[1];
@@ -515,6 +538,43 @@ namespace ValheimAutoModSync
                 string local = SafeTargetPath(kind, rel);
                 if (!File.Exists(local) || !ConstantEquals(Sha256File(local), e.Sha256)) NeededFiles.Add(e);
             }
+        }
+
+        private static bool IsPackageManagedAutoModSync()
+        {
+            try
+            {
+                string assemblyDir = Path.GetDirectoryName(typeof(ClientPlugin).Assembly.Location);
+                if (String.IsNullOrEmpty(assemblyDir)) return false;
+
+                string pluginRoot = Path.GetFullPath(Paths.PluginPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string actualDir = Path.GetFullPath(assemblyDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+                if (String.Equals(pluginRoot, actualDir, StringComparison.OrdinalIgnoreCase)) return false;
+
+                return File.Exists(Path.Combine(actualDir, "ValheimAutoModSync.Apply.exe"));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsAutoModSyncOwnedRelativePath(string relative)
+        {
+            string name;
+            try
+            {
+                name = Path.GetFileName((relative ?? "").Replace('/', Path.DirectorySeparatorChar));
+            }
+            catch
+            {
+                return false;
+            }
+
+            return String.Equals(name, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(name, "ValheimAutoModSync.Server.dll", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(name, "ValheimAutoModSync.Apply.exe", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void RequestBundle()
@@ -720,12 +780,12 @@ namespace ValheimAutoModSync
                     if (_instance != null) _instance.Logger.LogWarning("AutoModSync has no reconnect endpoint; restarting without automatic reconnect.");
                 }
 
-                string helper = Path.Combine(amsRoot, "ValheimAutoModSync.Apply.exe");
+                string helper = FindApplyHelper(amsRoot);
                 if (!File.Exists(helper)) throw new FileNotFoundException("AutoModSync apply helper is missing.", helper);
 
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = helper;
-                psi.Arguments = Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture);
+                psi.Arguments = Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
                 psi.WindowStyle = ProcessWindowStyle.Hidden;
@@ -751,6 +811,22 @@ namespace ValheimAutoModSync
                 _restartRequested = false;
                 FailOpen("Mods downloaded but automatic apply/restart failed: " + ex.Message);
             }
+        }
+
+        private static string FindApplyHelper(string amsRoot)
+        {
+            try
+            {
+                string pluginDir = Path.GetDirectoryName(typeof(ClientPlugin).Assembly.Location);
+                if (!String.IsNullOrEmpty(pluginDir))
+                {
+                    string packaged = Path.Combine(pluginDir, "ValheimAutoModSync.Apply.exe");
+                    if (File.Exists(packaged)) return packaged;
+                }
+            }
+            catch { }
+
+            return Path.Combine(amsRoot, "ValheimAutoModSync.Apply.exe");
         }
 
         private static void ContinuePeerInfo()
