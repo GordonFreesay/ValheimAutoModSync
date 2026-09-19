@@ -88,6 +88,12 @@ internal static class Program
             // reconnect.txt is intentionally left in place. The newly loaded
             // AutoModSync client consumes it once and performs the reconnect through
             // Valheim's own FejdStartup/ServerJoinData flow after the main menu exists.
+            //
+            // Package managers such as Thunderstore/r2modman launch the real valheim.exe
+            // with profile-specific Doorstop arguments while BepInEx itself lives under
+            // the profile directory. Reuse that exact saved launch context first.
+            if (TryLaunchSavedContext(amsRoot)) return 0;
+
             string gameExe = Path.Combine(gameRoot, "valheim.exe");
             if (!File.Exists(gameExe)) return 3;
 
@@ -123,6 +129,118 @@ internal static class Program
         }
     }
 
+
+    private static bool TryLaunchSavedContext(string amsRoot)
+    {
+        string contextPath = Path.Combine(amsRoot, "launch-context.txt");
+        if (!File.Exists(contextPath)) return false;
+
+        string[] lines = File.ReadAllLines(contextPath);
+        if (lines.Length < 3 || !String.Equals(lines[0], "AMSLAUNCH1", StringComparison.Ordinal))
+            throw new InvalidDataException("AutoModSync package-manager launch context is invalid.");
+
+        string executable = DecodeLaunchField(lines[1]);
+        string workingDirectory = DecodeLaunchField(lines[2]);
+        if (String.IsNullOrEmpty(executable) || !File.Exists(executable))
+            throw new FileNotFoundException("Saved Valheim executable no longer exists.", executable);
+
+        if (String.IsNullOrEmpty(workingDirectory) || !Directory.Exists(workingDirectory))
+            workingDirectory = Path.GetDirectoryName(executable);
+
+        StringBuilder arguments = new StringBuilder();
+        int i;
+        for (i = 3; i < lines.Length; i++)
+        {
+            if (arguments.Length > 0) arguments.Append(' ');
+            arguments.Append(QuoteArgument(DecodeLaunchField(lines[i])));
+        }
+
+        // Package managers launch the game through Steam with Doorstop arguments.
+        // Re-enter through Steam as well so the replacement game receives a fresh
+        // process environment rather than inheriting Doorstop's runtime markers
+        // from the old injected Valheim process via this helper.
+        string steamExe = FindSteamExe();
+        if (!String.IsNullOrEmpty(steamExe) && File.Exists(steamExe))
+        {
+            ProcessStartInfo steam = new ProcessStartInfo();
+            steam.FileName = steamExe;
+            steam.Arguments = "-applaunch 892970" + (arguments.Length > 0 ? " " + arguments.ToString() : "");
+            steam.WorkingDirectory = Path.GetDirectoryName(steamExe);
+            steam.UseShellExecute = true;
+            Process.Start(steam);
+        }
+        else
+        {
+            // Last-resort direct relaunch if Steam cannot be located. Strip every
+            // inherited Doorstop variable and rely on the saved Doorstop CLI args
+            // to bootstrap the requested package-manager profile from scratch.
+            ProcessStartInfo relaunch = new ProcessStartInfo();
+            relaunch.FileName = executable;
+            relaunch.Arguments = arguments.ToString();
+            relaunch.WorkingDirectory = workingDirectory;
+            relaunch.UseShellExecute = false;
+            relaunch.CreateNoWindow = false;
+
+            System.Collections.Specialized.StringCollection remove = new System.Collections.Specialized.StringCollection();
+            foreach (string key in relaunch.EnvironmentVariables.Keys)
+            {
+                if (!String.IsNullOrEmpty(key) && key.StartsWith("DOORSTOP_", StringComparison.OrdinalIgnoreCase))
+                    remove.Add(key);
+            }
+            int r;
+            for (r = 0; r < remove.Count; r++) relaunch.EnvironmentVariables.Remove(remove[r]);
+
+            Process.Start(relaunch);
+        }
+
+        try { File.Delete(contextPath); } catch { }
+        return true;
+    }
+
+    private static string DecodeLaunchField(string encoded)
+    {
+        if (encoded == null) encoded = "";
+        return Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+    }
+
+    private static string QuoteArgument(string value)
+    {
+        if (value == null) value = "";
+        if (value.Length > 0 && value.IndexOfAny(new char[] { ' ', '\t', '"' }) < 0) return value;
+
+        StringBuilder sb = new StringBuilder();
+        sb.Append('"');
+        int backslashes = 0;
+        int i;
+        for (i = 0; i < value.Length; i++)
+        {
+            char c = value[i];
+            if (c == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                sb.Append('\\', (backslashes * 2) + 1);
+                sb.Append('"');
+                backslashes = 0;
+                continue;
+            }
+
+            if (backslashes > 0)
+            {
+                sb.Append('\\', backslashes);
+                backslashes = 0;
+            }
+            sb.Append(c);
+        }
+
+        if (backslashes > 0) sb.Append('\\', backslashes * 2);
+        sb.Append('"');
+        return sb.ToString();
+    }
 
     private static string FindSteamExe()
     {

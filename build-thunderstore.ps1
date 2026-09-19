@@ -67,7 +67,7 @@ $manifest = [ordered]@{
 $enc = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText((Join-Path $Package "manifest.json"), $manifest + [Environment]::NewLine, $enc)
 
-$Zip = Join-Path $Dist ("GordonFreesay-ValheimAutoModSync-" + $Version + "-Thunderstore.zip")
+$Zip = Join-Path $Dist ("GordonFreesay-ValheimAutoModSync-" + $Version + ".zip")
 if (Test-Path $Zip) { Remove-Item -LiteralPath $Zip -Force }
 Compress-Archive -Path (Join-Path $Package "*") -DestinationPath $Zip -Force
 

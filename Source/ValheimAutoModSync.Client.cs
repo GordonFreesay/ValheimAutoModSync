@@ -140,7 +140,7 @@ namespace ValheimAutoModSync
                 return;
             }
 
-            if (!_restartRequested && !_startupReconnectFinished && _startupReconnectTarget.Length > 0 && DateTime.UtcNow >= _startupReconnectNextUtc)
+            if (!_restartRequested && !_startupReconnectFinished && !_startupReconnectDispatched && _startupReconnectTarget.Length > 0 && DateTime.UtcNow >= _startupReconnectNextUtc)
             {
                 TryStartupReconnect();
             }
@@ -601,7 +601,7 @@ namespace ValheimAutoModSync
                 if (!long.TryParse(sizeText, NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size < 0 || chunks < 0 || files != NeededFiles.Count || String.IsNullOrEmpty(sha))
                     throw new InvalidDataException("Compressed package header did not match the requested sync.");
 
-                string stagingRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "staging");
+                string stagingRoot = Path.Combine(GetAutoModSyncRoot(), "staging");
                 if (!Directory.Exists(stagingRoot)) Directory.CreateDirectory(stagingRoot);
                 _bundlePath = Path.Combine(stagingRoot, "bundle.zip.amsnew");
                 _bundleStream = new FileStream(_bundlePath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -705,7 +705,7 @@ namespace ValheimAutoModSync
                     if (!expected.TryGetValue(name, out expectedEntry)) throw new InvalidDataException("Compressed package contained an unexpected file: " + name);
                     if (!extracted.Add(name)) throw new InvalidDataException("Compressed package contained a duplicate file: " + name);
 
-                    string stagingRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "staging", "plugins");
+                    string stagingRoot = Path.Combine(GetAutoModSyncRoot(), "staging", "plugins");
                     string output = SafeUnder(stagingRoot, expectedEntry.RelativePath) + ".amsnew";
                     string parent = Path.GetDirectoryName(output);
                     if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
@@ -762,7 +762,7 @@ namespace ValheimAutoModSync
             _restartRequested = true;
             try
             {
-                string amsRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync");
+                string amsRoot = GetAutoModSyncRoot();
                 if (!Directory.Exists(amsRoot)) Directory.CreateDirectory(amsRoot);
                 string pending = Path.Combine(amsRoot, "pending.txt");
                 File.WriteAllLines(pending, PendingRelativePaths.ToArray(), new UTF8Encoding(false));
@@ -779,6 +779,8 @@ namespace ValheimAutoModSync
                     try { if (File.Exists(reconnect)) File.Delete(reconnect); } catch { }
                     if (_instance != null) _instance.Logger.LogWarning("AutoModSync has no reconnect endpoint; restarting without automatic reconnect.");
                 }
+
+                PersistPackageManagedLaunchContext(amsRoot);
 
                 string helper = FindApplyHelper(amsRoot);
                 if (!File.Exists(helper)) throw new FileNotFoundException("AutoModSync apply helper is missing.", helper);
@@ -810,6 +812,54 @@ namespace ValheimAutoModSync
             {
                 _restartRequested = false;
                 FailOpen("Mods downloaded but automatic apply/restart failed: " + ex.Message);
+            }
+        }
+
+        private static void PersistPackageManagedLaunchContext(string amsRoot)
+        {
+            string launchContext = Path.Combine(amsRoot, "launch-context.txt");
+            if (!IsPackageManagedAutoModSync())
+            {
+                try { if (File.Exists(launchContext)) File.Delete(launchContext); } catch { }
+                return;
+            }
+
+            try
+            {
+                string executable = "";
+                try
+                {
+                    using (Process current = Process.GetCurrentProcess())
+                    {
+                        if (current.MainModule != null) executable = current.MainModule.FileName;
+                    }
+                }
+                catch { }
+
+                if (String.IsNullOrEmpty(executable) || !File.Exists(executable))
+                    throw new FileNotFoundException("Could not determine the running Valheim executable.", executable);
+
+                string workingDirectory = Environment.CurrentDirectory ?? "";
+                string[] commandLine = Environment.GetCommandLineArgs();
+                List<string> lines = new List<string>();
+                lines.Add("AMSLAUNCH1");
+                lines.Add(Convert.ToBase64String(Encoding.UTF8.GetBytes(executable)));
+                lines.Add(Convert.ToBase64String(Encoding.UTF8.GetBytes(workingDirectory)));
+
+                int i;
+                for (i = 1; i < commandLine.Length; i++)
+                {
+                    string argument = commandLine[i] ?? "";
+                    lines.Add(Convert.ToBase64String(Encoding.UTF8.GetBytes(argument)));
+                }
+
+                File.WriteAllLines(launchContext, lines.ToArray(), new UTF8Encoding(false));
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync saved package-manager launch context for modded restart.");
+            }
+            catch (Exception ex)
+            {
+                try { if (File.Exists(launchContext)) File.Delete(launchContext); } catch { }
+                throw new InvalidOperationException("Could not persist package-manager launch context.", ex);
             }
         }
 
@@ -892,7 +942,7 @@ namespace ValheimAutoModSync
         {
             try
             {
-                string reconnect = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "reconnect.txt");
+                string reconnect = Path.Combine(GetAutoModSyncRoot(), "reconnect.txt");
                 if (!File.Exists(reconnect)) return;
                 string b64 = File.ReadAllText(reconnect).Trim();
                 if (b64.Length == 0) return;
@@ -1003,7 +1053,7 @@ namespace ValheimAutoModSync
         {
             try
             {
-                string reconnect = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "reconnect.txt");
+                string reconnect = Path.Combine(GetAutoModSyncRoot(), "reconnect.txt");
                 if (File.Exists(reconnect)) File.Delete(reconnect);
             }
             catch { }
@@ -1357,6 +1407,27 @@ namespace ValheimAutoModSync
             return host + ":" + port.ToString(CultureInfo.InvariantCulture);
         }
 
+        private static string GetAutoModSyncRoot()
+        {
+            try
+            {
+                string assemblyDir = Path.GetDirectoryName(typeof(ClientPlugin).Assembly.Location);
+                if (!String.IsNullOrEmpty(assemblyDir))
+                {
+                    DirectoryInfo current = new DirectoryInfo(Path.GetFullPath(assemblyDir));
+                    while (current != null)
+                    {
+                        if (String.Equals(current.Name, "plugins", StringComparison.OrdinalIgnoreCase) && current.Parent != null)
+                            return Path.Combine(current.Parent.FullName, "AutoModSync");
+                        current = current.Parent;
+                    }
+                }
+            }
+            catch { }
+
+            return Path.Combine(Paths.BepInExRootPath, "AutoModSync");
+        }
+
         private static string SafePluginPath(string relative)
         {
             string rel = NormalizeRelative(relative);
@@ -1421,7 +1492,7 @@ namespace ValheimAutoModSync
         private static bool EnsureServerTrusted(string fingerprint)
         {
             if (String.IsNullOrEmpty(fingerprint) || fingerprint.Length != 64) return false;
-            string root = Path.Combine(Paths.BepInExRootPath, "AutoModSync");
+            string root = GetAutoModSyncRoot();
             string trusted = Path.Combine(root, "trusted-servers.txt");
             try
             {
@@ -1584,7 +1655,7 @@ namespace ValheimAutoModSync
         {
             // The external helper normally handles this after the previous process exits.
             // This fallback can safely finish plugin-file updates if the helper was interrupted.
-            string amsRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync");
+            string amsRoot = GetAutoModSyncRoot();
             string pending = Path.Combine(amsRoot, "pending.txt");
             if (!File.Exists(pending)) return;
             try
