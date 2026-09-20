@@ -8,6 +8,14 @@ using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using System.Reflection;
+
+[assembly: AssemblyTitle("Valheim AutoModSync Server")]
+[assembly: AssemblyDescription("Server-side signed manifest and synchronized BepInEx plugin transfer component.")]
+[assembly: AssemblyCompany("GordonFreesay")]
+[assembly: AssemblyProduct("Valheim AutoModSync")]
+[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyFileVersion("2.5.0.0")]
 
 namespace ValheimAutoModSync
 {
