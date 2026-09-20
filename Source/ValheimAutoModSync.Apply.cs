@@ -4,6 +4,14 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using Microsoft.Win32;
+using System.Reflection;
+
+[assembly: AssemblyTitle("Valheim AutoModSync Apply Helper")]
+[assembly: AssemblyDescription("Applies verified staged AutoModSync plugin files after Valheim exits, then relaunches Valheim.")]
+[assembly: AssemblyCompany("GordonFreesay")]
+[assembly: AssemblyProduct("Valheim AutoModSync")]
+[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyFileVersion("2.5.0.0")]
 
 internal static class Program
 {
