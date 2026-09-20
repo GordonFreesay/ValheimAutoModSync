@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.5.0
+
+- Moves AutoModSync preflight ahead of the normal Valheim ServerHandshake so Jotunn/Epic Loot and similar mod-compatibility checks run only after synchronization has had a chance to complete.
+- Holds/replays only Valheim's own ServerHandshake; third-party compatibility results are not bypassed or rewritten.
+- Adds an optional AMS4 preflight acknowledgement before potentially expensive manifest generation.
+- Keeps protocol version 4 / AMS4 for backward compatibility with 2.4.x peers.
+- Adds Authenticode signing/verification support for AutoModSync-authored release binaries.
+- Adds source-level intent/workflow documentation above every C# function.
+
 ## 2.4.8
 
 - Fixes Thunderstore/r2modman profile state-root handling during synchronization.
