@@ -19,10 +19,11 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.client";
         public const string PluginName = "Valheim AutoModSync Client";
-        public const string PluginVersion = "2.4.8";
+        public const string PluginVersion = "2.5.0";
         public const int ProtocolVersion = 4;
 
         private const string RpcHello = "AMS4_Hello";
+        private const string RpcAck = "AMS4_Ack";
         private const string RpcManifestBegin = "AMS4_ManifestBegin";
         private const string RpcManifestChunk = "AMS4_ManifestChunk";
         private const string RpcManifestEnd = "AMS4_ManifestEnd";
@@ -42,9 +43,14 @@ namespace ValheimAutoModSync
         private static int _capturedServerBackend = -1;
         private static bool _waitingForServer;
         private static bool _serverRecognized;
+        private static bool _serverAcknowledged;
         private static bool _allowPeerInfo;
+        private static bool _preflightGateActive;
+        private static bool _allowServerHandshake;
+        private static bool _serverHandshakeHeld;
         private static DateTime _helloSentUtc;
         private static readonly HashSet<ZRpc> Registered = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> PreflightComplete = new HashSet<ZRpc>();
 
         private static int _manifestPartCount;
         private static string _manifestSignature = "";
@@ -105,6 +111,7 @@ namespace ValheimAutoModSync
                 LoadStartupReconnectRequest();
                 Harmony harmony = new Harmony(PluginGuid);
                 harmony.PatchAll(typeof(OnNewConnectionPatch));
+                harmony.PatchAll(typeof(InvokeServerHandshakeGatePatch));
                 harmony.PatchAll(typeof(SendPeerInfoPatch));
                 harmony.PatchAll(typeof(ReconnectCharacterSelectionPatch));
                 harmony.PatchAll(typeof(ReconnectJoinServerPatch));
@@ -162,12 +169,17 @@ namespace ValheimAutoModSync
                 }
             }
 
-            if (_waitingForServer && !_serverRecognized && _pendingRpc != null)
+            if (_waitingForServer && _pendingRpc != null && _helloSentUtc != DateTime.MinValue)
             {
-                if ((DateTime.UtcNow - _helloSentUtc).TotalSeconds > 1.5)
+                double elapsed = (DateTime.UtcNow - _helloSentUtc).TotalSeconds;
+                if (!_serverAcknowledged && !_serverRecognized && elapsed > 1.75)
                 {
-                    Logger.LogDebug("No AutoModSync server response; continuing normal Valheim handshake.");
-                    ContinuePeerInfo();
+                    Logger.LogDebug("No AutoModSync server response; releasing the normal Valheim handshake.");
+                    FailOpen("No AutoModSync preflight response was received.");
+                }
+                else if (_serverAcknowledged && !_serverRecognized && elapsed > 15.0)
+                {
+                    FailOpen("AutoModSync server acknowledged preflight but did not begin a manifest within 15 seconds.");
                 }
             }
         }
@@ -278,6 +290,7 @@ namespace ValheimAutoModSync
                     if (_instance != null) _instance.Logger.LogInfo("AutoModSync reconnect created an outgoing Valheim connection; reconnect token cleared.");
                 }
                 RegisterRpc(peer.m_rpc);
+                PreparePreflightGate(peer.m_rpc);
             }
 
             private static void Postfix(ZNet __instance, ZNetPeer peer)
@@ -285,6 +298,23 @@ namespace ValheimAutoModSync
                 if (__instance == null || __instance.IsServer()) return;
                 if (peer == null || peer.m_rpc == null) return;
                 RegisterRpc(peer.m_rpc);
+                BeginPreflightProbe(peer.m_rpc);
+            }
+        }
+
+        [HarmonyPatch(typeof(ZRpc), "Invoke", new Type[] { typeof(string), typeof(object[]) })]
+        private static class InvokeServerHandshakeGatePatch
+        {
+            [HarmonyPriority(Priority.First)]
+            private static bool Prefix(ZRpc __instance, string method, object[] parameters)
+            {
+                if (_allowServerHandshake) return true;
+                if (!_preflightGateActive || __instance == null || __instance != _pendingRpc) return true;
+                if (!String.Equals(method, "ServerHandshake", StringComparison.Ordinal)) return true;
+
+                _serverHandshakeHeld = true;
+                if (_instance != null) _instance.Logger.LogDebug("AutoModSync held Valheim ServerHandshake until preflight completes.");
+                return false;
             }
         }
 
@@ -342,6 +372,8 @@ namespace ValheimAutoModSync
             {
                 if (__instance == null || __instance.IsServer() || _allowPeerInfo) return true;
                 if (rpc == null) return true;
+                if (PreflightComplete.Contains(rpc)) return true;
+                if (_preflightGateActive && rpc == _pendingRpc) return true;
 
                 RegisterRpc(rpc);
                 _pendingRpc = rpc;
@@ -362,6 +394,8 @@ namespace ValheimAutoModSync
                 }
                 _waitingForServer = true;
                 _serverRecognized = false;
+                _serverAcknowledged = false;
+                _preflightGateActive = false;
                 _helloSentUtc = DateTime.UtcNow;
                 ResetManifestState();
 
@@ -388,6 +422,7 @@ namespace ValheimAutoModSync
             try
             {
                 rpc.Register<ZPackage>(RpcHello, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcAck, new Action<ZRpc, ZPackage>(RPC_Ack));
                 rpc.Register<ZPackage>(RpcManifestBegin, new Action<ZRpc, ZPackage>(RPC_ManifestBegin));
                 rpc.Register<ZPackage>(RpcManifestChunk, new Action<ZRpc, ZPackage>(RPC_ManifestChunk));
                 rpc.Register<ZPackage>(RpcManifestEnd, new Action<ZRpc, ZPackage>(RPC_ManifestEnd));
@@ -406,6 +441,24 @@ namespace ValheimAutoModSync
         }
 
         private static void RPC_NoOp(ZRpc rpc, ZPackage pkg) { }
+
+        private static void RPC_Ack(ZRpc rpc, ZPackage pkg)
+        {
+            if (!_waitingForServer || rpc != _pendingRpc) return;
+            try
+            {
+                int protocol = pkg.ReadInt();
+                string serverVersion = "";
+                try { serverVersion = pkg.ReadString(); } catch { serverVersion = ""; }
+                if (protocol != ProtocolVersion) throw new InvalidDataException("AutoModSync protocol mismatch during preflight acknowledgement.");
+                _serverAcknowledged = true;
+                if (_instance != null) _instance.Logger.LogDebug("AutoModSync preflight acknowledged by server " + serverVersion + ".");
+            }
+            catch (Exception ex)
+            {
+                FailOpen("Invalid AutoModSync preflight acknowledgement: " + ex.Message);
+            }
+        }
 
         private static void RPC_ManifestBegin(ZRpc rpc, ZPackage pkg)
         {
@@ -426,6 +479,7 @@ namespace ValheimAutoModSync
                     throw new InvalidDataException("Invalid AutoModSync manifest size.");
                 if (String.IsNullOrEmpty(publicKeyXml) || publicKeyXml.Length > 16384 || String.IsNullOrEmpty(signature) || signature.Length > 16384)
                     throw new InvalidDataException("Invalid AutoModSync server identity.");
+                _serverAcknowledged = true;
                 _serverRecognized = true;
                 _manifestPartCount = parts;
                 _serverPublicKeyXml = publicKeyXml;
@@ -483,7 +537,7 @@ namespace ValheimAutoModSync
                 {
                     HideSyncOverlay();
                     if (_instance != null) _instance.Logger.LogInfo("AutoModSync: client mods already match the server.");
-                    ContinuePeerInfo();
+                    ResumeNormalHandshake();
                 }
                 else
                 {
@@ -879,6 +933,83 @@ namespace ValheimAutoModSync
             return Path.Combine(amsRoot, "ValheimAutoModSync.Apply.exe");
         }
 
+        private static void PreparePreflightGate(ZRpc rpc)
+        {
+            if (rpc == null || PreflightComplete.Contains(rpc)) return;
+
+            _pendingRpc = rpc;
+            _pendingPassword = "";
+            _waitingForServer = true;
+            _serverRecognized = false;
+            _serverAcknowledged = false;
+            _preflightGateActive = true;
+            _serverHandshakeHeld = false;
+            _helloSentUtc = DateTime.MinValue;
+            ResetManifestState();
+
+            _reconnectHost = GetReconnectTarget(rpc);
+            _reconnectBackend = _capturedServerBackend >= 0 ? _capturedServerBackend : GetCurrentOnlineBackend();
+            if (_instance != null && _reconnectHost.Length > 0)
+                _instance.Logger.LogDebug("AutoModSync preflight captured reconnect endpoint " + _reconnectHost + ".");
+        }
+
+        private static void BeginPreflightProbe(ZRpc rpc)
+        {
+            if (rpc == null || rpc != _pendingRpc || !_preflightGateActive || PreflightComplete.Contains(rpc)) return;
+            _helloSentUtc = DateTime.UtcNow;
+            try
+            {
+                ZPackage hello = new ZPackage();
+                hello.Write(ProtocolVersion);
+                hello.Write(PluginVersion);
+                rpc.Invoke(RpcHello, new object[] { hello });
+                if (_instance != null) _instance.Logger.LogDebug("AutoModSync preflight probe sent before Valheim ServerHandshake.");
+            }
+            catch (Exception ex)
+            {
+                FailOpen("AutoModSync preflight probe failed: " + ex.Message);
+            }
+        }
+
+        private static void ResumeNormalHandshake()
+        {
+            if (_preflightGateActive)
+            {
+                ZRpc rpc = _pendingRpc;
+                bool releaseServerHandshake = _serverHandshakeHeld;
+                _waitingForServer = false;
+                _serverRecognized = false;
+                _serverAcknowledged = false;
+                _preflightGateActive = false;
+                _serverHandshakeHeld = false;
+                _pendingRpc = null;
+                _helloSentUtc = DateTime.MinValue;
+                if (!_restartRequested) HideSyncOverlay();
+                ResetManifestState();
+
+                if (rpc != null) PreflightComplete.Add(rpc);
+                if (!releaseServerHandshake || rpc == null) return;
+
+                try
+                {
+                    _allowServerHandshake = true;
+                    rpc.Invoke("ServerHandshake", new object[0]);
+                    if (_instance != null) _instance.Logger.LogDebug("AutoModSync released Valheim ServerHandshake after preflight.");
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("Could not resume Valheim ServerHandshake: " + ex.Message);
+                }
+                finally
+                {
+                    _allowServerHandshake = false;
+                }
+                return;
+            }
+
+            ContinuePeerInfo();
+        }
+
         private static void ContinuePeerInfo()
         {
             ZRpc rpc = _pendingRpc;
@@ -910,7 +1041,7 @@ namespace ValheimAutoModSync
         {
             CloseBundleStream();
             if (_instance != null) _instance.Logger.LogWarning(reason + " AutoModSync will not modify files for this connection; continuing Valheim normally.");
-            ContinuePeerInfo();
+            ResumeNormalHandshake();
         }
 
         private static void ResetManifestState()
