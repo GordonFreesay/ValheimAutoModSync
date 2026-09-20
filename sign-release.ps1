@@ -57,7 +57,10 @@ $artifactMode = -not [string]::IsNullOrWhiteSpace($artifactDlib) -or -not [strin
 $pfxMode = -not [string]::IsNullOrWhiteSpace($pfx)
 $storeMode = -not [string]::IsNullOrWhiteSpace($thumbprint)
 
-$modeCount = @($artifactMode, $pfxMode, $storeMode | Where-Object { $_ }).Count
+$modeCount = 0
+if ($artifactMode) { $modeCount++ }
+if ($pfxMode) { $modeCount++ }
+if ($storeMode) { $modeCount++ }
 if ($modeCount -eq 0) { throw "No signing identity is configured. See SIGNING.md." }
 if ($modeCount -gt 1) { throw "Configure exactly one signing mode: Artifact Signing, PFX, or certificate thumbprint." }
 
