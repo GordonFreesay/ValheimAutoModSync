@@ -5,8 +5,8 @@ $root = $PSScriptRoot
 $sourceRoot = Join-Path $root "Source"
 $files = Get-ChildItem -LiteralPath $sourceRoot -Filter *.cs -File -Recurse
 
-# This intentionally matches the simple method style used by this repository.
-# It is a documentation guard, not a general-purpose C# parser.
+# These intentionally match the simple method/constructor style used by this repository.
+# This is a documentation guard, not a general-purpose C# parser.
 $methodPattern = '^[ 	]*(public|private|protected|internal)[ 	]+(static[ 	]+)?(extern[ 	]+)?([A-Za-z0-9_<>[],.?]+[ 	]+)+[A-Za-z0-9_]+[ 	]*('
 
 $failures = New-Object System.Collections.Generic.List[string]
@@ -15,7 +15,7 @@ foreach ($file in $files) {
     $lines = [System.IO.File]::ReadAllLines($file.FullName)
 
     for ($i = 0; $i -lt $lines.Length; $i++) {
-        if ($lines[$i] -notmatch $methodPattern) { continue }
+        if ($lines[$i] -notmatch $methodPattern -and $lines[$i] -notmatch $constructorPattern) { continue }
 
         $foundIntent = $false
         $j = $i - 1
