@@ -69,6 +69,7 @@ LICENSE                   MIT license for AutoModSync-authored code
 THIRD-PARTY-NOTICES.md    Bundled dependency attribution and license information
 SOURCE-WALKTHROUGH.md      End-to-end source, trust-boundary, handshake, and restart flow map
 SIGNING.md                 Authenticode/public-release signing workflow
+verify-source-docs.ps1      Checks that every C# function retains an Intent comment
 ```
 
 There are intentionally no nested `README.txt` files; this root `README.md` is the project documentation.
