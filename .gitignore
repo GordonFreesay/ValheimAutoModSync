@@ -32,3 +32,8 @@ _dist/
 _work/
 
 Dist/
+
+# Code-signing secrets / local metadata
+*.pfx
+*.p12
+artifact-signing-metadata.json
