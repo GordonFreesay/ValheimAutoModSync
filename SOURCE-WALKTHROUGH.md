@@ -51,6 +51,20 @@ The server plugin registers AMS4 RPCs on incoming Valheim connections and serves
 
 The server never opens a second listener or contacts an external download service.
 
+### Source/ValheimAutoModSync.Installer.cs
+
+The standalone GUI installer is the primary manual-distribution entry point for 2.5.0. It requires administrator elevation through its embedded Windows manifest because Steam installations commonly live under Program Files.
+
+It performs no network downloads. The release builder downloads the pinned BepInEx archive once at build time, verifies its fixed SHA-256, and places that archive under `Bundled/`. The installer verifies that same SHA-256 before extracting BepInEx for a dedicated-server install.
+
+The installer supports the same three roles as the fallback BAT file:
+
+- Client
+- Dedicated Server
+- Host & Play
+
+It preserves existing BepInEx installations, preserves existing server config/signing identity, refuses to overwrite an unknown `winhttp.dll`, and removes a legacy packed `version.dll` only when its SHA-256 matches the known historical AutoModSync bootstrap.
+
 ### Source/ValheimAutoModSync.Apply.cs
 
 The apply helper runs outside Valheim after a verified download. Its job is intentionally narrow:
@@ -114,7 +128,7 @@ The intended public-release path Authenticode-signs only AutoModSync-authored PE
 A source review of the four C# files shows the following intentional privileged surfaces:
 
 - **No HTTP/WebClient/HttpClient downloader exists in the C# runtime.** Plugin bytes are transferred only over Valheim's existing `ZRpc` connection. The separate build/install scripts may obtain the pinned BepInEx package and verify its fixed SHA-256.
-- **Process launch:** only the client starts `ValheimAutoModSync.Apply.exe`, and the helper starts Steam/Valheim for the requested restart.
+- **Process launch:** only the client starts `ValheimAutoModSync.Apply.exe`, and the helper starts Steam/Valheim for the requested restart. The installer itself does not launch downloaded code or fetch executables.
 - **Registry access:** BuildTool and the apply helper read Steam install locations; they do not write registry values.
 - **Native Windows imports:** the client imports only `MessageBox`, `GetConsoleWindow`, and `ShowWindow` for first-contact trust UI and console presentation.
 - **Filesystem mutation:** the client/helper write AutoModSync state/staging files and synchronized files beneath validated BepInEx plugin roots. The server writes its signing identity/cache files.
