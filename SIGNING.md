@@ -16,6 +16,7 @@ Only AutoModSync-authored PE files are signed:
 - `ValheimAutoModSync.Server.dll`
 - `ValheimAutoModSync.Apply.exe`
 - `AutoModSync.BuildTool.exe`
+- `ValheimAutoModSyncInstaller.exe`
 
 Third-party BepInEx / Unity Doorstop files, including `winhttp.dll`, are not re-signed.
 
