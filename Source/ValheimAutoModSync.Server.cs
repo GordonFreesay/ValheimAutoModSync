@@ -16,10 +16,11 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.server";
         public const string PluginName = "Valheim AutoModSync Server";
-        public const string PluginVersion = "2.4.8";
+        public const string PluginVersion = "2.5.0";
         public const int ProtocolVersion = 4;
 
         internal const string RpcHello = "AMS4_Hello";
+        internal const string RpcAck = "AMS4_Ack";
         internal const string RpcManifestBegin = "AMS4_ManifestBegin";
         internal const string RpcManifestChunk = "AMS4_ManifestChunk";
         internal const string RpcManifestEnd = "AMS4_ManifestEnd";
@@ -152,6 +153,7 @@ namespace ValheimAutoModSync
             try
             {
                 rpc.Register<ZPackage>(RpcHello, new Action<ZRpc, ZPackage>(RPC_Hello));
+                rpc.Register<ZPackage>(RpcAck, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcGetBundle, new Action<ZRpc, ZPackage>(RPC_GetBundle));
                 rpc.Register<ZPackage>(RpcGetBundleChunk, new Action<ZRpc, ZPackage>(RPC_GetBundleChunk));
                 rpc.Register<ZPackage>(RpcManifestBegin, new Action<ZRpc, ZPackage>(RPC_NoOp));
@@ -185,6 +187,11 @@ namespace ValheimAutoModSync
                     SendError(rpc, "AutoModSync protocol mismatch. Server=" + ProtocolVersion + " Client=" + protocol);
                     return;
                 }
+
+                ZPackage ack = new ZPackage();
+                ack.Write(ProtocolVersion);
+                ack.Write(PluginVersion);
+                rpc.Invoke(RpcAck, new object[] { ack });
 
                 EnsureManifest(false);
                 byte[] bytes = Encoding.UTF8.GetBytes(_manifestText);
