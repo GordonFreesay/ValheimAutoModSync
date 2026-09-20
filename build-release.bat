@@ -51,38 +51,7 @@ if not exist "%VALHEIMROOT%\valheim.exe" goto :BadClient
 if not exist "%VALHEIMROOT%\valheim_Data\Managed\assembly_valheim.dll" goto :BadClient
 
 echo Valheim path: "%VALHEIMROOT%"
-call :SignReleaseBinaries
-if not exist "%ROOT%sign-release.ps1" (
-  if /i "%AMS_REQUIRE_SIGNING%"=="1" (
-    echo ERROR: sign-release.ps1 is missing but a signed release was required.
-    exit /b 1
-  )
-  echo WARNING: sign-release.ps1 is missing. AutoModSync binaries will be unsigned.
-  exit /b 0
-)
-
-set "HAS_SIGNING_CONFIG="
-if defined AMS_ARTIFACT_SIGNING_DLIB set "HAS_SIGNING_CONFIG=1"
-if defined AMS_SIGN_PFX set "HAS_SIGNING_CONFIG=1"
-if defined AMS_SIGN_THUMBPRINT set "HAS_SIGNING_CONFIG=1"
-
-if not defined HAS_SIGNING_CONFIG (
-  if /i "%AMS_REQUIRE_SIGNING%"=="1" (
-    echo ERROR: signed release required, but no signing identity is configured.
-    echo See SIGNING.md.
-    exit /b 1
-  )
-  echo WARNING: no signing identity configured. AutoModSync binaries will be unsigned.
-  exit /b 0
-)
-
-echo Signing AutoModSync-authored binaries...
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT%sign-release.ps1' -Files @('%BUILDTOOL%','%CLIENTDLL%','%SERVERDLL%','%APPLYEXE%')"
-if errorlevel 1 exit /b 1
-set "SIGNING_STATUS=SIGNED AND VERIFIED"
-exit /b 0
-
-:PreparePinnedBepInEx
+call :PreparePinnedBepInEx
 if errorlevel 1 goto :Fail
 
 set "BEPINEX_DLL=%BEPSOURCE%\BepInEx\core\BepInEx.dll"
@@ -182,6 +151,37 @@ echo Authenticode status: %SIGNING_STATUS%
 echo This build contains no packed AutoModSync version.dll.
 rmdir /s /q "%WORK%" >nul 2>&1
 if not defined AMS_NO_PAUSE pause
+exit /b 0
+
+:SignReleaseBinaries
+if not exist "%ROOT%sign-release.ps1" (
+  if /i "%AMS_REQUIRE_SIGNING%"=="1" (
+    echo ERROR: sign-release.ps1 is missing but a signed release was required.
+    exit /b 1
+  )
+  echo WARNING: sign-release.ps1 is missing. AutoModSync binaries will be unsigned.
+  exit /b 0
+)
+
+set "HAS_SIGNING_CONFIG="
+if defined AMS_ARTIFACT_SIGNING_DLIB set "HAS_SIGNING_CONFIG=1"
+if defined AMS_SIGN_PFX set "HAS_SIGNING_CONFIG=1"
+if defined AMS_SIGN_THUMBPRINT set "HAS_SIGNING_CONFIG=1"
+
+if not defined HAS_SIGNING_CONFIG (
+  if /i "%AMS_REQUIRE_SIGNING%"=="1" (
+    echo ERROR: signed release required, but no signing identity is configured.
+    echo See SIGNING.md.
+    exit /b 1
+  )
+  echo WARNING: no signing identity configured. AutoModSync binaries will be unsigned.
+  exit /b 0
+)
+
+echo Signing AutoModSync-authored binaries...
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT%sign-release.ps1' -Files @('%BUILDTOOL%','%CLIENTDLL%','%SERVERDLL%','%APPLYEXE%')"
+if errorlevel 1 exit /b 1
+set "SIGNING_STATUS=SIGNED AND VERIFIED"
 exit /b 0
 
 :PreparePinnedBepInEx
