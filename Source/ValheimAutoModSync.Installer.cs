@@ -190,7 +190,7 @@ internal static class AutoModSyncInstaller
         // Intent: Updates the suggested path when the chosen install role changes between client/host and dedicated server.
         private void RoleChanged(object sender, EventArgs e)
         {
-            if (!_busy) DetectSuggestedPath();
+            if (_path != null && !_busy) DetectSuggestedPath();
         }
 
         // Intent: Lets the user explicitly choose a game/server folder rather than relying on auto-detection.
