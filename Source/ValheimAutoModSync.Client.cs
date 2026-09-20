@@ -12,6 +12,13 @@ using System.Security.Cryptography;
 using System.Text;
 using UnityEngine;
 
+[assembly: AssemblyTitle("Valheim AutoModSync Client")]
+[assembly: AssemblyDescription("Client-side Valheim plugin synchronization, trust, verification, restart, and reconnect component.")]
+[assembly: AssemblyCompany("GordonFreesay")]
+[assembly: AssemblyProduct("Valheim AutoModSync")]
+[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyFileVersion("2.5.0.0")]
+
 namespace ValheimAutoModSync
 {
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
