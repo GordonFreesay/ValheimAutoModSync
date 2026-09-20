@@ -85,7 +85,7 @@ internal static class AutoModSyncInstaller
         public int ExitCode { get; private set; }
 
         // Intent: Constructs the installer UI, defaults to the Client role, and performs read-only path auto-detection.
-        private InstallerForm()
+        internal InstallerForm()
         {
             Text = "Valheim AutoModSync " + ProductVersion + " Installer";
             StartPosition = FormStartPosition.CenterScreen;
