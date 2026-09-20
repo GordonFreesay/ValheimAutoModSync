@@ -51,7 +51,38 @@ if not exist "%VALHEIMROOT%\valheim.exe" goto :BadClient
 if not exist "%VALHEIMROOT%\valheim_Data\Managed\assembly_valheim.dll" goto :BadClient
 
 echo Valheim path: "%VALHEIMROOT%"
-call :PreparePinnedBepInEx
+call :SignReleaseBinaries
+if not exist "%ROOT%sign-release.ps1" (
+  if /i "%AMS_REQUIRE_SIGNING%"=="1" (
+    echo ERROR: sign-release.ps1 is missing but a signed release was required.
+    exit /b 1
+  )
+  echo WARNING: sign-release.ps1 is missing. AutoModSync binaries will be unsigned.
+  exit /b 0
+)
+
+set "HAS_SIGNING_CONFIG="
+if defined AMS_ARTIFACT_SIGNING_DLIB set "HAS_SIGNING_CONFIG=1"
+if defined AMS_SIGN_PFX set "HAS_SIGNING_CONFIG=1"
+if defined AMS_SIGN_THUMBPRINT set "HAS_SIGNING_CONFIG=1"
+
+if not defined HAS_SIGNING_CONFIG (
+  if /i "%AMS_REQUIRE_SIGNING%"=="1" (
+    echo ERROR: signed release required, but no signing identity is configured.
+    echo See SIGNING.md.
+    exit /b 1
+  )
+  echo WARNING: no signing identity configured. AutoModSync binaries will be unsigned.
+  exit /b 0
+)
+
+echo Signing AutoModSync-authored binaries...
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT%sign-release.ps1' -Files @('%BUILDTOOL%','%CLIENTDLL%','%SERVERDLL%','%APPLYEXE%')"
+if errorlevel 1 exit /b 1
+set "SIGNING_STATUS=SIGNED AND VERIFIED"
+exit /b 0
+
+:PreparePinnedBepInEx
 if errorlevel 1 goto :Fail
 
 set "BEPINEX_DLL=%BEPSOURCE%\BepInEx\core\BepInEx.dll"
@@ -101,34 +132,56 @@ if errorlevel 1 goto :Fail
 
 rem Sign AutoModSync-authored PE files before they are copied or packaged.
 call :SignReleaseBinaries
-if not exist "%ROOT%sign-release.ps1" (
-  if /i "%AMS_REQUIRE_SIGNING%"=="1" (
-    echo ERROR: sign-release.ps1 is missing but a signed release was required.
-    exit /b 1
-  )
-  echo WARNING: sign-release.ps1 is missing. AutoModSync binaries will be unsigned.
-  exit /b 0
-)
+if errorlevel 1 goto :Fail
+copy /y "%BUILDTOOL%" "%TOOLSDIR%\AutoModSync.BuildTool.exe" >nul
+if errorlevel 1 goto :Fail
 
-set "HAS_SIGNING_CONFIG="
-if defined AMS_ARTIFACT_SIGNING_DLIB set "HAS_SIGNING_CONFIG=1"
-if defined AMS_SIGN_PFX set "HAS_SIGNING_CONFIG=1"
-if defined AMS_SIGN_THUMBPRINT set "HAS_SIGNING_CONFIG=1"
+rem Build a normal, transparent client layout. No packed version.dll.
+if exist "%CLIENTDIR%\BepInEx" rmdir /s /q "%CLIENTDIR%\BepInEx"
+if exist "%CLIENTDIR%\version.dll" del /f /q "%CLIENTDIR%\version.dll"
+if exist "%CLIENTDIR%\version.template.dll" del /f /q "%CLIENTDIR%\version.template.dll"
+copy /y "%BEPSOURCE%\winhttp.dll" "%CLIENTDIR%\winhttp.dll" >nul
+copy /y "%BEPSOURCE%\doorstop_config.ini" "%CLIENTDIR%\doorstop_config.ini" >nul
+mkdir "%CLIENTDIR%\BepInEx\core" >nul 2>&1
+mkdir "%CLIENTDIR%\BepInEx\AutoModSync" >nul 2>&1
+xcopy "%BEPSOURCE%\BepInEx\core\*" "%CLIENTDIR%\BepInEx\core\" /E /I /Y /Q >nul
+copy /y "%CLIENTDLL%" "%CLIENTDIR%\ValheimAutoModSync.Client.dll" >nul
+copy /y "%APPLYEXE%" "%CLIENTDIR%\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe" >nul
+copy /y "%SERVERDLL%" "%SERVERDIR%\ValheimAutoModSync.Server.dll" >nul
+if errorlevel 1 goto :Fail
 
-if not defined HAS_SIGNING_CONFIG (
-  if /i "%AMS_REQUIRE_SIGNING%"=="1" (
-    echo ERROR: signed release required, but no signing identity is configured.
-    echo See SIGNING.md.
-    exit /b 1
-  )
-  echo WARNING: no signing identity configured. AutoModSync binaries will be unsigned.
-  exit /b 0
-)
+if exist "%DIST%" rmdir /s /q "%DIST%"
+mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client" >nul 2>&1
+mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Server" >nul 2>&1
+mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Tools" >nul 2>&1
+mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD_PARTY_LICENSES" >nul 2>&1
+copy /y "%ROOT%README.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\README.md" >nul
+copy /y "%ROOT%LICENSE" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\LICENSE" >nul
+copy /y "%ROOT%THIRD-PARTY-NOTICES.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD-PARTY-NOTICES.md" >nul
+copy /y "%ROOT%install.bat" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\install.bat" >nul
+copy /y "%CLIENTDIR%\ValheimAutoModSync.Client.dll" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\ValheimAutoModSync.Client.dll" >nul
+copy /y "%CLIENTDIR%\winhttp.dll" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\winhttp.dll" >nul
+copy /y "%CLIENTDIR%\doorstop_config.ini" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\doorstop_config.ini" >nul
+xcopy "%CLIENTDIR%\BepInEx\*" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\BepInEx\" /E /I /Y /Q >nul
+copy /y "%SERVERDIR%\ValheimAutoModSync.Server.dll" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Server\ValheimAutoModSync.Server.dll" >nul
+copy /y "%SERVERDIR%\server-config-example.cfg" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Server\server-config-example.cfg" >nul
+copy /y "%TOOLSDIR%\AutoModSync.BuildTool.exe" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Tools\AutoModSync.BuildTool.exe" >nul
+xcopy "%ROOT%THIRD_PARTY_LICENSES\*" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD_PARTY_LICENSES\" /E /I /Y /Q >nul
 
-echo Signing AutoModSync-authored binaries...
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT%sign-release.ps1' -Files @('%BUILDTOOL%','%CLIENTDLL%','%SERVERDLL%','%APPLYEXE%')"
-if errorlevel 1 exit /b 1
-set "SIGNING_STATUS=SIGNED AND VERIFIED"
+powershell.exe -NoLogo -NoProfile -Command "Compress-Archive -Path '%DIST%\ValheimAutoModSync-%AMS_VERSION%\*' -DestinationPath '%DIST%\ValheimAutoModSync-%AMS_VERSION%.zip' -Force"
+if errorlevel 1 goto :Fail
+
+echo.
+echo ============================================================
+echo   BUILD COMPLETE
+echo ============================================================
+echo Release ZIP:
+echo   "%DIST%\ValheimAutoModSync-%AMS_VERSION%.zip"
+echo.
+echo Authenticode status: %SIGNING_STATUS%
+echo This build contains no packed AutoModSync version.dll.
+rmdir /s /q "%WORK%" >nul 2>&1
+if not defined AMS_NO_PAUSE pause
 exit /b 0
 
 :PreparePinnedBepInEx
