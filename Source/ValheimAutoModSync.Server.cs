@@ -70,6 +70,8 @@ namespace ValheimAutoModSync
             public int FileCount;
         }
 
+        // Intent: BepInEx server entry point; binds server/transfer limits, loads the signing identity, clears stale cache files, and installs only the server-side connection hooks.
+        // The server uses Valheim's existing ZRpc connection and never opens a separate synchronization listener.
         private void Awake()
         {
             _instance = this;
@@ -96,6 +98,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Loads or creates the persistent RSA server identity used to sign manifests.
+        // Workflow: generates a 2048-bit keypair only when absent, writes the public key, and derives the fingerprint clients pin on first trust.
         private static void LoadIdentity()
         {
             string path = Path.Combine(Paths.ConfigPath, "ValheimAutoModSync.private.xml");
@@ -132,6 +136,7 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
         private static class NetworkPatches
         {
+            // Intent: Registers AutoModSync RPC handlers as early as possible for each incoming server-side ZNet connection.
             private static void Prefix(ZNet __instance, ZNetPeer peer)
             {
                 if (__instance == null || !__instance.IsServer()) return;
@@ -139,6 +144,7 @@ namespace ValheimAutoModSync
                 RegisterRpc(peer.m_rpc);
             }
 
+            // Intent: Repeats idempotent RPC registration after Valheim's OnNewConnection body, covering game-version/order differences without double-registering.
             private static void Postfix(ZNet __instance, ZNetPeer peer)
             {
                 if (__instance == null || !__instance.IsServer()) return;
@@ -147,6 +153,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Registers all AMS4 RPC names once on a peer's ZRpc.
+        // The server handles hello/bundle requests and installs no-op receivers for response-only message names so protocol traffic is explicit and bounded.
         private static void RegisterRpc(ZRpc rpc)
         {
             if (rpc == null || Registered.Contains(rpc)) return;
@@ -171,8 +179,11 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Safe placeholder for protocol messages that are response-only from the server's perspective.
         private static void RPC_NoOp(ZRpc rpc, ZPackage pkg) { }
 
+        // Intent: Handles the client's AMS4_Hello preflight probe.
+        // Workflow: validates protocol, immediately sends the optional 2.5.0 acknowledgement, builds/uses the signed manifest, then streams its header and ordered text chunks before normal Valheim mod validation begins.
         private static void RPC_Hello(ZRpc rpc, ZPackage pkg)
         {
             try
@@ -230,6 +241,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Builds a compressed package containing exactly the manifest records requested by this client.
+        // Security: every request is resolved against the current signed file map, duplicates are rejected, configured size limits are enforced, and only plugin-kind records can enter the archive.
         private static void RPC_GetBundle(ZRpc rpc, ZPackage pkg)
         {
             try
@@ -307,6 +320,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Serves one requested bundle chunk by index and emits the completion message when all chunks have been requested.
+        // The transfer is pull-based so ordering and memory usage remain predictable.
         private static void RPC_GetBundleChunk(ZRpc rpc, ZPackage pkg)
         {
             try
@@ -350,6 +365,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Resolves a client request string to one current FileRecord from the server's manifest map.
+        // Security: validates kind/path, refreshes the manifest if necessary, checks existence, and enforces the per-file size limit before returning a source path.
         private static FileRecord ResolveBundleRecord(string requested)
         {
             if (String.IsNullOrEmpty(requested) || requested.Length < 3 || requested[1] != ':')
@@ -371,6 +388,7 @@ namespace ValheimAutoModSync
             return record;
         }
 
+        // Intent: Removes per-client bundle-transfer state and deletes the temporary ZIP; safe to call after success or any failure.
         private static void CleanupBundle(ZRpc rpc)
         {
             BundleTransfer transfer;
@@ -382,6 +400,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Deletes abandoned AutoModSync bundle ZIPs older than six hours so interrupted transfers do not accumulate indefinitely.
         private static void CleanupOldBundleCache()
         {
             try
@@ -403,6 +422,7 @@ namespace ValheimAutoModSync
             catch { }
         }
 
+        // Intent: Formats byte counts into readable B/KB/MB/GB values for transfer logs.
         private static string FormatBytes(long value)
         {
             double n = value;
@@ -412,6 +432,7 @@ namespace ValheimAutoModSync
             return n.ToString(unit == 0 ? "0" : "0.0", CultureInfo.InvariantCulture) + " " + units[unit];
         }
 
+        // Intent: Sends a bounded AutoModSync error string over the existing peer RPC; failures while reporting are deliberately swallowed to avoid destabilizing Valheim networking.
         private static void SendError(ZRpc rpc, string message)
         {
             try
@@ -423,6 +444,8 @@ namespace ValheimAutoModSync
             catch { }
         }
 
+        // Intent: Scans BepInEx/plugins, hashes eligible files, builds the canonical manifest text/file map, and signs that exact text.
+        // Workflow: honors the short cache interval unless forced, excludes configured/non-distributable files, substitutes the release client payload for standalone installs, sorts paths deterministically, and publishes map/text/signature atomically under a lock.
         private static void EnsureManifest(bool force)
         {
             lock (ManifestLock)
@@ -488,6 +511,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Detects whether the server plugin itself is running from a package-manager subdirectory so standalone release-client payload behavior is not mixed into managed profiles.
         private static bool IsPackageManagedAutoModSync()
         {
             try
@@ -508,6 +532,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Applies the configured semicolon-separated exclusion patterns to both a relative path and its filename before a file can enter the synchronized manifest.
         private static bool IsExcluded(string relative, string name)
         {
             if (String.Equals(name, "ValheimAutoModSync.Server.dll", StringComparison.OrdinalIgnoreCase)) return true;
@@ -531,6 +556,7 @@ namespace ValheimAutoModSync
             return false;
         }
 
+        // Intent: Implements case-insensitive '*'/'?' wildcard matching for exclusion rules without invoking a shell or regular-expression engine.
         private static bool WildcardMatch(string text, string pattern)
         {
             text = (text ?? "").Replace('\\', '/');
@@ -547,6 +573,7 @@ namespace ValheimAutoModSync
             return p == pattern.Length;
         }
 
+        // Intent: Canonicalizes manifest relative paths and rejects parent traversal, drive/URI separators, tabs, and newline characters before they enter protocol data.
         private static string NormalizeRelative(string value)
         {
             if (value == null) return "";
@@ -555,6 +582,7 @@ namespace ValheimAutoModSync
             return value;
         }
 
+        // Intent: Converts an absolute plugin path to a normalized relative path rooted at BepInEx/plugins; used only after the scan has already enumerated beneath that root.
         private static string MakeRelative(string root, string full)
         {
             string r = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
@@ -563,12 +591,14 @@ namespace ValheimAutoModSync
             return f.Substring(r.Length);
         }
 
+        // Intent: Computes SHA-256 for a server file while permitting concurrent readers; the hash becomes the content identity advertised in the signed manifest.
         private static string Sha256File(string path)
         {
             using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
             using (SHA256 sha = SHA256.Create()) return ToHex(sha.ComputeHash(fs));
         }
 
+        // Intent: Signs the exact manifest bytes with the server's persistent RSA private key using SHA-256, returning Base64 for transport.
         private static string SignManifest(byte[] data)
         {
             if (_signer == null) throw new InvalidOperationException("AutoModSync signing identity is not loaded.");
@@ -577,6 +607,7 @@ namespace ValheimAutoModSync
         }
 
 
+        // Intent: Converts fingerprints/hashes to deterministic lowercase hexadecimal for logs, trust display, and comparisons.
         private static string ToHex(byte[] bytes)
         {
             StringBuilder sb = new StringBuilder(bytes.Length * 2);
