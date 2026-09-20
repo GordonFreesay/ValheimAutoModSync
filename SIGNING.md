@@ -1,6 +1,6 @@
 # AutoModSync release signing
 
-AutoModSync 2.4.9 is staged so public releases can be Authenticode-signed before packaging.
+AutoModSync 2.5.0 is staged so public releases can be Authenticode-signed before packaging.
 
 Supported signing backends:
 - Microsoft Artifact Signing / Trusted Signing via SignTool `/dlib` and metadata.
