@@ -5,6 +5,14 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Win32;
+using System.Reflection;
+
+[assembly: AssemblyTitle("AutoModSync Build Tool")]
+[assembly: AssemblyDescription("Release-build and server-identity utility for Valheim AutoModSync.")]
+[assembly: AssemblyCompany("GordonFreesay")]
+[assembly: AssemblyProduct("Valheim AutoModSync")]
+[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyFileVersion("2.5.0.0")]
 
 internal static class BuildTool
 {
