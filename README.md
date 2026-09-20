@@ -27,10 +27,14 @@ AutoModSync provides server-driven BepInEx plugin synchronization for Valheim ov
 Close Valheim and any running Valheim Dedicated Server first. Download and extract the appropriate `ValheimAutoModSync-2.5.0.zip` development/release package, then run:
 
 ```text
-install.bat
+ValheimAutoModSyncInstaller.exe
 ```
 
-Choose one of the install modes when prompted:
+The installer is now the primary standalone install path. It uses only files bundled in the release, verifies the pinned BepInEx archive before server-side installation, and does not download BepInEx or mods at runtime.
+
+`install.bat` remains included as a readable/manual fallback.
+
+Choose one of the install modes in the installer:
 
 1. **Client** — for players joining AutoModSync-enabled servers.
 2. **Dedicated Server** — installs the server component and prepares the synchronized client payload.
@@ -60,10 +64,11 @@ The generated server signing key (`ValheimAutoModSync.key`) is intentionally exc
 ```text
 Client/                  Normal visible BepInEx client runtime, AutoModSync plugin, and apply helper
 Server/                  Prebuilt server plugin and example configuration
-Source/                  AutoModSync source, including client, server, build tool, and apply helper
+Source/                  AutoModSync source, including client, server, installer, build tool, and apply helper
 Tools/                   Prebuilt release build tool
 build-release.bat        Windows release builder
-install.bat              End-user installer
+ValheimAutoModSyncInstaller.exe  Primary standalone installer in built release packages
+install.bat              Readable/manual fallback installer
 CHECKSUMS.txt             SHA-256 hashes for repository/package files
 LICENSE                   MIT license for AutoModSync-authored code
 THIRD-PARTY-NOTICES.md    Bundled dependency attribution and license information
@@ -103,7 +108,8 @@ The client runtime includes third-party BepInEx/Unity Doorstop components as nor
 - Adds an optional early AMS4 acknowledgement so a client can distinguish slow manifest generation from a non-AutoModSync server.
 - Preserves fail-open behavior for ordinary/non-AutoModSync servers.
 - Keeps protocol version 4 / AMS4 for compatibility with existing 2.4.x peers.
-- Adds Authenticode signing/verification tooling for AutoModSync-authored binaries and a signing-required public release entry point.
+- Adds a Windows GUI standalone installer that performs no runtime downloads; the verified BepInEx archive is bundled at release-build time.
+- Adds Authenticode signing/verification tooling for AutoModSync-authored binaries, including the installer, and a signing-required public release entry point.
 - Adds explicit function-level intent/workflow comments throughout every C# source file plus `SOURCE-WALKTHROUGH.md` for source review and automated analysis.
 
 ## 2.4.8 highlights
