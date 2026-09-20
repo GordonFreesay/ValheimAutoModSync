@@ -7,7 +7,8 @@ $files = Get-ChildItem -LiteralPath $sourceRoot -Filter *.cs -File -Recurse
 
 # These intentionally match the simple method/constructor style used by this repository.
 # This is a documentation guard, not a general-purpose C# parser.
-$methodPattern = '^[ 	]*(public|private|protected|internal)[ 	]+(static[ 	]+)?(extern[ 	]+)?([A-Za-z0-9_<>[],.?]+[ 	]+)+[A-Za-z0-9_]+[ 	]*('
+$methodPattern = '^[ \t]*(public|private|protected|internal)[ \t]+(static[ \t]+)?(extern[ \t]+)?([A-Za-z0-9_<>\[\],.?]+[ \t]+)+[A-Za-z0-9_]+[ \t]*\('
+$constructorPattern = '^[ \t]*(public|private|protected|internal)[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*\('
 
 $failures = New-Object System.Collections.Generic.List[string]
 
