@@ -109,6 +109,19 @@ The branch contains:
 
 The intended public-release path Authenticode-signs only AutoModSync-authored PE files, verifies their signatures before packaging, and fails a signing-required release if any signature is missing/invalid. Third-party BepInEx/Doorstop binaries are never re-signed as though they were authored by AutoModSync.
 
+## Review-surface inventory
+
+A source review of the four C# files shows the following intentional privileged surfaces:
+
+- **No HTTP/WebClient/HttpClient downloader exists in the C# runtime.** Plugin bytes are transferred only over Valheim's existing `ZRpc` connection. The separate build/install scripts may obtain the pinned BepInEx package and verify its fixed SHA-256.
+- **Process launch:** only the client starts `ValheimAutoModSync.Apply.exe`, and the helper starts Steam/Valheim for the requested restart.
+- **Registry access:** BuildTool and the apply helper read Steam install locations; they do not write registry values.
+- **Native Windows imports:** the client imports only `MessageBox`, `GetConsoleWindow`, and `ShowWindow` for first-contact trust UI and console presentation.
+- **Filesystem mutation:** the client/helper write AutoModSync state/staging files and synchronized files beneath validated BepInEx plugin roots. The server writes its signing identity/cache files.
+- **Cryptography:** server RSA signs manifests; client RSA verifies those signatures; SHA-256 identifies server keys, bundles, and synchronized files.
+
+These comments/inventories are intended to make review easier, not to replace review. A reviewer should treat executable statements, path checks, and cryptographic checks as authoritative.
+
 ## Review guidance
 
 For a security/code review, start with these functions:
