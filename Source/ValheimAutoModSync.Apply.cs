@@ -7,6 +7,8 @@ using Microsoft.Win32;
 
 internal static class Program
 {
+    // Intent: Out-of-process apply/relaunch entry point, started only after the client has downloaded and verified staged files.
+    // Workflow: waits for the old Valheim process to exit, atomically replaces staged plugin files where possible, preserves reconnect state, then relaunches through the saved package-manager context, Steam, or direct executable fallback.
     private static int Main(string[] args)
     {
         try
@@ -130,6 +132,8 @@ internal static class Program
     }
 
 
+    // Intent: Restores the exact executable/working-directory/argument context captured before a package-managed restart.
+    // Workflow: decodes the saved context, prefers a fresh Steam app launch with the saved Doorstop arguments, otherwise starts the executable directly after stripping inherited DOORSTOP_* environment variables.
     private static bool TryLaunchSavedContext(string amsRoot)
     {
         string contextPath = Path.Combine(amsRoot, "launch-context.txt");
@@ -197,12 +201,14 @@ internal static class Program
         return true;
     }
 
+    // Intent: Decodes one Base64 UTF-8 field from the saved launch-context file.
     private static string DecodeLaunchField(string encoded)
     {
         if (encoded == null) encoded = "";
         return Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
     }
 
+    // Intent: Quotes one Windows command-line argument using backslash/quote escaping compatible with normal Windows argv parsing.
     private static string QuoteArgument(string value)
     {
         if (value == null) value = "";
@@ -242,6 +248,8 @@ internal static class Program
         return sb.ToString();
     }
 
+    // Intent: Locates steam.exe without downloading or installing anything.
+    // Workflow: checks current-user and machine registry locations, then the normal Program Files directories.
     private static string FindSteamExe()
     {
         string value = ReadRegistryString(Registry.CurrentUser, @"Software\Valve\Steam", "SteamExe");
@@ -271,6 +279,7 @@ internal static class Program
         return "";
     }
 
+    // Intent: Reads a string-valued registry setting defensively; inaccessible or missing values resolve to an empty string instead of aborting relaunch.
     private static string ReadRegistryString(RegistryKey hive, string subKey, string valueName)
     {
         try
@@ -286,6 +295,8 @@ internal static class Program
         catch { return ""; }
     }
 
+    // Intent: Validates whether a string is a direct host:port or [IPv6]:port endpoint rather than a Steam/lobby identifier.
+    // Note: retained as a small validation helper even though reconnect consumption occurs in the client plugin.
     private static bool LooksLikeDirectEndpoint(string host)
     {
         if (String.IsNullOrEmpty(host)) return false;
@@ -311,11 +322,13 @@ internal static class Program
         return true;
     }
 
+    // Intent: Produces a simple quoted string after removing embedded quotes for legacy/safe command construction.
     private static string Quote(string s)
     {
         return "\"" + (s ?? "").Replace("\"", "") + "\"";
     }
 
+    // Intent: Normalizes a relative AutoModSync path and rejects absolute/parent-traversal/control-character forms before filesystem use.
     private static string NormalizeRelative(string value)
     {
         if (value == null) return "";
@@ -324,6 +337,7 @@ internal static class Program
         return value;
     }
 
+    // Intent: Resolves a normalized relative path underneath an expected root and verifies the resulting full path cannot escape that root.
     private static string SafeUnder(string root, string rel)
     {
         rel = NormalizeRelative(rel);
