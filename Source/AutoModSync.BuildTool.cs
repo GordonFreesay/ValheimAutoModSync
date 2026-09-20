@@ -18,6 +18,8 @@ internal static class BuildTool
         public string Sha;
     }
 
+    // Intent: Command-line entry point used by the release/installer scripts.
+    // Workflow: validates the requested subcommand, dispatches to identity/pack/findserver/sha256 helpers, and converts unexpected exceptions into a non-zero exit code.
     private static int Main(string[] args)
     {
         try
@@ -37,6 +39,7 @@ internal static class BuildTool
         }
     }
 
+    // Intent: Prints the supported BuildTool command syntax and returns the conventional usage-error exit code.
     private static int Usage()
     {
         Console.Error.WriteLine("Usage:");
@@ -48,6 +51,8 @@ internal static class BuildTool
     }
 
 
+    // Intent: Computes the SHA-256 of one file for deterministic integrity checks used by build and install scripts.
+    // Workflow: canonicalizes the path, opens the file read-only, hashes the bytes, and prints lowercase hexadecimal.
     private static int PrintSha256(string path)
     {
         path = Path.GetFullPath(path);
@@ -60,6 +65,8 @@ internal static class BuildTool
     }
 
 
+    // Intent: Locates a Valheim Dedicated Server installation without modifying anything.
+    // Workflow: builds candidates from nearby directories, Steam registry roots, libraryfolders.vdf, and common drive layouts, then returns the first folder containing valheim_server.exe.
     private static int FindServer(string packageRoot)
     {
         List<string> candidates = new List<string>();
@@ -109,6 +116,7 @@ internal static class BuildTool
         return 3;
     }
 
+    // Intent: Adds a Steam installation root from a registry value when that value exists and is readable; registry failures are intentionally non-fatal.
     private static void AddRegistrySteamRoot(List<string> roots, RegistryKey hive, string subkey, string valueName)
     {
         try
@@ -123,12 +131,15 @@ internal static class BuildTool
         catch { }
     }
 
+    // Intent: Converts a Steam root into the standard Valheim Dedicated Server candidate path and appends it to the search list.
     private static void AddSteamCandidate(List<string> candidates, string steamRoot)
     {
         if (String.IsNullOrEmpty(steamRoot)) return;
         candidates.Add(Path.Combine(steamRoot, "steamapps", "common", "Valheim dedicated server"));
     }
 
+    // Intent: Reads Steam libraryfolders.vdf and adds dedicated-server candidates from each declared library.
+    // Workflow: performs a deliberately small parser for quoted path entries rather than changing Steam state.
     private static void AddLibrariesFromVdf(List<string> candidates, string steamRoot)
     {
         try
@@ -152,6 +163,7 @@ internal static class BuildTool
         catch { }
     }
 
+    // Intent: Performs the final read-only server-root test by checking for valheim_server.exe.
     private static bool IsServerRoot(string path)
     {
         try
@@ -161,6 +173,8 @@ internal static class BuildTool
         catch { return false; }
     }
 
+    // Intent: Creates or preserves the server RSA signing identity used to authenticate AutoModSync manifests.
+    // Workflow: reuses an existing private key when present, otherwise generates a 2048-bit keypair, writes the public key, and prints its SHA-256 fingerprint.
     private static int EnsureIdentity(string privatePath, string publicPath)
     {
         privatePath = Path.GetFullPath(privatePath);
@@ -194,6 +208,8 @@ internal static class BuildTool
         return 0;
     }
 
+    // Intent: Legacy one-file bootstrap packer retained for historical tooling compatibility; current transparent releases do not use the packed version.dll design.
+    // Workflow: embeds only pinned bootstrap/runtime inputs plus AutoModSync files, records offsets/sizes/hashes in a manifest, and appends an AMS package footer.
     private static int Pack(string templatePath, string outputPath, string bootstrapRoot, string clientDll, string helperExe)
     {
         templatePath = Path.GetFullPath(templatePath);
@@ -268,6 +284,7 @@ internal static class BuildTool
         return 0;
     }
 
+    // Intent: Adds every file under a source directory to a legacy package-entry list while preserving relative paths and enforcing required-directory semantics.
     private static void AddDirectory(List<Entry> list, char mode, string sourceDir, string targetDir, bool required)
     {
         if (!Directory.Exists(sourceDir))
@@ -284,6 +301,8 @@ internal static class BuildTool
         }
     }
 
+    // Intent: Adds one validated source file to the legacy package-entry list.
+    // Security: rejects parent traversal, control characters, and tab-delimited manifest injection in embedded target paths.
     private static void AddFile(List<Entry> list, char mode, string source, string target, bool required)
     {
         if (!File.Exists(source))
@@ -300,6 +319,7 @@ internal static class BuildTool
         list.Add(e);
     }
 
+    // Intent: Writes a 64-bit integer in little-endian form so the legacy package footer has a deterministic binary layout.
     private static void WriteInt64(Stream s, long value)
     {
         byte[] b = BitConverter.GetBytes(value);
@@ -307,6 +327,7 @@ internal static class BuildTool
         s.Write(b, 0, b.Length);
     }
 
+    // Intent: Converts bytes to lowercase hexadecimal for hashes and fingerprints without culture-dependent formatting.
     private static string ToHex(byte[] bytes)
     {
         StringBuilder sb = new StringBuilder(bytes.Length * 2);
