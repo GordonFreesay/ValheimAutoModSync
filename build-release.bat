@@ -13,6 +13,7 @@ set "DIST=%ROOT%Dist"
 set "BEPINEX_VERSION=5.4.2350"
 set "BEPINEX_URL=https://gcdn.thunderstore.io/live/repository/packages/denikson-BepInExPack_Valheim-5.4.2350.zip"
 set "BEPINEX_SHA256=37a91c000b4e88f2ed7a4bd7d812239852d2e36cbf0ff0a9f5faacfba46b105f"
+set "SIGNING_STATUS=UNSIGNED"
 
 echo.
 echo ============================================================
@@ -98,6 +99,12 @@ if errorlevel 1 goto :Fail
 "%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /out:"%APPLYEXE%" "%SOURCE%\ValheimAutoModSync.Apply.cs"
 if errorlevel 1 goto :Fail
 
+rem Sign AutoModSync-authored PE files before they are copied or packaged.
+call :SignReleaseBinaries
+if errorlevel 1 goto :Fail
+copy /y "%BUILDTOOL%" "%TOOLSDIR%\AutoModSync.BuildTool.exe" >nul
+if errorlevel 1 goto :Fail
+
 rem Build a normal, transparent client layout. No packed version.dll.
 if exist "%CLIENTDIR%\BepInEx" rmdir /s /q "%CLIENTDIR%\BepInEx"
 if exist "%CLIENTDIR%\version.dll" del /f /q "%CLIENTDIR%\version.dll"
@@ -140,6 +147,7 @@ echo ============================================================
 echo Release ZIP:
 echo   "%DIST%\ValheimAutoModSync-%AMS_VERSION%.zip"
 echo.
+echo Authenticode status: %SIGNING_STATUS%
 echo This build contains no packed AutoModSync version.dll.
 rmdir /s /q "%WORK%" >nul 2>&1
 if not defined AMS_NO_PAUSE pause
