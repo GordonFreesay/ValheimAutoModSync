@@ -177,7 +177,7 @@ namespace ValheimAutoModSync
             if (_waitingForServer && _pendingRpc != null && _helloSentUtc != DateTime.MinValue)
             {
                 double elapsed = (DateTime.UtcNow - _helloSentUtc).TotalSeconds;
-                if (!_serverAcknowledged && !_serverRecognized && elapsed > 1.75)
+                if (!_serverAcknowledged && !_serverRecognized && elapsed > 3.0)
                 {
                     Logger.LogDebug("No AutoModSync server response; releasing the normal Valheim handshake.");
                     FailOpen("No AutoModSync preflight response was received.");
