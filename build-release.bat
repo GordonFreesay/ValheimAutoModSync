@@ -26,6 +26,11 @@ if exist "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" set "CSC=%WINDI
 if not defined CSC if exist "%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe" set "CSC=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 if not defined CSC goto :NoCompiler
 
+if exist "%ROOT%verify-source-docs.ps1" (
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-source-docs.ps1"
+  if errorlevel 1 goto :FailNoWork
+)
+
 set "WORK=%TEMP%\ValheimAutoModSync_Build_%RANDOM%_%RANDOM%"
 mkdir "%WORK%" >nul 2>&1
 if not exist "%CLIENTDIR%" mkdir "%CLIENTDIR%" >nul 2>&1
