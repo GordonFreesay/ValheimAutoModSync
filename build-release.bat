@@ -91,12 +91,15 @@ if exist "%ASSEMBLY_UTILS%" >>"%REFS%" echo /reference:"%ASSEMBLY_UTILS%"
 set "CLIENTDLL=%WORK%\ValheimAutoModSync.Client.dll"
 set "SERVERDLL=%WORK%\ValheimAutoModSync.Server.dll"
 set "APPLYEXE=%WORK%\ValheimAutoModSync.Apply.exe"
+set "INSTALLEREXE=%WORK%\ValheimAutoModSyncInstaller.exe"
 echo Compiling AutoModSync components...
 "%CSC%" @"%REFS%" /target:library /out:"%CLIENTDLL%" "%SOURCE%\ValheimAutoModSync.Client.cs"
 if errorlevel 1 goto :Fail
 "%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs"
 if errorlevel 1 goto :Fail
 "%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /out:"%APPLYEXE%" "%SOURCE%\ValheimAutoModSync.Apply.cs"
+if errorlevel 1 goto :Fail
+"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /out:"%INSTALLEREXE%" "%SOURCE%\ValheimAutoModSync.Installer.cs"
 if errorlevel 1 goto :Fail
 
 rem Sign AutoModSync-authored PE files before they are copied or packaged.
@@ -123,11 +126,16 @@ if exist "%DIST%" rmdir /s /q "%DIST%"
 mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client" >nul 2>&1
 mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Server" >nul 2>&1
 mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Tools" >nul 2>&1
+mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Bundled" >nul 2>&1
 mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD_PARTY_LICENSES" >nul 2>&1
 copy /y "%ROOT%README.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\README.md" >nul
 copy /y "%ROOT%LICENSE" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\LICENSE" >nul
 copy /y "%ROOT%THIRD-PARTY-NOTICES.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD-PARTY-NOTICES.md" >nul
 copy /y "%ROOT%install.bat" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\install.bat" >nul
+copy /y "%INSTALLEREXE%" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\ValheimAutoModSyncInstaller.exe" >nul
+if errorlevel 1 goto :Fail
+copy /y "%BEPZIP%" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Bundled\BepInExPack_Valheim-%BEPINEX_VERSION%.zip" >nul
+if errorlevel 1 goto :Fail
 copy /y "%CLIENTDIR%\ValheimAutoModSync.Client.dll" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\ValheimAutoModSync.Client.dll" >nul
 copy /y "%CLIENTDIR%\winhttp.dll" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\winhttp.dll" >nul
 copy /y "%CLIENTDIR%\doorstop_config.ini" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\doorstop_config.ini" >nul
@@ -179,7 +187,7 @@ if not defined HAS_SIGNING_CONFIG (
 )
 
 echo Signing AutoModSync-authored binaries...
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT%sign-release.ps1' -Files @('%BUILDTOOL%','%CLIENTDLL%','%SERVERDLL%','%APPLYEXE%')"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT%sign-release.ps1' -Files @('%BUILDTOOL%','%CLIENTDLL%','%SERVERDLL%','%APPLYEXE%','%INSTALLEREXE%')"
 if errorlevel 1 exit /b 1
 set "SIGNING_STATUS=SIGNED AND VERIFIED"
 exit /b 0
