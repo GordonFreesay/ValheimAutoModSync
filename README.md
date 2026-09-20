@@ -1,6 +1,7 @@
 # Valheim AutoModSync
 
-**Current release: 2.4.8**
+**Current public release: 2.4.8**  
+**Current development version: 2.5.0**
 
 AutoModSync provides server-driven BepInEx plugin synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's installed plugins, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
 
@@ -23,7 +24,7 @@ AutoModSync provides server-driven BepInEx plugin synchronization for Valheim ov
 
 ## Installation
 
-Close Valheim and any running Valheim Dedicated Server first. Download and extract `ValheimAutoModSync-2.4.8.zip`, then run:
+Close Valheim and any running Valheim Dedicated Server first. Download and extract the appropriate `ValheimAutoModSync-2.5.0.zip` development/release package, then run:
 
 ```text
 install.bat
@@ -66,6 +67,8 @@ install.bat              End-user installer
 CHECKSUMS.txt             SHA-256 hashes for repository/package files
 LICENSE                   MIT license for AutoModSync-authored code
 THIRD-PARTY-NOTICES.md    Bundled dependency attribution and license information
+SOURCE-WALKTHROUGH.md      End-to-end source, trust-boundary, handshake, and restart flow map
+SIGNING.md                 Authenticode/public-release signing workflow
 ```
 
 There are intentionally no nested `README.txt` files; this root `README.md` is the project documentation.
@@ -91,6 +94,16 @@ Valheim and Unity assemblies required for compilation are taken from the user's 
 AutoModSync-authored source is released under the **MIT License**. See `LICENSE`.
 
 The client runtime includes third-party BepInEx/Unity Doorstop components as normal visible files. Those components remain under their respective upstream licenses; see `THIRD-PARTY-NOTICES.md` and `THIRD_PARTY_LICENSES/`.
+
+## 2.5.0 development highlights
+
+- Moves AutoModSync discovery ahead of Valheim's normal `ServerHandshake` so Jotunn/Epic Loot and similar compatibility frameworks validate only after AutoModSync preflight has finished.
+- Holds and replays only the vanilla `ServerHandshake`; AutoModSync does not patch another mod's compatibility result or force an incompatible client to pass.
+- Adds an optional early AMS4 acknowledgement so a client can distinguish slow manifest generation from a non-AutoModSync server.
+- Preserves fail-open behavior for ordinary/non-AutoModSync servers.
+- Keeps protocol version 4 / AMS4 for compatibility with existing 2.4.x peers.
+- Adds Authenticode signing/verification tooling for AutoModSync-authored binaries and a signing-required public release entry point.
+- Adds explicit function-level intent/workflow comments throughout every C# source file plus `SOURCE-WALKTHROUGH.md` for source review and automated analysis.
 
 ## 2.4.8 highlights
 
