@@ -96,6 +96,8 @@ namespace ValheimAutoModSync
             public string RelativePath;
         }
 
+        // Intent: BepInEx client entry point; initializes only on the playable Valheim process, applies any safe leftover staging, restores reconnect state, and installs the Harmony hooks that drive synchronization.
+        // Workflow: the network hooks are installed before joining servers so AutoModSync can preflight before third-party compatibility checks.
         private void Awake()
         {
             _instance = this;
@@ -125,6 +127,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Prevents the client role from activating inside valheim_server.exe when the same package is installed on a dedicated server.
         private static bool IsDedicatedServerProcess()
         {
             try
@@ -138,6 +141,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Unity per-frame state machine for delayed quit, automatic reconnect, character continuation, and preflight timeouts.
+        // Compatibility: non-AutoModSync servers are released after a short discovery window; acknowledged AutoModSync servers get a longer manifest-start window.
         private void Update()
         {
             if (_restartRequested && !_quitIssued && _quitAfterUtc != DateTime.MinValue && DateTime.UtcNow >= _quitAfterUtc)
@@ -184,6 +189,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Draws the small in-game synchronization overlay and progress bar without depending on another UI framework.
         private void OnGUI()
         {
             if (!_overlayVisible) return;
@@ -256,6 +262,7 @@ namespace ValheimAutoModSync
             GUI.color = previousColor;
         }
 
+        // Intent: Sets the current synchronization status/detail text and marks the overlay visible.
         private static void ShowSyncOverlay(string status, string currentFile)
         {
             _overlayStatus = status ?? "";
@@ -263,6 +270,7 @@ namespace ValheimAutoModSync
             _overlayVisible = true;
         }
 
+        // Intent: Clears all overlay/progress state when synchronization is finished or the normal handshake is resumed.
         private static void HideSyncOverlay()
         {
             _overlayVisible = false;
@@ -279,6 +287,8 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
         private static class OnNewConnectionPatch
         {
+            // Intent: On the client side, registers AutoModSync RPC handlers and arms the preflight gate before Valheim's OnNewConnection body can send ServerHandshake.
+            // This early hook is what prevents Jotunn/other validators from rejecting a client before required files can be synchronized.
             private static void Prefix(ZNet __instance, ZNetPeer peer)
             {
                 if (__instance == null || __instance.IsServer()) return;
@@ -293,6 +303,7 @@ namespace ValheimAutoModSync
                 PreparePreflightGate(peer.m_rpc);
             }
 
+            // Intent: After Valheim has registered its normal connection RPCs, sends the AutoModSync preflight probe on the same ZRpc connection.
             private static void Postfix(ZNet __instance, ZNetPeer peer)
             {
                 if (__instance == null || __instance.IsServer()) return;
@@ -306,6 +317,8 @@ namespace ValheimAutoModSync
         private static class InvokeServerHandshakeGatePatch
         {
             [HarmonyPriority(Priority.First)]
+            // Intent: Intercepts only the outgoing vanilla ServerHandshake while AutoModSync preflight is active.
+            // Compatibility: every other RPC is untouched; the held ServerHandshake is replayed unchanged once preflight succeeds or fails open.
             private static bool Prefix(ZRpc __instance, string method, object[] parameters)
             {
                 if (_allowServerHandshake) return true;
@@ -321,6 +334,7 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(FejdStartup), "ShowCharacterSelection")]
         private static class ReconnectCharacterSelectionPatch
         {
+            // Intent: During restart reconnect, notices when Valheim reaches character selection and schedules the normal selected-character start action.
             private static void Postfix()
             {
                 if (!_startupReconnectDispatched || _restartRequested) return;
@@ -333,6 +347,7 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(FejdStartup), "JoinServer")]
         private static class ReconnectJoinServerPatch
         {
+            // Intent: Restores the originally captured online backend just before Valheim joins the saved dedicated endpoint, preserving Steam/crossplay routing semantics.
             private static void Postfix(FejdStartup __instance)
             {
                 if (!_startupReconnectForceBackend || _startupReconnectBackend < 0 || __instance == null) return;
@@ -359,6 +374,7 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(FejdStartup), "ProceedJoinRequest", new Type[] { typeof(ServerJoinData) })]
         private static class CaptureOriginalJoinRequestPatch
         {
+            // Intent: Captures the user's original ServerJoinData before Valheim transforms it, giving restart logic the cleanest available host/port source.
             private static void Prefix(ServerJoinData joinData)
             {
                 CaptureOriginalJoinRequest(joinData);
@@ -368,6 +384,8 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(ZNet), "SendPeerInfo")]
         private static class SendPeerInfoPatch
         {
+            // Intent: Legacy/fallback SendPeerInfo gate for connection paths that bypass the new pre-handshake gate.
+            // Compatibility: a connection already completed by preflight passes through untouched; otherwise the older AMS4 probe behavior is retained.
             private static bool Prefix(ZNet __instance, ZRpc rpc, string password)
             {
                 if (__instance == null || __instance.IsServer() || _allowPeerInfo) return true;
@@ -416,6 +434,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Registers all AMS4 RPC names exactly once on a ZRpc so manifest and bundle messages can be handled without replacing Valheim's own RPC table entries.
         private static void RegisterRpc(ZRpc rpc)
         {
             if (rpc == null || Registered.Contains(rpc)) return;
@@ -440,8 +459,11 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Safe placeholder for protocol messages that are outbound-only on the client; receiving one requires no action.
         private static void RPC_NoOp(ZRpc rpc, ZPackage pkg) { }
 
+        // Intent: Handles the optional 2.5.0 preflight acknowledgement sent before server manifest hashing.
+        // Workflow: validates protocol version, records that an AutoModSync server responded, and extends the timeout while manifest generation proceeds.
         private static void RPC_Ack(ZRpc rpc, ZPackage pkg)
         {
             if (!_waitingForServer || rpc != _pendingRpc) return;
@@ -460,6 +482,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Validates and records the signed-manifest header.
+        // Security: checks protocol, capabilities, bounded manifest size, public-key/signature presence, derives the server fingerprint, then starts the visible comparison phase.
         private static void RPC_ManifestBegin(ZRpc rpc, ZPackage pkg)
         {
             if (!_waitingForServer || rpc != _pendingRpc) return;
@@ -495,6 +519,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Accepts one numbered manifest text chunk only for the active server/RPC and stores it by index for ordered reconstruction.
         private static void RPC_ManifestChunk(ZRpc rpc, ZPackage pkg)
         {
             if (!_serverRecognized || rpc != _pendingRpc) return;
@@ -511,6 +536,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Reassembles and cryptographically verifies the complete server manifest, compares local files, then either resumes Valheim immediately or requests the verified change bundle.
+        // Trust: executable transfer begins only after the server fingerprint is accepted.
         private static void RPC_ManifestEnd(ZRpc rpc, ZPackage pkg)
         {
             if (!_serverRecognized || rpc != _pendingRpc) return;
@@ -563,6 +590,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Parses signed manifest rows into the exact set of missing or hash-mismatched plugin files.
+        // Package-manager safeguard: ignores AutoModSync-owned files when the current AutoModSync installation is itself managed by a profile.
         private static void BuildNeededList(string manifest)
         {
             NeededFiles.Clear();
@@ -594,6 +623,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Detects whether AutoModSync is running from a package-manager subdirectory rather than directly at BepInEx/plugins.
         private static bool IsPackageManagedAutoModSync()
         {
             try
@@ -614,6 +644,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Identifies filenames owned by AutoModSync itself so a package-managed install cannot be overwritten by a standalone server payload.
         private static bool IsAutoModSyncOwnedRelativePath(string relative)
         {
             string name;
@@ -631,6 +662,7 @@ namespace ValheimAutoModSync
                 || String.Equals(name, "ValheimAutoModSync.Apply.exe", StringComparison.OrdinalIgnoreCase);
         }
 
+        // Intent: Requests one compressed bundle containing only the manifest entries the client proved it needs.
         private static void RequestBundle()
         {
             CloseBundleStream();
@@ -642,6 +674,7 @@ namespace ValheimAutoModSync
             _pendingRpc.Invoke(RpcGetBundle, new object[] { request });
         }
 
+        // Intent: Validates the server's bundle header, creates the staging archive file, initializes byte/chunk counters, and requests the first chunk.
         private static void RPC_BundleBegin(ZRpc rpc, ZPackage pkg)
         {
             if (rpc != _pendingRpc || NeededFiles.Count == 0) return;
@@ -676,6 +709,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Appends exactly the next expected Base64-decoded bundle chunk to disk and advances the download state.
+        // Security: out-of-order or excess chunks abort the sync instead of being accepted.
         private static void RPC_BundleChunk(ZRpc rpc, ZPackage pkg)
         {
             if (rpc != _pendingRpc || _bundleStream == null) return;
@@ -698,6 +733,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Requests the current next bundle-chunk index; the server uses this pull model to keep transfer ordering deterministic.
         private static void RequestBundleChunk()
         {
             if (_pendingRpc == null || _bundleStream == null) return;
@@ -706,6 +742,7 @@ namespace ValheimAutoModSync
             _pendingRpc.Invoke(RpcGetBundleChunk, new object[] { request });
         }
 
+        // Intent: Finalizes the compressed bundle, verifies its declared hash/size/file count, extracts verified files into staging, and starts the restart/apply sequence.
         private static void RPC_BundleEnd(ZRpc rpc, ZPackage pkg)
         {
             if (rpc != _pendingRpc || NeededFiles.Count == 0) return;
@@ -736,6 +773,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Extracts only files explicitly present in the signed NeededFiles set into AutoModSync staging.
+        // Security: rejects unsafe, duplicate, unexpected, missing, wrong-size, or wrong-hash archive entries before any live plugin is replaced.
         private static void ExtractBundleToStaging()
         {
             Dictionary<string, ManifestEntry> expected = new Dictionary<string, ManifestEntry>(StringComparer.OrdinalIgnoreCase);
@@ -779,6 +818,7 @@ namespace ValheimAutoModSync
             if (extracted.Count != expected.Count) throw new InvalidDataException("Compressed package did not contain every requested file.");
         }
 
+        // Intent: Canonicalizes a ZIP entry to forward-slash relative form and rejects empty, dot, parent, or directory entries.
         private static string NormalizeZipEntry(string value)
         {
             if (String.IsNullOrEmpty(value)) return "";
@@ -793,6 +833,7 @@ namespace ValheimAutoModSync
             return String.Join("/", parts);
         }
 
+        // Intent: Formats byte counts into human-readable B/KB/MB/GB strings for logs and the sync overlay.
         private static string FormatBytes(long value)
         {
             double n = value;
@@ -802,6 +843,7 @@ namespace ValheimAutoModSync
             return n.ToString(unit == 0 ? "0" : "0.0", CultureInfo.InvariantCulture) + " " + units[unit];
         }
 
+        // Intent: Handles a server-reported AMS error for the active RPC and falls back to normal Valheim behavior without applying files.
         private static void RPC_Error(ZRpc rpc, ZPackage pkg)
         {
             if (rpc != _pendingRpc) return;
@@ -810,6 +852,8 @@ namespace ValheimAutoModSync
             FailOpen(message);
         }
 
+        // Intent: Persists the verified pending-file list and reconnect token, launches the external apply helper, disconnects cleanly, then schedules Valheim to quit.
+        // Reason: loaded plugin DLLs cannot be safely replaced in-process, so file replacement occurs after this process exits.
         private static void BeginApplyAndRestart()
         {
             if (_restartRequested) return;
@@ -869,6 +913,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Saves the exact executable, working directory, and command-line arguments used by a package-managed Valheim launch.
+        // Workflow: fields are Base64-encoded line-by-line so the apply helper can recreate the same Doorstop/profile launch after restart.
         private static void PersistPackageManagedLaunchContext(string amsRoot)
         {
             string launchContext = Path.Combine(amsRoot, "launch-context.txt");
@@ -917,6 +963,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Locates the apply helper beside a package-managed plugin when present, otherwise uses the normal BepInEx/AutoModSync helper path.
         private static string FindApplyHelper(string amsRoot)
         {
             try
@@ -933,6 +980,8 @@ namespace ValheimAutoModSync
             return Path.Combine(amsRoot, "ValheimAutoModSync.Apply.exe");
         }
 
+        // Intent: Arms the 2.5.0 pre-handshake gate for one outgoing ZRpc before vanilla ServerHandshake is emitted.
+        // Workflow: resets manifest state, records reconnect information, and marks this connection as waiting for an AMS preflight result.
         private static void PreparePreflightGate(ZRpc rpc)
         {
             if (rpc == null || PreflightComplete.Contains(rpc)) return;
@@ -953,6 +1002,7 @@ namespace ValheimAutoModSync
                 _instance.Logger.LogDebug("AutoModSync preflight captured reconnect endpoint " + _reconnectHost + ".");
         }
 
+        // Intent: Sends AMS4_Hello after Valheim has finished registering its base RPC handlers but before the held ServerHandshake is released.
         private static void BeginPreflightProbe(ZRpc rpc)
         {
             if (rpc == null || rpc != _pendingRpc || !_preflightGateActive || PreflightComplete.Contains(rpc)) return;
@@ -971,6 +1021,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Completes preflight and resumes the untouched normal connection flow.
+        // If the early gate held ServerHandshake it replays that RPC once; if running in the legacy SendPeerInfo path it delegates to ContinuePeerInfo instead.
         private static void ResumeNormalHandshake()
         {
             if (_preflightGateActive)
@@ -1010,6 +1062,7 @@ namespace ValheimAutoModSync
             ContinuePeerInfo();
         }
 
+        // Intent: Resumes the legacy SendPeerInfo path by invoking Valheim's original method under a one-call bypass flag so AutoModSync's own Harmony prefix does not intercept itself.
         private static void ContinuePeerInfo()
         {
             ZRpc rpc = _pendingRpc;
@@ -1037,6 +1090,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Central fail-open path for discovery/verification/transfer errors.
+        // Safety: closes any bundle stream, applies no unverified files, logs the reason, and releases the normal Valheim handshake.
         private static void FailOpen(string reason)
         {
             CloseBundleStream();
@@ -1044,6 +1099,7 @@ namespace ValheimAutoModSync
             ResumeNormalHandshake();
         }
 
+        // Intent: Clears per-manifest and per-bundle state so stale data from one connection cannot contaminate the next synchronization attempt.
         private static void ResetManifestState()
         {
             ManifestParts.Clear();
@@ -1060,6 +1116,7 @@ namespace ValheimAutoModSync
             CloseBundleStream();
         }
 
+        // Intent: Disposes and nulls the active staging bundle stream defensively; safe to call repeatedly.
         private static void CloseBundleStream()
         {
             if (_bundleStream != null)
@@ -1069,6 +1126,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Reads the one-shot reconnect token written before restart and schedules a Valheim-native reconnect after the main menu becomes usable.
         private void LoadStartupReconnectRequest()
         {
             try
@@ -1110,6 +1168,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Polls until Valheim's join UI/network objects are ready, then reconnects through ProceedJoinRequest or the closest native fallback.
+        // Failure handling: retries for a bounded period and removes the token on final failure.
         private void TryStartupReconnect()
         {
             _startupReconnectAttempts++;
@@ -1180,6 +1240,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Removes reconnect.txt after it has been consumed, superseded, or abandoned so restarts cannot loop forever.
         private static void DeleteReconnectToken()
         {
             try
@@ -1190,6 +1251,7 @@ namespace ValheimAutoModSync
             catch { }
         }
 
+        // Intent: Parses normalized host:port or [IPv6]:port text into a host string and validated UInt16 port for Valheim's dedicated-server join objects.
         private static bool TrySplitReconnectEndpoint(string target, out string host, out ushort port)
         {
             host = "";
@@ -1220,6 +1282,7 @@ namespace ValheimAutoModSync
             return true;
         }
 
+        // Intent: Captures direct dedicated host/port from the original join request before connection setup; non-dedicated join types are left for later ZNet resolution.
         private static void CaptureOriginalJoinRequest(ServerJoinData joinData)
         {
             try
@@ -1253,6 +1316,8 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Dynamically patches every ZNet.SetServerHost overload with one postfix to capture whatever endpoint/backend the running Valheim version actually selects.
+        // Compatibility: reflection avoids hard-coding one Valheim overload signature.
         private static void PatchServerTargetCapture(Harmony harmony)
         {
             try
@@ -1278,6 +1343,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Harmony postfix that inspects SetServerHost arguments, records a normalized endpoint, and captures the selected online-backend enum when available.
         private static void CaptureServerHostPostfix(object[] __args)
         {
             try
@@ -1317,6 +1383,7 @@ namespace ValheimAutoModSync
             catch { }
         }
 
+        // Intent: Converts an unknown reflected port object to a bounded integer port without throwing into the game's connection path.
         private static bool TryConvertPort(object value, out int port)
         {
             port = 0;
@@ -1329,6 +1396,7 @@ namespace ValheimAutoModSync
             catch { return false; }
         }
 
+        // Intent: Builds a canonical reconnect endpoint from host + port, adding IPv6 brackets when needed, then validates it through NormalizeReconnectTarget.
         private static string BuildReconnectEndpoint(string host, int port)
         {
             if (String.IsNullOrEmpty(host) || port < 1 || port > 65535) return "";
@@ -1351,6 +1419,7 @@ namespace ValheimAutoModSync
             return NormalizeReconnectTarget(candidate);
         }
 
+        // Intent: Reads Valheim's currently selected online backend through reflection, supporting either field or property layouts across game versions.
         private static int GetCurrentOnlineBackend()
         {
             try
@@ -1381,6 +1450,8 @@ namespace ValheimAutoModSync
             return -1;
         }
 
+        // Intent: Finds the best restart reconnect endpoint from captured join data, ZNet state, or finally the connected socket.
+        // Preference: direct host:port values are used; Steam IDs/lobby identifiers are deliberately rejected because they are not valid dedicated endpoints for this reconnect path.
         private static string GetReconnectTarget(ZRpc rpc)
         {
             string target = NormalizeReconnectTarget(_capturedServerTarget);
@@ -1459,6 +1530,7 @@ namespace ValheimAutoModSync
             return "";
         }
 
+        // Intent: Converts reflected Valheim address objects into text, including address types that expose a ToString(ref string, bool) formatter.
         private static string FormatServerAddress(object value)
         {
             if (value == null) return "";
@@ -1484,6 +1556,8 @@ namespace ValheimAutoModSync
             catch { return ""; }
         }
 
+        // Intent: Canonicalizes candidate reconnect strings and rejects whitespace, Steam/lobby IDs, invalid ports, wildcard addresses, and non-host:port forms.
+        // It also understands scheme prefixes, combined steamId/ip forms, and bracketed IPv6.
         private static string NormalizeReconnectTarget(string value)
         {
             if (String.IsNullOrEmpty(value)) return "";
@@ -1538,6 +1612,7 @@ namespace ValheimAutoModSync
             return host + ":" + port.ToString(CultureInfo.InvariantCulture);
         }
 
+        // Intent: Resolves the persistent AutoModSync state directory for both standalone and package-managed layouts by walking from the loaded plugin toward BepInEx/plugins.
         private static string GetAutoModSyncRoot()
         {
             try
@@ -1559,6 +1634,7 @@ namespace ValheimAutoModSync
             return Path.Combine(Paths.BepInExRootPath, "AutoModSync");
         }
 
+        // Intent: Resolves a synchronized plugin relative path beneath BepInEx/plugins and verifies full-path containment before returning it.
         private static string SafePluginPath(string relative)
         {
             string rel = NormalizeRelative(relative);
@@ -1570,6 +1646,7 @@ namespace ValheimAutoModSync
         }
 
 
+        // Intent: General containment helper for staging/state roots; rejects any normalized relative path whose full path escapes the supplied root.
         private static string SafeUnder(string rootPath, string relative)
         {
             string rel = NormalizeRelative(relative);
@@ -1580,6 +1657,7 @@ namespace ValheimAutoModSync
             return full;
         }
 
+        // Intent: Normalizes synchronized relative paths and rejects parent traversal, drive/URI separators, tabs, and newline characters.
         private static string NormalizeRelative(string value)
         {
             if (value == null) return "";
@@ -1588,18 +1666,23 @@ namespace ValheimAutoModSync
             return value;
         }
 
+        // Intent: Computes a file's SHA-256 while allowing other readers, used for local manifest comparison and post-extraction verification.
         private static string Sha256File(string path)
         {
             using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
             using (SHA256 sha = SHA256.Create()) return ToHex(sha.ComputeHash(fs));
         }
 
+        // Intent: Maps a manifest file-kind code to its permitted destination root.
+        // Current protocol intentionally supports only plugin files ('P'); unknown kinds are rejected.
         private static string SafeTargetPath(char kind, string relative)
         {
             if (kind == 'P') return SafePluginPath(relative);
             throw new InvalidDataException("Unsupported AutoModSync target kind.");
         }
 
+        // Intent: Verifies the server's RSA/SHA-256 manifest signature using only the public key delivered in the manifest header.
+        // Trust of that key is handled separately by fingerprint pinning.
         private static bool VerifyManifestSignature(string publicXml, string signatureBase64, byte[] data)
         {
             try
@@ -1615,11 +1698,14 @@ namespace ValheimAutoModSync
             catch { return false; }
         }
 
+        // Intent: Derives the stable SHA-256 fingerprint shown/pinned for a server's public signing key.
         private static string Fingerprint(string publicXml)
         {
             using (SHA256 sha = SHA256.Create()) return ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(publicXml ?? "")));
         }
 
+        // Intent: Implements first-contact server trust.
+        // Workflow: accepts an already-pinned fingerprint silently; otherwise shows a Windows confirmation dialog and persists the exact accepted fingerprint for future connections.
         private static bool EnsureServerTrusted(string fingerprint)
         {
             if (String.IsNullOrEmpty(fingerprint) || fingerprint.Length != 64) return false;
@@ -1654,9 +1740,11 @@ namespace ValheimAutoModSync
         }
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        // Intent: Native Windows MessageBox import used only for the explicit first-contact executable-code trust prompt.
         private static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
 
 
+        // Intent: Converts hash/fingerprint bytes into deterministic lowercase hexadecimal.
         private static string ToHex(byte[] bytes)
         {
             StringBuilder sb = new StringBuilder(bytes.Length * 2);
@@ -1665,6 +1753,7 @@ namespace ValheimAutoModSync
             return sb.ToString();
         }
 
+        // Intent: Compares equal-length strings without early exit so hash comparisons do not reveal the first differing character through timing.
         private static bool ConstantEquals(string a, string b)
         {
             if (a == null || b == null || a.Length != b.Length) return false;
@@ -1675,11 +1764,15 @@ namespace ValheimAutoModSync
         }
 
         [DllImport("kernel32.dll")]
+        // Intent: Native Windows API import used to find the BepInEx console window when present.
         private static extern IntPtr GetConsoleWindow();
 
         [DllImport("user32.dll")]
+        // Intent: Native Windows API import used to hide an already-open BepInEx console window.
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+        // Intent: Hides the current BepInEx console and updates BepInEx.cfg so future launches keep the console disabled.
+        // This affects presentation only; AutoModSync logging continues through BepInEx log files.
         private static void HideBepInExConsoleAndDisableFutureConsole()
         {
             try
@@ -1697,6 +1790,7 @@ namespace ValheimAutoModSync
         }
 
 
+        // Intent: Edits only the [Logging.Console] Enabled setting in BepInEx.cfg, preserving the rest of the file and writing through a temporary replacement file.
         private static void DisableBepInExConsoleInConfig()
         {
             string configPath = Path.Combine(Paths.BepInExRootPath, "config", "BepInEx.cfg");
@@ -1782,6 +1876,8 @@ namespace ValheimAutoModSync
             File.Delete(tempPath);
         }
 
+        // Intent: Startup fallback that finishes already-verified staged plugin replacements if the external apply helper was interrupted on the prior restart.
+        // Scope: it reads only AutoModSync pending entries and writes only contained plugin paths.
         private static void ApplyPreviouslyStagedFilesIfPossible()
         {
             // The external helper normally handles this after the previous process exits.
