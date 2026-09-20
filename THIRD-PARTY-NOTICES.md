@@ -2,6 +2,8 @@
 
 AutoModSync-authored code is licensed under the root `LICENSE` (MIT). The prebuilt client runtime carries third-party components supplied through the pinned BepInExPack Valheim runtime as normal visible files. Those components are not relicensed by the AutoModSync MIT license.
 
+The standalone 2.5.0 release also includes the original pinned BepInExPack archive under `Bundled/` so the GUI installer and fallback BAT installer do not need to download BepInEx at runtime. The release builder verifies the archive hash before packaging it, and the GUI installer verifies the same hash again before extracting it.
+
 The current release builder pins:
 
 - **BepInExPack Valheim 5.4.2350** — https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/
