@@ -1,5 +1,7 @@
 # AutoModSync 2.5.0 compatibility and signing plan
 
+**Branch status:** core pre-handshake gate, AMS4 acknowledgement, signing pipeline, and source-documentation pass are implemented on `ai/2.5.0-compat-signing`. Live Valheim/Jotunn/Epic Loot validation is still required before release.
+
 ## Goals
 
 1. Run AutoModSync synchronization before Valheim's normal client/server handshake reaches mod compatibility validators.
@@ -35,11 +37,11 @@ The gate is intentionally below Jotunn and other framework-specific handshake pa
 
 ### Non-AutoModSync servers
 
-If no AutoModSync acknowledgement/manifest is seen within the short discovery timeout, the held `ServerHandshake` is released and the connection continues normally.
+If no AutoModSync acknowledgement/manifest is seen within the short discovery timeout (currently 3 seconds), the held `ServerHandshake` is released and the connection continues normally.
 
 ### Slow manifests
 
-The server sends a lightweight acknowledgement before hashing/building the manifest. Once acknowledged, the client uses a longer manifest timeout instead of falling back while the server is still scanning plugins.
+The server sends a lightweight acknowledgement before hashing/building the manifest. Once acknowledged, the client uses a longer manifest-start timeout (currently 15 seconds) instead of falling back while the server is still scanning plugins.
 
 ### Dependency recovery
 
