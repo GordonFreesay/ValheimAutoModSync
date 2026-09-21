@@ -36,8 +36,10 @@ namespace ValheimAutoModSync
         private const string RpcManifestEnd = "AMS4_ManifestEnd";
         private const string RpcGetBundle = "AMS4_GetBundle";
         private const string RpcGetBundleChunk = "AMS4_GetBundleChunk";
+        private const string RpcGetBundleBatch = "AMS4_GetBundleBatch";
         private const string RpcBundleBegin = "AMS4_BundleBegin";
         private const string RpcBundleChunk = "AMS4_BundleChunk";
+        private const string RpcBundleBatch = "AMS4_BundleBatch";
         private const string RpcBundleEnd = "AMS4_BundleEnd";
         private const string RpcError = "AMS4_Error";
         private const int BundleWindowChunks = 16;
@@ -53,6 +55,7 @@ namespace ValheimAutoModSync
         private static bool _serverRecognized;
         private static bool _serverAcknowledged;
         private static bool _serverSupportsBundleWindow;
+        private static bool _serverSupportsBundleBatch;
         private static bool _allowPeerInfo;
         private static bool _preflightGateActive;
         private static bool _allowServerHandshake;
@@ -426,6 +429,7 @@ namespace ValheimAutoModSync
                 _serverRecognized = false;
                 _serverAcknowledged = false;
                 _serverSupportsBundleWindow = false;
+                _serverSupportsBundleBatch = false;
                 _preflightGateActive = false;
                 _helloSentUtc = DateTime.UtcNow;
                 ResetManifestState();
@@ -460,8 +464,10 @@ namespace ValheimAutoModSync
                 rpc.Register<ZPackage>(RpcManifestEnd, new Action<ZRpc, ZPackage>(RPC_ManifestEnd));
                 rpc.Register<ZPackage>(RpcGetBundle, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcGetBundleChunk, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcGetBundleBatch, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcBundleBegin, new Action<ZRpc, ZPackage>(RPC_BundleBegin));
                 rpc.Register<ZPackage>(RpcBundleChunk, new Action<ZRpc, ZPackage>(RPC_BundleChunk));
+                rpc.Register<ZPackage>(RpcBundleBatch, new Action<ZRpc, ZPackage>(RPC_BundleBatch));
                 rpc.Register<ZPackage>(RpcBundleEnd, new Action<ZRpc, ZPackage>(RPC_BundleEnd));
                 rpc.Register<ZPackage>(RpcError, new Action<ZRpc, ZPackage>(RPC_Error));
                 Registered.Add(rpc);
@@ -490,10 +496,12 @@ namespace ValheimAutoModSync
                 if (protocol != ProtocolVersion) throw new InvalidDataException("AutoModSync protocol mismatch during preflight acknowledgement.");
                 _serverAcknowledged = true;
                 _serverSupportsBundleWindow = capabilities.IndexOf("bundle-window1", StringComparison.Ordinal) >= 0;
+                _serverSupportsBundleBatch = capabilities.IndexOf("bundle-batch1", StringComparison.Ordinal) >= 0;
                 if (_instance != null)
                 {
                     _instance.Logger.LogDebug("AutoModSync preflight acknowledged by server " + serverVersion + ".");
-                    if (_serverSupportsBundleWindow) _instance.Logger.LogDebug("AutoModSync server supports windowed bundle transfer.");
+                    if (_serverSupportsBundleBatch) _instance.Logger.LogDebug("AutoModSync server supports binary batched bundle transfer.");
+                    else if (_serverSupportsBundleWindow) _instance.Logger.LogDebug("AutoModSync server supports windowed bundle transfer.");
                 }
             }
             catch (Exception ex)
@@ -722,7 +730,9 @@ namespace ValheimAutoModSync
                 _overlayBytesReceived = 0L;
                 _overlayBytesTotal = size;
                 ShowSyncOverlay("Downloading compressed mod package...", "");
-                if (_instance != null && _serverSupportsBundleWindow)
+                if (_instance != null && _serverSupportsBundleBatch)
+                    _instance.Logger.LogInfo("AutoModSync using binary batched bundle transfer (up to " + BundleWindowChunks.ToString(CultureInfo.InvariantCulture) + " chunks per request).");
+                else if (_instance != null && _serverSupportsBundleWindow)
                     _instance.Logger.LogInfo("AutoModSync using windowed bundle transfer (" + BundleWindowChunks.ToString(CultureInfo.InvariantCulture) + " chunks per request).");
                 RequestBundleChunk();
             }
@@ -757,17 +767,51 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Requests the next verified bundle-transfer window, or one chunk when connected to a legacy AMS4 server.
-        // Workflow: 2.5-capable servers receive a start index plus a bounded 16-chunk window so one RPC round trip can deliver many ordered chunks; the final index still requests the unchanged AMS4 completion message.
+        // Intent: Receives one binary batch containing several consecutive bundle chunks and appends them in strict manifest order.
+        // Performance: avoids Base64 expansion and collapses many ZRpc messages into one bounded package while retaining per-chunk ordering and final bundle SHA-256 verification.
+        private static void RPC_BundleBatch(ZRpc rpc, ZPackage pkg)
+        {
+            if (rpc != _pendingRpc || _bundleStream == null) return;
+            try
+            {
+                int start = pkg.ReadInt();
+                int count = pkg.ReadInt();
+                if (!_serverSupportsBundleBatch || start != _bundleNextChunk || count < 1 || count > BundleWindowChunks || start + count > _bundleTotalChunks)
+                    throw new InvalidDataException("Invalid compressed package batch.");
+
+                int i;
+                for (i = 0; i < count; i++)
+                {
+                    int index = pkg.ReadInt();
+                    byte[] data = pkg.ReadByteArray();
+                    if (index != _bundleNextChunk || data == null || data.Length < 1 || data.Length > 65536)
+                        throw new InvalidDataException("Out-of-order or oversized compressed package batch chunk.");
+                    _bundleStream.Write(data, 0, data.Length);
+                    _bundleBytesReceived += data.Length;
+                    _bundleNextChunk++;
+                }
+
+                _overlayBytesReceived = _bundleBytesReceived;
+                _overlayFileProgress = _bundleTotalChunks <= 0 ? 1f : Mathf.Clamp01(_bundleNextChunk / (float)_bundleTotalChunks);
+                RequestBundleChunk();
+            }
+            catch (Exception ex)
+            {
+                FailOpen("Compressed mod package batch download failed: " + ex.Message);
+            }
+        }
+
+        // Intent: Requests the next verified binary batch when supported, otherwise a bounded transfer window or one legacy AMS4 chunk.
+        // Workflow: binary-batch peers move several raw chunks in one RPC; window-capable peers use several ordered chunk RPCs per request; legacy peers retain the original single-chunk pull.
         private static void RequestBundleChunk()
         {
             if (_pendingRpc == null || _bundleStream == null) return;
-            int requestCount = _serverSupportsBundleWindow ? BundleWindowChunks : 1;
+            int requestCount = (_serverSupportsBundleBatch || _serverSupportsBundleWindow) ? BundleWindowChunks : 1;
             _bundleWindowEndExclusive = Math.Min(_bundleTotalChunks, _bundleNextChunk + requestCount);
             ZPackage request = new ZPackage();
             request.Write(_bundleNextChunk);
-            if (_serverSupportsBundleWindow) request.Write(requestCount);
-            _pendingRpc.Invoke(RpcGetBundleChunk, new object[] { request });
+            if (_serverSupportsBundleBatch || _serverSupportsBundleWindow) request.Write(requestCount);
+            _pendingRpc.Invoke(_serverSupportsBundleBatch ? RpcGetBundleBatch : RpcGetBundleChunk, new object[] { request });
         }
 
         // Intent: Finalizes the compressed bundle, verifies its declared hash/size/file count, extracts verified files into staging, and starts the restart/apply sequence.
@@ -1020,6 +1064,7 @@ namespace ValheimAutoModSync
             _serverRecognized = false;
             _serverAcknowledged = false;
             _serverSupportsBundleWindow = false;
+                _serverSupportsBundleBatch = false;
             _preflightGateActive = true;
             _serverHandshakeHeld = false;
             _heldServerHandshakeParameters = new object[0];
@@ -1103,6 +1148,7 @@ namespace ValheimAutoModSync
             _serverRecognized = false;
             _serverAcknowledged = false;
             _serverSupportsBundleWindow = false;
+            _serverSupportsBundleBatch = false;
             _pendingRpc = null;
             if (!_restartRequested) HideSyncOverlay();
             ResetManifestState();
