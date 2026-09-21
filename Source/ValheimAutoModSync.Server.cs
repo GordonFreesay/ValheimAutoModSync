@@ -9,6 +9,8 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using Steamworks;
 
 [assembly: AssemblyTitle("Valheim AutoModSync Server")]
 [assembly: AssemblyDescription("Server-side signed manifest and synchronized BepInEx plugin transfer component.")]
@@ -48,6 +50,7 @@ namespace ValheimAutoModSync
         private static ConfigEntry<int> _chunkBytes;
         private static ConfigEntry<int> _maxFileMiB;
         private static ConfigEntry<int> _maxBundleMiB;
+        private static ConfigEntry<int> _transferSendRateMax;
 
         private static readonly object ManifestLock = new object();
         private static readonly HashSet<ZRpc> Registered = new HashSet<ZRpc>();
@@ -78,6 +81,9 @@ namespace ValheimAutoModSync
             public int ChunkBytes;
             public int TotalChunks;
             public int FileCount;
+            public uint SteamConnectionHandle;
+            public int OriginalSendRateMax;
+            public bool SendRateRaised;
         }
 
         // Intent: BepInEx server entry point; binds server/transfer limits, loads the signing identity, clears stale cache files, and installs only the server-side connection hooks.
@@ -93,6 +99,7 @@ namespace ValheimAutoModSync
             _chunkBytes = Config.Bind("Transfer", "ChunkBytes", 24576, "Raw file bytes per RPC chunk before Base64 encoding. 24576 is conservative for Valheim's RPC transport.");
             _maxFileMiB = Config.Bind("Transfer", "MaxFileMiB", 128, "Refuse to transfer a single file larger than this many MiB.");
             _maxBundleMiB = Config.Bind("Transfer", "MaxBundleMiB", 2048, "Refuse to build a compressed change package larger than this many MiB.");
+            _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 8388608, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle. Valheim normally pins this near 153600 B/s. AutoModSync raises only the maximum, never the minimum, so Steam congestion control may still back off on weak links.");
 
             try
             {
@@ -314,6 +321,7 @@ namespace ValheimAutoModSync
                 transfer.ChunkBytes = rawChunk;
                 transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
                 transfer.FileCount = records.Count;
+                TryRaiseTransferSendRate(rpc, transfer);
                 BundleTransfers[rpc] = transfer;
 
                 ZPackage begin = new ZPackage();
@@ -475,12 +483,153 @@ namespace ValheimAutoModSync
             return record;
         }
 
+        // Intent: Temporarily raises only SteamNetworkingSockets' per-connection SendRateMax for the peer receiving an AutoModSync bundle.
+        // Compatibility: uses the dedicated-server Steam networking interface, unwraps common ServerSync-style socket decorators, leaves SendRateMin untouched, and fails open if the transport is not a Steam ZSteamSocket.
+        private static void TryRaiseTransferSendRate(ZRpc rpc, BundleTransfer transfer)
+        {
+            if (rpc == null || transfer == null || _transferSendRateMax == null) return;
+            int desired = Math.Max(153600, _transferSendRateMax.Value);
+            try
+            {
+                ZNetPeer peer = FindPeerForRpc(rpc);
+                if (peer == null || peer.m_socket == null) return;
+                object socket = UnwrapSocket(peer.m_socket);
+                if (socket == null || socket.GetType().Name != "ZSteamSocket") return;
+
+                FieldInfo conField = socket.GetType().GetField("m_con", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (conField == null) return;
+                object con = conField.GetValue(socket);
+                if (con == null) return;
+
+                uint handle = 0u;
+                FieldInfo[] fields = con.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                int i;
+                for (i = 0; i < fields.Length; i++)
+                {
+                    if (fields[i].FieldType == typeof(uint)) { handle = (uint)fields[i].GetValue(con); break; }
+                }
+                if (handle == 0u) return;
+
+                int before = ReadSteamConnectionInt(handle, ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax);
+                if (before <= 0 || before >= desired)
+                {
+                    if (_instance != null && before > 0) _instance.Logger.LogInfo("AutoModSync transfer Steam SendRateMax already " + before.ToString(CultureInfo.InvariantCulture) + " B/s; no temporary lift needed.");
+                    return;
+                }
+
+                if (!WriteSteamConnectionInt(handle, ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax, desired))
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync could not raise Steam SendRateMax for this transfer; continuing with Valheim's current transport rate.");
+                    return;
+                }
+
+                int after = ReadSteamConnectionInt(handle, ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax);
+                transfer.SteamConnectionHandle = handle;
+                transfer.OriginalSendRateMax = before;
+                transfer.SendRateRaised = true;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync temporarily raised Steam SendRateMax for bundle transfer: " + before.ToString(CultureInfo.InvariantCulture) + " -> " + after.ToString(CultureInfo.InvariantCulture) + " B/s.");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync Steam transfer-rate lift unavailable: " + ex.Message);
+            }
+        }
+
+        // Intent: Restores the peer's previous Steam SendRateMax after the AutoModSync bundle transfer ends or aborts.
+        private static void RestoreTransferSendRate(BundleTransfer transfer)
+        {
+            if (transfer == null || !transfer.SendRateRaised || transfer.SteamConnectionHandle == 0u || transfer.OriginalSendRateMax <= 0) return;
+            try
+            {
+                bool ok = WriteSteamConnectionInt(transfer.SteamConnectionHandle, ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax, transfer.OriginalSendRateMax);
+                if (_instance != null)
+                {
+                    if (ok) _instance.Logger.LogInfo("AutoModSync restored Steam SendRateMax after bundle transfer to " + transfer.OriginalSendRateMax.ToString(CultureInfo.InvariantCulture) + " B/s.");
+                    else _instance.Logger.LogWarning("AutoModSync could not restore the previous Steam SendRateMax after bundle transfer.");
+                }
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync could not restore Steam SendRateMax: " + ex.Message);
+            }
+            finally
+            {
+                transfer.SendRateRaised = false;
+            }
+        }
+
+        // Intent: Finds the current ZNet peer whose RPC object is servicing this AutoModSync request.
+        private static ZNetPeer FindPeerForRpc(ZRpc rpc)
+        {
+            if (rpc == null || ZNet.instance == null) return null;
+            try
+            {
+                List<ZNetPeer> peers = ZNet.instance.GetPeers();
+                int i;
+                for (i = 0; peers != null && i < peers.Count; i++)
+                    if (peers[i] != null && Object.ReferenceEquals(peers[i].m_rpc, rpc)) return peers[i];
+            }
+            catch { }
+            return null;
+        }
+
+        // Intent: Unwraps nested ServerSync/ConfigSync-style socket decorators by following an instance field named Original until the real transport is reached.
+        private static object UnwrapSocket(object socket)
+        {
+            int guard = 0;
+            object current = socket;
+            while (current != null && guard++ < 16 && current.GetType().Name == "BufferingSocket")
+            {
+                FieldInfo original = current.GetType().GetField("Original", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (original == null) break;
+                object next = original.GetValue(current);
+                if (next == null || Object.ReferenceEquals(next, current)) break;
+                current = next;
+            }
+            return current;
+        }
+
+        // Intent: Reads one int32 SteamNetworkingSockets setting at connection scope; returns -1 when the dedicated-server Steam interface cannot provide it.
+        private static int ReadSteamConnectionInt(uint handle, ESteamNetworkingConfigValue key)
+        {
+            IntPtr buffer = Marshal.AllocHGlobal(4);
+            try
+            {
+                Marshal.WriteInt32(buffer, 0);
+                ulong size = 4;
+                ESteamNetworkingConfigDataType dataType;
+                ESteamNetworkingGetConfigValueResult result = SteamGameServerNetworkingUtils.GetConfigValue(key,
+                    ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Connection, new IntPtr((long)handle), out dataType, buffer, ref size);
+                if (result != ESteamNetworkingGetConfigValueResult.k_ESteamNetworkingGetConfigValue_OK &&
+                    result != ESteamNetworkingGetConfigValueResult.k_ESteamNetworkingGetConfigValue_OKInherited) return -1;
+                return Marshal.ReadInt32(buffer);
+            }
+            catch { return -1; }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
+        // Intent: Writes one int32 SteamNetworkingSockets setting at connection scope using the dedicated-server interface.
+        private static bool WriteSteamConnectionInt(uint handle, ESteamNetworkingConfigValue key, int value)
+        {
+            IntPtr buffer = Marshal.AllocHGlobal(4);
+            try
+            {
+                Marshal.WriteInt32(buffer, value);
+                return SteamGameServerNetworkingUtils.SetConfigValue(key,
+                    ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Connection, new IntPtr((long)handle),
+                    ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, buffer);
+            }
+            catch { return false; }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
         // Intent: Removes per-client bundle-transfer state and deletes the temporary ZIP; safe to call after success or any failure.
         private static void CleanupBundle(ZRpc rpc)
         {
             BundleTransfer transfer;
             if (!BundleTransfers.TryGetValue(rpc, out transfer)) return;
             BundleTransfers.Remove(rpc);
+            RestoreTransferSendRate(transfer);
             if (transfer != null && !String.IsNullOrEmpty(transfer.ZipPath))
             {
                 try { if (File.Exists(transfer.ZipPath)) File.Delete(transfer.ZipPath); } catch { }
