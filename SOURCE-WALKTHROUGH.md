@@ -47,9 +47,11 @@ For large first-time synchronizations, 2.5.0 negotiates optional transfer capabi
 
 For Steam-backed dedicated-server peers, the server also temporarily raises only that connection's SteamNetworkingSockets `SendRateMax` while the bundle is active, then restores the previous ceiling. This avoids Valheim's low default send ceiling becoming the dominant bottleneck without globally changing gameplay traffic or raising `SendRateMin`.
 
+The client hello also advertises `roots1`. That capability means the client/apply helper understand the fixed `P`/ `R`/ `C` destinations. A server only requires it when its signed manifest actually contains patcher or config entries, so ordinary plugin-only AMS4 compatibility remains available.
+
 ### Source/ValheimAutoModSync.Server.cs
 
-The server plugin registers AMS4 RPCs on incoming Valheim connections and serves a deterministic signed view of eligible `BepInEx/plugins` files.
+The server plugin registers AMS4 RPCs on incoming Valheim connections and serves a deterministic signed view of eligible files from fixed BepInEx roots: plugins (`P`), patchers (`R`), and explicitly allowlisted config (`C`). Server-only/client-required pattern rules are applied before the canonical manifest is signed.
 
 2.5.0 adds an optional `AMS4_Ack` immediately after a valid hello and before manifest hashing. New clients use that acknowledgement to distinguish a slow manifest build from a non-AutoModSync server. Older clients ignore the unknown acknowledgement and continue to understand the existing AMS4 manifest messages.
 
@@ -74,7 +76,7 @@ It preserves existing BepInEx installations, preserves existing server config/si
 The apply helper runs outside Valheim after a verified download. Its job is intentionally narrow:
 
 - wait for the old Valheim process to exit;
-- move/replace only files listed in AutoModSync's pending staging file;
+- move/replace only files listed in AutoModSync's pending staging file, mapping each signed kind to the fixed plugins/patchers/config root;
 - preserve the reconnect token for the new client process;
 - relaunch through the captured package-manager/Steam context when available.
 
@@ -95,7 +97,7 @@ Current transparent releases do not use the old packed `version.dll` bootstrap.
 
 ```text
 verified bundle
-  -> staging/plugins/*.amsnew
+  -> staging/{plugins|patchers|config}/*.amsnew
   -> pending.txt
   -> reconnect.txt
   -> optional launch-context.txt
@@ -135,7 +137,7 @@ A source review of the five C# files shows the following intentional privileged 
 - **Process launch:** only the client starts `ValheimAutoModSync.Apply.exe`, and the helper starts Steam/Valheim for the requested restart. The installer itself does not launch downloaded code or fetch executables.
 - **Registry access:** BuildTool and the apply helper read Steam install locations; they do not write registry values.
 - **Native Windows imports:** the client imports only `MessageBox`, `GetConsoleWindow`, and `ShowWindow` for first-contact trust UI and console presentation.
-- **Filesystem mutation:** the client/helper write AutoModSync state/staging files and synchronized files beneath validated BepInEx plugin roots. The server writes its signing identity/cache files.
+- **Filesystem mutation:** the client/helper write AutoModSync state/staging files and synchronized files only beneath validated BepInEx plugin, patcher, or explicitly allowlisted config roots. Core/game-root/managed-assembly destinations are not manifest targets. The server writes its signing identity/cache files.
 - **Cryptography:** server RSA signs manifests; client RSA verifies those signatures; SHA-256 identifies server keys, bundles, and synchronized files.
 
 These comments/inventories are intended to make review easier, not to replace review. A reviewer should treat executable statements, path checks, and cryptographic checks as authoritative.
