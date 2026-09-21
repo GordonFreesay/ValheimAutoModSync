@@ -30,7 +30,6 @@ After the SignPath Foundation application is approved, configure:
 - `SIGNPATH_ORGANIZATION_ID`
 - `SIGNPATH_PROJECT_SLUG`
 - `SIGNPATH_SIGNING_POLICY_SLUG`
-- `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` when a non-default artifact configuration is used
 
 Public signing requests are intentionally made only from manually dispatched workflow runs. Normal pushes to `main` still build and upload the unsigned artifact so the GitHub-hosted build remains continuously verifiable.
 
