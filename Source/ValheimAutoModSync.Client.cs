@@ -438,6 +438,7 @@ namespace ValheimAutoModSync
                 _serverAcknowledged = false;
                 _serverSupportsBundleWindow = false;
                 _serverSupportsBundleBatch = false;
+                _serverSupportsBundlePipeline = false;
                 _preflightGateActive = false;
                 _helloSentUtc = DateTime.UtcNow;
                 ResetManifestState();
@@ -1131,6 +1132,7 @@ namespace ValheimAutoModSync
                 _serverAcknowledged = false;
                 _serverSupportsBundleWindow = false;
                 _serverSupportsBundleBatch = false;
+                _serverSupportsBundlePipeline = false;
                 _preflightGateActive = false;
                 _serverHandshakeHeld = false;
                 _heldServerHandshakeParameters = new object[0];
