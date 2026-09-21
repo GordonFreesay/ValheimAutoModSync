@@ -1096,6 +1096,8 @@ namespace ValheimAutoModSync
             string password = _pendingPassword;
             _waitingForServer = false;
             _serverRecognized = false;
+            _serverAcknowledged = false;
+            _serverSupportsBundleWindow = false;
             _pendingRpc = null;
             if (!_restartRequested) HideSyncOverlay();
             ResetManifestState();
