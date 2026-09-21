@@ -103,8 +103,10 @@ Expected AutoModSync sequence:
 ```text
 AutoModSync preflight acknowledged by server 2.5.0.
 AutoModSync: client mods already match the server.
-AutoModSync released Valheim ServerHandshake after preflight.
+AutoModSync released the original Valheim ServerHandshake with <N> argument(s) after preflight.
 ```
+
+The post-sync reconnect must proceed beyond this point without a server-side `EndOfStreamException in ZRpc::HandlePackage`. That exception is a regression indicator that the held vanilla handshake was not replayed byte-for-byte/argument-for-argument correctly.
 
 After that point, Jotunn/other frameworks should perform their normal checks. AutoModSync does not suppress their result.
 
