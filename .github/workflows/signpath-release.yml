@@ -1,4 +1,4 @@
-name: SignPath Release Build
+name: Release Build
 
 on:
   push:
@@ -101,7 +101,7 @@ jobs:
           path: ${{ runner.temp }}\signpath-signed\*
           if-no-files-found: error
 
-      - name: SignPath setup note
+      - name: Optional signing status
         if: ${{ github.event_name == 'workflow_dispatch' && (env.SIGNPATH_API_TOKEN == '' || env.SIGNPATH_ORGANIZATION_ID == '' || env.SIGNPATH_PROJECT_SLUG == '' || env.SIGNPATH_SIGNING_POLICY_SLUG == '') }}
         shell: pwsh
-        run: Write-Host 'Build and GitHub artifact upload succeeded. Add the SignPath secret/variables after Foundation approval to enable signing requests.'
+        run: Write-Host 'Build and GitHub artifact upload succeeded. Public releases are currently unsigned. Optional SignPath signing remains dormant unless valid SignPath credentials are configured in the future.'
