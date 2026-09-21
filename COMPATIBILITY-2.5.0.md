@@ -124,7 +124,7 @@ Signing improves publisher identity and SmartScreen reputation but cannot guaran
 
 ## 2.5.0 validation matrix
 
-Before release:
+Release-gate scenarios:
 
 | Scenario | Expected result |
 | --- | --- |
