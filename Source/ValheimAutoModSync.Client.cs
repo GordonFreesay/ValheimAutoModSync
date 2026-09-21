@@ -65,6 +65,8 @@ namespace ValheimAutoModSync
         private static bool _serverHandshakeHeld;
         private static object[] _heldServerHandshakeParameters = new object[0];
         private static DateTime _helloSentUtc;
+        private static DateTime _lastHelloAttemptUtc;
+        private static int _helloAttemptCount;
         private static readonly HashSet<ZRpc> Registered = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> PreflightComplete = new HashSet<ZRpc>();
 
@@ -198,10 +200,16 @@ namespace ValheimAutoModSync
 
             if (_waitingForServer && _pendingRpc != null && _helloSentUtc != DateTime.MinValue)
             {
-                double elapsed = (DateTime.UtcNow - _helloSentUtc).TotalSeconds;
-                if (!_serverAcknowledged && !_serverRecognized && elapsed > 3.0)
+                DateTime now = DateTime.UtcNow;
+                double elapsed = (now - _helloSentUtc).TotalSeconds;
+                if (!_serverAcknowledged && !_serverRecognized && _preflightGateActive && _helloAttemptCount < 5 &&
+                    (_lastHelloAttemptUtc == DateTime.MinValue || (now - _lastHelloAttemptUtc).TotalMilliseconds >= 600.0))
                 {
-                    Logger.LogDebug("No AutoModSync server response; releasing the normal Valheim handshake.");
+                    SendPreflightHello(_pendingRpc, true);
+                }
+                if (!_serverAcknowledged && !_serverRecognized && elapsed > 3.25)
+                {
+                    Logger.LogDebug("No AutoModSync server response after " + _helloAttemptCount.ToString(CultureInfo.InvariantCulture) + " probe attempt(s); releasing the normal Valheim handshake.");
                     FailOpen("No AutoModSync preflight response was received.");
                 }
                 else if (_serverAcknowledged && !_serverRecognized && elapsed > 15.0)
@@ -1086,10 +1094,13 @@ namespace ValheimAutoModSync
             _serverAcknowledged = false;
             _serverSupportsBundleWindow = false;
             _serverSupportsBundleBatch = false;
+            _serverSupportsBundlePipeline = false;
             _preflightGateActive = true;
             _serverHandshakeHeld = false;
             _heldServerHandshakeParameters = new object[0];
             _helloSentUtc = DateTime.MinValue;
+            _lastHelloAttemptUtc = DateTime.MinValue;
+            _helloAttemptCount = 0;
             ResetManifestState();
 
             _reconnectHost = GetReconnectTarget(rpc);
@@ -1098,11 +1109,19 @@ namespace ValheimAutoModSync
                 _instance.Logger.LogDebug("AutoModSync preflight captured reconnect endpoint " + _reconnectHost + ".");
         }
 
-        // Intent: Sends AMS4_Hello after Valheim has finished registering its base RPC handlers but before the held ServerHandshake is released.
+        // Intent: Starts the AMS4_Hello preflight after Valheim has registered its base RPC handlers while preserving the timestamp of the first attempt for the fail-open deadline.
         private static void BeginPreflightProbe(ZRpc rpc)
         {
             if (rpc == null || rpc != _pendingRpc || !_preflightGateActive || PreflightComplete.Contains(rpc)) return;
-            _helloSentUtc = DateTime.UtcNow;
+            if (_helloSentUtc == DateTime.MinValue) _helloSentUtc = DateTime.UtcNow;
+            SendPreflightHello(rpc, false);
+        }
+
+        // Intent: Sends or retries AMS4_Hello on the existing ZRpc without releasing the held vanilla handshake.
+        // Reliability: retries cover the short race where the client can enqueue its first custom RPC before the dedicated server has finished registering AutoModSync handlers for that new ZRpc.
+        private static void SendPreflightHello(ZRpc rpc, bool retry)
+        {
+            if (rpc == null || rpc != _pendingRpc || !_waitingForServer || _serverAcknowledged || _serverRecognized) return;
             try
             {
                 ZPackage hello = new ZPackage();
@@ -1110,11 +1129,23 @@ namespace ValheimAutoModSync
                 hello.Write(PluginVersion);
                 hello.Write(RootSyncCapability);
                 rpc.Invoke(RpcHello, new object[] { hello });
-                if (_instance != null) _instance.Logger.LogDebug("AutoModSync preflight probe sent before Valheim ServerHandshake.");
+                _lastHelloAttemptUtc = DateTime.UtcNow;
+                _helloAttemptCount++;
+                if (_instance != null)
+                    _instance.Logger.LogDebug("AutoModSync preflight probe " + _helloAttemptCount.ToString(CultureInfo.InvariantCulture) + (retry ? " retried." : " sent before Valheim ServerHandshake."));
             }
             catch (Exception ex)
             {
-                FailOpen("AutoModSync preflight probe failed: " + ex.Message);
+                if (retry)
+                {
+                    _lastHelloAttemptUtc = DateTime.UtcNow;
+                    _helloAttemptCount++;
+                    if (_instance != null) _instance.Logger.LogDebug("AutoModSync preflight retry failed: " + ex.Message);
+                }
+                else
+                {
+                    FailOpen("AutoModSync preflight probe failed: " + ex.Message);
+                }
             }
         }
 
@@ -1138,6 +1169,8 @@ namespace ValheimAutoModSync
                 _heldServerHandshakeParameters = new object[0];
                 _pendingRpc = null;
                 _helloSentUtc = DateTime.MinValue;
+                _lastHelloAttemptUtc = DateTime.MinValue;
+                _helloAttemptCount = 0;
                 if (!_restartRequested) HideSyncOverlay();
                 ResetManifestState();
 
