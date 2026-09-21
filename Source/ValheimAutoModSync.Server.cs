@@ -76,7 +76,6 @@ namespace ValheimAutoModSync
             public int ChunkBytes;
             public int TotalChunks;
             public int FileCount;
-            public FileStream Stream;
         }
 
         // Intent: BepInEx server entry point; binds server/transfer limits, loads the signing identity, clears stale cache files, and installs only the server-side connection hooks.
@@ -311,7 +310,6 @@ namespace ValheimAutoModSync
                 transfer.ChunkBytes = rawChunk;
                 transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
                 transfer.FileCount = records.Count;
-                transfer.Stream = null;
                 BundleTransfers[rpc] = transfer;
 
                 ZPackage begin = new ZPackage();
@@ -332,7 +330,7 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Serves one legacy chunk or a bounded 2.5 transfer window beginning at the requested chunk index, then emits the unchanged AMS4 completion message when the client requests TotalChunks.
-        // Performance: keeps the prepared ZIP stream open for the transfer and sends up to 16 sequential chunks per request, removing most per-chunk RPC round trips and file open/seek operations while preserving ordered delivery.
+        // Performance: opens/seeks the prepared ZIP once per requested window and sends up to 16 sequential chunks from that stream, removing most per-chunk RPC round trips and file open/seek operations while preserving ordered delivery.
         private static void RPC_GetBundleChunk(ZRpc rpc, ZPackage pkg)
         {
             try
@@ -358,21 +356,21 @@ namespace ValheimAutoModSync
                     return;
                 }
 
-                if (transfer.Stream == null) transfer.Stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                long expectedOffset = (long)index * transfer.ChunkBytes;
-                if (transfer.Stream.Position != expectedOffset) transfer.Stream.Seek(expectedOffset, SeekOrigin.Begin);
-
                 byte[] buffer = new byte[transfer.ChunkBytes];
-                int sent;
-                for (sent = 0; sent < requestedCount && index + sent < transfer.TotalChunks; sent++)
+                using (FileStream stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read))
                 {
-                    int read = transfer.Stream.Read(buffer, 0, buffer.Length);
-                    if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
+                    stream.Seek((long)index * transfer.ChunkBytes, SeekOrigin.Begin);
+                    int sent;
+                    for (sent = 0; sent < requestedCount && index + sent < transfer.TotalChunks; sent++)
+                    {
+                        int read = stream.Read(buffer, 0, buffer.Length);
+                        if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
 
-                    ZPackage chunk = new ZPackage();
-                    chunk.Write(index + sent);
-                    chunk.Write(Convert.ToBase64String(buffer, 0, read));
-                    rpc.Invoke(RpcBundleChunk, new object[] { chunk });
+                        ZPackage chunk = new ZPackage();
+                        chunk.Write(index + sent);
+                        chunk.Write(Convert.ToBase64String(buffer, 0, read));
+                        rpc.Invoke(RpcBundleChunk, new object[] { chunk });
+                    }
                 }
             }
             catch (Exception ex)
@@ -412,14 +410,9 @@ namespace ValheimAutoModSync
             BundleTransfer transfer;
             if (!BundleTransfers.TryGetValue(rpc, out transfer)) return;
             BundleTransfers.Remove(rpc);
-            if (transfer != null)
+            if (transfer != null && !String.IsNullOrEmpty(transfer.ZipPath))
             {
-                try { if (transfer.Stream != null) transfer.Stream.Dispose(); } catch { }
-                transfer.Stream = null;
-                if (!String.IsNullOrEmpty(transfer.ZipPath))
-                {
-                    try { if (File.Exists(transfer.ZipPath)) File.Delete(transfer.ZipPath); } catch { }
-                }
+                try { if (File.Exists(transfer.ZipPath)) File.Delete(transfer.ZipPath); } catch { }
             }
         }
 
