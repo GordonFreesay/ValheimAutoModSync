@@ -3,7 +3,7 @@
 **Current public release: 2.4.8**  
 **Current development version: 2.5.0**
 
-AutoModSync provides server-driven BepInEx plugin synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's installed plugins, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
+AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's synchronized BepInEx files, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
 
 - Website: https://gordonfreesay.com/AutoModSync
 - Repository: https://github.com/gordonfreesay/ValheimAutoModSync
@@ -11,7 +11,9 @@ AutoModSync provides server-driven BepInEx plugin synchronization for Valheim ov
 
 ## Features
 
-- Automatic server-to-client BepInEx plugin synchronization.
+- Automatic server-to-client BepInEx plugin synchronization, including recursive plugin subfolders.
+- 2.5.0 support for required `BepInEx\patchers` files and explicitly allowlisted `BepInEx\config` files.
+- Explicit server-only/client-required wildcard classification; config synchronization remains opt-in.
 - Uses Valheim's existing game connection; no separate AutoModSync sync port is required.
 - Transfers only missing or changed synchronized files.
 - Signed server manifest and SHA-256 file verification.
@@ -57,7 +59,7 @@ BepInEx plugins are executable .NET code. Only trust AutoModSync server fingerpr
 
 Each AutoModSync server has its own signing identity. The server signs its synchronization manifest, and files are checked against that manifest before being applied. A server's private signing key must not be distributed to clients.
 
-The generated server signing key (`ValheimAutoModSync.key`) is intentionally excluded by `.gitignore` and should never be committed.
+The generated server private signing identity (`BepInEx/config/ValheimAutoModSync.private.xml`) is intentionally excluded from synchronization and should never be distributed or committed.
 
 ## Repository layout
 
@@ -107,6 +109,8 @@ The client runtime includes third-party BepInEx/Unity Doorstop components as nor
 - Holds and replays only the vanilla `ServerHandshake`; AutoModSync does not patch another mod's compatibility result or force an incompatible client to pass.
 - Adds an optional early AMS4 acknowledgement so a client can distinguish slow manifest generation from a non-AutoModSync server.
 - Preserves fail-open behavior for ordinary/non-AutoModSync servers.
+- Adds fixed-root synchronization for required preloader patchers and explicit config allowlisting without allowing arbitrary game-root writes.
+- Adds server-only/client-required compatibility patterns for mixed dedicated-server mod sets.
 - Keeps protocol version 4 / AMS4 for compatibility with existing 2.4.x peers.
 - Adds a Windows GUI standalone installer that performs no runtime downloads; the verified BepInEx archive is bundled at release-build time.
 - Adds Authenticode signing/verification tooling for AutoModSync-authored binaries, including the installer, and a signing-required public release entry point.
