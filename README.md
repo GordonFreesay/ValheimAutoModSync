@@ -1,7 +1,6 @@
 # Valheim AutoModSync
 
-**Current public release: 2.4.8**  
-**Current development version: 2.5.0**
+**Current public release: 2.5.0**
 
 AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's synchronized BepInEx files, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
 
@@ -26,7 +25,7 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 
 ## Installation
 
-Close Valheim and any running Valheim Dedicated Server first. Download and extract the appropriate `ValheimAutoModSync-2.5.0.zip` development/release package, then run:
+Close Valheim and any running Valheim Dedicated Server first. Download and extract `ValheimAutoModSync-2.5.0.zip`, then run:
 
 ```text
 ValheimAutoModSyncInstaller.exe
@@ -103,27 +102,48 @@ AutoModSync-authored source is released under the **MIT License**. See `LICENSE`
 
 The client runtime includes third-party BepInEx/Unity Doorstop components as normal visible files. Those components remain under their respective upstream licenses; see `THIRD-PARTY-NOTICES.md` and `THIRD_PARTY_LICENSES/`.
 
-## 2.5.0 development highlights
+## Release notes (2.4.5+)
 
-- Moves AutoModSync discovery ahead of Valheim's normal `ServerHandshake` so Jotunn/Epic Loot and similar compatibility frameworks validate only after AutoModSync preflight has finished.
-- Holds and replays only the vanilla `ServerHandshake`; AutoModSync does not patch another mod's compatibility result or force an incompatible client to pass.
-- Adds an optional early AMS4 acknowledgement so a client can distinguish slow manifest generation from a non-AutoModSync server.
-- Preserves fail-open behavior for ordinary/non-AutoModSync servers.
-- Adds fixed-root synchronization for required preloader patchers and explicit config allowlisting without allowing arbitrary game-root writes.
-- Adds server-only/client-required compatibility patterns for mixed dedicated-server mod sets.
-- Keeps protocol version 4 / AMS4 for compatibility with existing 2.4.x peers.
-- Adds a Windows GUI standalone installer that performs no runtime downloads; the verified BepInEx archive is bundled at release-build time.
-- Adds Authenticode signing/verification tooling for AutoModSync-authored binaries, including the installer, and a signing-required public release entry point.
-- Adds explicit function-level intent/workflow comments throughout every C# source file plus `SOURCE-WALKTHROUGH.md` for source review and automated analysis.
+### 2.5.0
 
-## 2.4.8 highlights
+- Moves AutoModSync preflight ahead of the normal Valheim `ServerHandshake` so Jotunn/Epic Loot and similar mod-compatibility checks run only after synchronization has had a chance to complete.
+- Holds/replays only Valheim's own `ServerHandshake`; third-party compatibility results are not bypassed or rewritten.
+- Preserves and replays the exact original `ServerHandshake` argument list instead of synthesizing an empty call, preventing malformed-handshake `EndOfStreamException` failures on current Valheim builds.
+- Adds an optional AMS4 preflight acknowledgement before potentially expensive manifest generation.
+- Speeds up first-time/bare-client synchronization with backward-compatible windowed, binary-batch, and pipelined bundle transfer modes while retaining AMS4 fallbacks for older peers.
+- Tunes the live SteamNetworkingSockets connection only during AutoModSync bundle delivery, using an 8 MiB/s temporary minimum, 32 MiB/s maximum, and 16 MiB reliable buffer by default, then restores the exact previous values.
+- Retries the early `AMS4_Hello` inside the fail-open preflight window to cover startup races before the server has finished registering handlers.
+- Extends synchronization beyond `BepInEx/plugins`: required `BepInEx/patchers` files can now be synchronized to the patcher root, and selected `BepInEx/config` files can be synchronized through an explicit server allowlist.
+- Adds `ServerOnlyPatterns` and optional `ClientRequiredPatterns` compatibility classification so dedicated-server-only files do not have to be advertised to clients.
+- Keeps config synchronization opt-in and hard-blocks the AutoModSync signing identity files and loader-wide `BepInEx.cfg` from synchronized config manifests.
+- Keeps protocol version 4 / AMS4 for backward compatibility with 2.4.x peers.
+- Adds the Windows GUI standalone installer, Authenticode signing/verification tooling for AutoModSync-authored binaries, and source-level intent/workflow documentation.
 
-- Fixes Thunderstore/r2modman package-managed synchronization state so it stays under the active profile's `BepInEx/AutoModSync` directory.
-- Saves the package-manager launch context before applying synchronized files and relaunches Valheim through Steam with the original Doorstop/BepInEx profile arguments.
-- Restores automatic one-shot reconnect after a synchronization restart, including automatic continuation through the previously selected character.
-- Prevents duplicate reconnect dispatches and the false reconnect-timeout loop seen during package-managed restarts.
-- Keeps standalone/manual installation behavior and protocol version 4 unchanged.
-## 2.4.7 highlights
+### 2.4.8
+
+- Fixes Thunderstore/r2modman profile state-root handling during synchronization.
+- Saves the original package-manager launch context before restart.
+- Relaunches Valheim through Steam with the original Doorstop/BepInEx profile arguments so the replacement process remains modded.
+- Restores automatic one-shot reconnect to the server after synchronized files are applied.
+- Automatically continues through the previously selected character during reconnect.
+- Prevents duplicate reconnect dispatches and false reconnect timeout warnings.
+- Standalone/manual installation behavior and protocol version 4 remain unchanged.
+
+### 2.4.7
+
+- Adds native Thunderstore/r2modman installation from the same source used by the standalone release.
+- The client role disables itself on dedicated-server processes.
+- The apply helper supports package-manager installation paths while keeping persistent state under `BepInEx/AutoModSync`.
+- Server signing identity is generated automatically on first launch when missing.
+- Package-managed clients ignore AutoModSync-owned files advertised by older standalone servers, preventing downgrade/duplicate copies.
+- Package-managed servers do not advertise stale standalone release-client payloads.
+- Signed manifests, SHA-256 verification, delta synchronization, restart/reconnect, and protocol version 4 are preserved.
+
+### 2.4.6
+
+No public 2.4.6 release is present in this repository's history; public development moved from 2.4.5 to 2.4.7.
+
+### 2.4.5
 
 - Replaces the packed `version.dll` bootstrap with a transparent on-disk BepInEx layout.
 - Installs the AutoModSync client as a normal `BepInEx\plugins` DLL plus a visible apply helper.
