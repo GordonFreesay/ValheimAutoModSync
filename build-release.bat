@@ -162,7 +162,11 @@ copy /y "%SERVERDIR%\server-config-example.cfg" "%DIST%\ValheimAutoModSync-%AMS_
 copy /y "%TOOLSDIR%\AutoModSync.BuildTool.exe" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Tools\AutoModSync.BuildTool.exe" >nul
 xcopy "%ROOT%THIRD_PARTY_LICENSES\*" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD_PARTY_LICENSES\" /E /I /Y /Q >nul
 
-powershell.exe -NoLogo -NoProfile -Command "Compress-Archive -Path '%DIST%\ValheimAutoModSync-%AMS_VERSION%\*' -DestinationPath '%DIST%\ValheimAutoModSync-%AMS_VERSION%.zip' -Force"
+set "AMS_ZIP_SOURCE=%DIST%\ValheimAutoModSync-%AMS_VERSION%"
+set "AMS_ZIP_DEST=%DIST%\ValheimAutoModSync-%AMS_VERSION%.zip"
+powershell.exe -NoLogo -NoProfile -Command "[void][Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem'); [IO.Compression.ZipFile]::CreateFromDirectory($env:AMS_ZIP_SOURCE,$env:AMS_ZIP_DEST,[IO.Compression.CompressionLevel]::Optimal,$false)"
+set "AMS_ZIP_SOURCE="
+set "AMS_ZIP_DEST="
 if errorlevel 1 goto :Fail
 
 echo.
@@ -216,11 +220,14 @@ echo Downloading pinned BepInEx package...
 curl.exe -L --fail --retry 3 --retry-delay 2 -o "%BEPZIP%" "%BEPINEX_URL%"
 if errorlevel 1 exit /b 1
 set "ACTUALSHA="
-set "AMS_HASH_TARGET=%BEPZIP%"
-for /f "usebackq delims=" %%H in (`powershell.exe -NoLogo -NoProfile -Command "(Get-FileHash -LiteralPath $env:AMS_HASH_TARGET -Algorithm SHA256).Hash.ToLowerInvariant()"`) do set "ACTUALSHA=%%H"
-set "AMS_HASH_TARGET="
+"%BUILDTOOL%" sha256 "%BEPZIP%" >"%WORK%\bep-sha.txt" 2>nul
+if errorlevel 1 (
+  echo ERROR: Could not calculate BepInEx SHA-256 with AutoModSync BuildTool.
+  exit /b 1
+)
+set /p ACTUALSHA=<"%WORK%\bep-sha.txt"
 if not defined ACTUALSHA (
-  echo ERROR: Could not calculate BepInEx SHA-256 with Windows PowerShell.
+  echo ERROR: AutoModSync BuildTool returned an empty BepInEx SHA-256.
   exit /b 1
 )
 if /i not "%ACTUALSHA%"=="%BEPINEX_SHA256%" (
