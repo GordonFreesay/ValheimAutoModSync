@@ -311,7 +311,7 @@ namespace ValheimAutoModSync
                 transfer.ChunkBytes = rawChunk;
                 transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
                 transfer.FileCount = records.Count;
-                transfer.Stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                transfer.Stream = null;
                 BundleTransfers[rpc] = transfer;
 
                 ZPackage begin = new ZPackage();
