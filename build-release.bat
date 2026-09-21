@@ -62,11 +62,7 @@ if not defined VALHEIMROOT (
 set "VALHEIMROOT=%VALHEIMROOT:"=%"
 set "VALHEIMMANAGED=%VALHEIMROOT%\valheim_Data\Managed"
 if not exist "%VALHEIMMANAGED%\assembly_valheim.dll" set "VALHEIMMANAGED=%VALHEIMROOT%\valheim_server_Data\Managed"
-if not exist "%VALHEIMMANAGED%\assembly_valheim.dll" goto :MissingVersion
-echo ERROR: VERSION is missing or empty.
-goto :FailNoWork
-
-:BadClient
+if not exist "%VALHEIMMANAGED%\assembly_valheim.dll" goto :BadClient
 if not exist "%VALHEIMROOT%\valheim.exe" if not exist "%VALHEIMROOT%\valheim_server.exe" goto :BadClient
 
 echo Valheim path: "%VALHEIMROOT%"
@@ -243,6 +239,10 @@ set "BEPSOURCE=%BEPEXTRACT%\BepInExPack_Valheim"
 if not exist "%BEPSOURCE%\BepInEx\core\BepInEx.dll" exit /b 1
 echo BepInEx SHA-256 verified.
 exit /b 0
+
+:MissingVersion
+echo ERROR: VERSION is missing or empty.
+goto :FailNoWork
 
 :BadClient
 echo ERROR: A valid Valheim or Valheim Dedicated Server installation was not found.
