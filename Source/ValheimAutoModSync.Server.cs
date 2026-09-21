@@ -774,7 +774,7 @@ namespace ValheimAutoModSync
                 if (rel.Length == 0 || IsExcluded(rel, name)) continue;
                 if (kind == 'C')
                 {
-                    if (String.Equals(name, "ValheimAutoModSync.private.xml", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (IsProtectedConfigName(name)) continue;
                     if (configAllowlistRequired && !MatchesPatterns(rel, name, _syncConfigPatterns == null ? "" : (_syncConfigPatterns.Value ?? ""))) continue;
                 }
                 else
@@ -793,6 +793,14 @@ namespace ValheimAutoModSync
                 r.Sha256 = Sha256File(full);
                 records.Add(r);
             }
+        }
+
+        // Intent: Hard-blocks AutoModSync identity files and BepInEx's loader-wide config from remote config synchronization even when an administrator uses a broad allowlist.
+        private static bool IsProtectedConfigName(string name)
+        {
+            return String.Equals(name, "ValheimAutoModSync.private.xml", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(name, "ValheimAutoModSync.public.xml", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(name, "BepInEx.cfg", StringComparison.OrdinalIgnoreCase);
         }
 
         // Intent: Reports whether the current signed manifest contains roots that legacy AMS4 clients cannot install safely.
