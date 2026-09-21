@@ -7,7 +7,7 @@ using Microsoft.Win32;
 using System.Reflection;
 
 [assembly: AssemblyTitle("Valheim AutoModSync Apply Helper")]
-[assembly: AssemblyDescription("Applies verified staged AutoModSync plugin files after Valheim exits, then relaunches Valheim.")]
+[assembly: AssemblyDescription("Applies verified staged AutoModSync BepInEx files after Valheim exits, then relaunches Valheim.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
 [assembly: AssemblyVersion("2.5.0.0")]
@@ -16,7 +16,7 @@ using System.Reflection;
 internal static class Program
 {
     // Intent: Out-of-process apply/relaunch entry point, started only after the client has downloaded and verified staged files.
-    // Workflow: waits for the old Valheim process to exit, atomically replaces staged plugin files where possible, preserves reconnect state, then relaunches through the saved package-manager context, Steam, or direct executable fallback.
+    // Workflow: waits for the old Valheim process to exit, atomically replaces staged plugin/patcher/allowlisted-config files where possible, preserves reconnect state, then relaunches through the saved package-manager context, Steam, or direct executable fallback.
     private static int Main(string[] args)
     {
         try
@@ -50,6 +50,8 @@ internal static class Program
             string bepinexRoot = Directory.GetParent(amsRoot).FullName;
             string gameRoot = Directory.GetParent(bepinexRoot).FullName;
             string pluginRoot = Path.Combine(bepinexRoot, "plugins");
+            string patcherRoot = Path.Combine(bepinexRoot, "patchers");
+            string configRoot = Path.Combine(bepinexRoot, "config");
             string stagingRoot = Path.Combine(amsRoot, "staging");
             string pending = Path.Combine(amsRoot, "pending.txt");
             string reconnectFile = Path.Combine(amsRoot, "reconnect.txt");
@@ -66,11 +68,20 @@ internal static class Program
                     string rel = NormalizeRelative(item.Substring(2));
                     if (rel.Length == 0) continue;
 
-                    string src;
-                    string dst;
-                    if (kind != 'P') continue;
-                    src = SafeUnder(Path.Combine(stagingRoot, "plugins"), rel) + ".amsnew";
-                    dst = SafeUnder(pluginRoot, rel);
+                    string srcRoot;
+                    string dstRoot;
+                    if (kind == 'P') { srcRoot = Path.Combine(stagingRoot, "plugins"); dstRoot = pluginRoot; }
+                    else if (kind == 'R') { srcRoot = Path.Combine(stagingRoot, "patchers"); dstRoot = patcherRoot; }
+                    else if (kind == 'C')
+                    {
+                        if (String.Equals(Path.GetFileName(rel), "ValheimAutoModSync.private.xml", StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidDataException("Refusing to apply an AutoModSync private identity as synchronized config.");
+                        srcRoot = Path.Combine(stagingRoot, "config");
+                        dstRoot = configRoot;
+                    }
+                    else throw new InvalidDataException("Unsupported AutoModSync pending-file kind.");
+                    string src = SafeUnder(srcRoot, rel) + ".amsnew";
+                    string dst = SafeUnder(dstRoot, rel);
 
                     if (!File.Exists(src)) continue;
                     string parent = Path.GetDirectoryName(dst);
