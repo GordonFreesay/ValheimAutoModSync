@@ -1,6 +1,6 @@
 # AutoModSync 2.5.0 compatibility and signing plan
 
-**Validation status:** 2.5.0 release-gate testing is complete. The pre-handshake Jotunn/Epic Loot incomplete-client reproduction and the multi-root plugin/patcher/config/server-only validation passed before the v2.5.0 release. v2.5.0 was published unsigned while SignPath Foundation approval is pending; code signing remains a separate post-approval step.
+**Validation status:** 2.5.0 release-gate testing is complete. The pre-handshake Jotunn/Epic Loot incomplete-client reproduction and the multi-root plugin/patcher/config/server-only validation passed before the v2.5.0 release. v2.5.0 was published unsigned. The September 2026 SignPath Foundation application was declined because the project did not yet have enough external public-adoption/trust signals; code signing remains an optional future enhancement rather than a release blocker.
 
 ## Goals
 
@@ -156,4 +156,4 @@ The 2.5.0 release gate has been satisfied:
 - Restart/apply/reconnect behavior passed during the multi-root validation.
 - The synchronized client/server config SHA-256 matched during validation.
 
-Code signing is tracked separately. v2.5.0 was published unsigned while SignPath Foundation approval is pending.
+Code signing is tracked separately. v2.5.0 was published unsigned. The September 2026 SignPath Foundation application was declined for insufficient public-adoption/trust signals; the project may revisit trusted Authenticode signing after broader adoption or through another signing path.
