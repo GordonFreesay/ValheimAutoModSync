@@ -27,10 +27,15 @@ BepInEx/
 **/ValheimAutoModSync.key
 *.key
 
+# Generated release payloads
+/Client/
+/Tools/
+/Server/ValheimAutoModSync.Server.dll
+/ValheimAutoModSyncInstaller.exe
+
 # Local release scratch
 _dist/
 _work/
-
 Dist/
 
 # Code-signing secrets / local metadata
