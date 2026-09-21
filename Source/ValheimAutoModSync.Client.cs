@@ -125,7 +125,11 @@ namespace ValheimAutoModSync
             try
             {
                 HideBepInExConsoleAndDisableFutureConsole();
-                ApplyPreviouslyStagedFilesIfPossible();
+                if (ApplyPreviouslyStagedFilesIfPossible())
+                {
+                    ScheduleRecoveredStagingRestart();
+                    return;
+                }
                 LoadStartupReconnectRequest();
                 Harmony harmony = new Harmony(PluginGuid);
                 harmony.PatchAll(typeof(OnNewConnectionPatch));
@@ -1761,7 +1765,12 @@ namespace ValheimAutoModSync
         {
             if (kind == 'P') return SafeBepInExRootPath(Paths.PluginPath, relative, "plugins");
             if (kind == 'R') return SafeBepInExRootPath(Path.Combine(Paths.BepInExRootPath, "patchers"), relative, "patchers");
-            if (kind == 'C') return SafeBepInExRootPath(Paths.ConfigPath, relative, "config");
+            if (kind == 'C')
+            {
+                if (String.Equals(Path.GetFileName(relative), "ValheimAutoModSync.private.xml", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Refusing to synchronize an AutoModSync private identity.");
+                return SafeBepInExRootPath(Paths.ConfigPath, relative, "config");
+            }
             throw new InvalidDataException("Unsupported AutoModSync target kind.");
         }
 
@@ -1986,19 +1995,19 @@ namespace ValheimAutoModSync
             File.Delete(tempPath);
         }
 
-        // Intent: Startup fallback that finishes already-verified staged plugin replacements if the external apply helper was interrupted on the prior restart.
-        // Scope: it reads only AutoModSync pending entries and writes only contained plugin paths.
-        private static void ApplyPreviouslyStagedFilesIfPossible()
+        // Intent: Recovers already-verified staged plugin/patcher/config replacements if the external apply helper was interrupted on the prior restart.
+        // Safety: every destination is remapped from its signed kind to a fixed BepInEx root; any failed replacement remains pending for the helper to retry after this recovery process exits.
+        private static bool ApplyPreviouslyStagedFilesIfPossible()
         {
-            // The external helper normally handles this after the previous process exits.
-            // This fallback can safely finish plugin-file updates if the helper was interrupted.
             string amsRoot = GetAutoModSyncRoot();
             string pending = Path.Combine(amsRoot, "pending.txt");
-            if (!File.Exists(pending)) return;
+            if (!File.Exists(pending)) return false;
+
+            bool appliedAny = false;
+            List<string> remaining = new List<string>();
             try
             {
                 string[] paths = File.ReadAllLines(pending);
-                List<string> remaining = new List<string>();
                 int i;
                 for (i = 0; i < paths.Length; i++)
                 {
@@ -2006,20 +2015,55 @@ namespace ValheimAutoModSync
                     if (item.Length < 3 || item[1] != ':') continue;
                     char kind = item[0];
                     string rel = NormalizeRelative(item.Substring(2));
-                    if (rel.Length == 0) continue;
-                    if (kind != 'P') continue;
-                    string src = Path.Combine(amsRoot, "staging", "plugins", rel.Replace('/', Path.DirectorySeparatorChar)) + ".amsnew";
-                    string dst = SafeTargetPath(kind, rel);
-                    if (!File.Exists(src)) continue;
-                    string parent = Path.GetDirectoryName(dst);
-                    if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
-                    File.Copy(src, dst, true);
-                    File.Delete(src);
+                    if (rel.Length == 0 || !IsSupportedManifestKind(kind)) continue;
+
+                    try
+                    {
+                        string src = Path.Combine(amsRoot, "staging", ManifestKindDirectory(kind), rel.Replace('/', Path.DirectorySeparatorChar)) + ".amsnew";
+                        if (!File.Exists(src)) continue;
+                        string dst = SafeTargetPath(kind, rel);
+                        string parent = Path.GetDirectoryName(dst);
+                        if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
+                        File.Copy(src, dst, true);
+                        File.Delete(src);
+                        appliedAny = true;
+                    }
+                    catch
+                    {
+                        remaining.Add(item);
+                    }
                 }
+
                 if (remaining.Count == 0) File.Delete(pending);
                 else File.WriteAllLines(pending, remaining.ToArray(), new UTF8Encoding(false));
             }
-            catch { }
+            catch
+            {
+                return true;
+            }
+
+            return appliedAny || remaining.Count > 0;
+        }
+
+        // Intent: Performs one extra clean restart after startup recovered staged files so newly installed plugins/patchers/config are loaded from process start.
+        // Workflow: reuses the normal apply helper only as the relaunch owner, preserves reconnect.txt, and lets Update quit this recovery process after the helper is waiting on its PID.
+        private static void ScheduleRecoveredStagingRestart()
+        {
+            string amsRoot = GetAutoModSyncRoot();
+            string helper = FindApplyHelper(amsRoot);
+            if (!File.Exists(helper)) throw new FileNotFoundException("AutoModSync apply helper is missing during staged-file recovery.", helper);
+
+            ProcessStartInfo psi = new ProcessStartInfo();
+            psi.FileName = helper;
+            psi.Arguments = Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.WindowStyle = ProcessWindowStyle.Hidden;
+            Process.Start(psi);
+
+            _restartRequested = true;
+            _quitAfterUtc = DateTime.UtcNow.AddMilliseconds(900.0);
+            if (_instance != null) _instance.Logger.LogWarning("AutoModSync recovered staged files from an interrupted apply and will restart once more so every synchronized root loads from process start.");
         }
 
     }
