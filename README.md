@@ -1,8 +1,6 @@
 # Valheim AutoModSync
 
-**Current public release: 2.4.8**
-
-**Current development version: 2.5.0**
+**Current public release: 2.5.0**
 
 AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's synchronized BepInEx files, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
 
