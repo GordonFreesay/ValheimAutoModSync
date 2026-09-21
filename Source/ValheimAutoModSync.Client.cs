@@ -1078,7 +1078,7 @@ namespace ValheimAutoModSync
                 {
                     _allowServerHandshake = true;
                     rpc.Invoke("ServerHandshake", serverHandshakeParameters);
-                    if (_instance != null) _instance.Logger.LogDebug("AutoModSync released the original Valheim ServerHandshake with " + serverHandshakeParameters.Length.ToString(CultureInfo.InvariantCulture) + " argument(s) after preflight.");
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync released the original Valheim ServerHandshake with " + serverHandshakeParameters.Length.ToString(CultureInfo.InvariantCulture) + " argument(s) after preflight.");
                 }
                 catch (Exception ex)
                 {
