@@ -42,7 +42,8 @@ namespace ValheimAutoModSync
         private const string RpcBundleBatch = "AMS4_BundleBatch";
         private const string RpcBundleEnd = "AMS4_BundleEnd";
         private const string RpcError = "AMS4_Error";
-        private const int BundleWindowChunks = 16;
+        private const int BundleBatchChunks = 16;
+        private const int BundlePipelineChunks = 128;
         private const string RootSyncCapability = "roots1";
 
         private static ClientPlugin _instance;
@@ -57,6 +58,7 @@ namespace ValheimAutoModSync
         private static bool _serverAcknowledged;
         private static bool _serverSupportsBundleWindow;
         private static bool _serverSupportsBundleBatch;
+        private static bool _serverSupportsBundlePipeline;
         private static bool _allowPeerInfo;
         private static bool _preflightGateActive;
         private static bool _allowServerHandshake;
@@ -504,10 +506,12 @@ namespace ValheimAutoModSync
                 _serverAcknowledged = true;
                 _serverSupportsBundleWindow = capabilities.IndexOf("bundle-window1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleBatch = capabilities.IndexOf("bundle-batch1", StringComparison.Ordinal) >= 0;
+                _serverSupportsBundlePipeline = capabilities.IndexOf("bundle-pipeline1", StringComparison.Ordinal) >= 0;
                 if (_instance != null)
                 {
                     _instance.Logger.LogDebug("AutoModSync preflight acknowledged by server " + serverVersion + ".");
-                    if (_serverSupportsBundleBatch) _instance.Logger.LogDebug("AutoModSync server supports binary batched bundle transfer.");
+                    if (_serverSupportsBundlePipeline) _instance.Logger.LogDebug("AutoModSync server supports pipelined binary bundle transfer.");
+                    else if (_serverSupportsBundleBatch) _instance.Logger.LogDebug("AutoModSync server supports binary batched bundle transfer.");
                     else if (_serverSupportsBundleWindow) _instance.Logger.LogDebug("AutoModSync server supports windowed bundle transfer.");
                 }
             }
@@ -738,10 +742,12 @@ namespace ValheimAutoModSync
                 _overlayBytesReceived = 0L;
                 _overlayBytesTotal = size;
                 ShowSyncOverlay("Downloading compressed mod package...", "");
-                if (_instance != null && _serverSupportsBundleBatch)
-                    _instance.Logger.LogInfo("AutoModSync using binary batched bundle transfer (up to " + BundleWindowChunks.ToString(CultureInfo.InvariantCulture) + " chunks per request).");
+                if (_instance != null && _serverSupportsBundlePipeline)
+                    _instance.Logger.LogInfo("AutoModSync using pipelined binary bundle transfer (up to " + BundlePipelineChunks.ToString(CultureInfo.InvariantCulture) + " chunks requested per window; " + BundleBatchChunks.ToString(CultureInfo.InvariantCulture) + " chunks per Steam message).");
+                else if (_instance != null && _serverSupportsBundleBatch)
+                    _instance.Logger.LogInfo("AutoModSync using binary batched bundle transfer (up to " + BundleBatchChunks.ToString(CultureInfo.InvariantCulture) + " chunks per request).");
                 else if (_instance != null && _serverSupportsBundleWindow)
-                    _instance.Logger.LogInfo("AutoModSync using windowed bundle transfer (" + BundleWindowChunks.ToString(CultureInfo.InvariantCulture) + " chunks per request).");
+                    _instance.Logger.LogInfo("AutoModSync using windowed bundle transfer (" + BundleBatchChunks.ToString(CultureInfo.InvariantCulture) + " chunks per request).");
                 RequestBundleChunk();
             }
             catch (Exception ex)
@@ -784,7 +790,7 @@ namespace ValheimAutoModSync
             {
                 int start = pkg.ReadInt();
                 int count = pkg.ReadInt();
-                if (!_serverSupportsBundleBatch || start != _bundleNextChunk || count < 1 || count > BundleWindowChunks || start + count > _bundleTotalChunks)
+                if (!_serverSupportsBundleBatch || start != _bundleNextChunk || count < 1 || count > BundleBatchChunks || start + count > _bundleTotalChunks || start + count > _bundleWindowEndExclusive)
                     throw new InvalidDataException("Invalid compressed package batch.");
 
                 int i;
@@ -801,7 +807,8 @@ namespace ValheimAutoModSync
 
                 _overlayBytesReceived = _bundleBytesReceived;
                 _overlayFileProgress = _bundleTotalChunks <= 0 ? 1f : Mathf.Clamp01(_bundleNextChunk / (float)_bundleTotalChunks);
-                RequestBundleChunk();
+                if (_bundleNextChunk >= _bundleTotalChunks || _bundleNextChunk >= _bundleWindowEndExclusive)
+                    RequestBundleChunk();
             }
             catch (Exception ex)
             {
@@ -814,7 +821,7 @@ namespace ValheimAutoModSync
         private static void RequestBundleChunk()
         {
             if (_pendingRpc == null || _bundleStream == null) return;
-            int requestCount = (_serverSupportsBundleBatch || _serverSupportsBundleWindow) ? BundleWindowChunks : 1;
+            int requestCount = _serverSupportsBundlePipeline ? BundlePipelineChunks : ((_serverSupportsBundleBatch || _serverSupportsBundleWindow) ? BundleBatchChunks : 1);
             _bundleWindowEndExclusive = Math.Min(_bundleTotalChunks, _bundleNextChunk + requestCount);
             ZPackage request = new ZPackage();
             request.Write(_bundleNextChunk);
