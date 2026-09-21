@@ -69,6 +69,26 @@ Fallback order is: `bundle-batch1` -> `bundle-window1` -> original single-chunk 
 
 Live testing on a gigabit LAN isolated a second bottleneck below AutoModSync's framing: Valheim's Steam transport pins `SendRateMax` near 153600 B/s, which closely matches the observed ~0.1-0.15 MiB/s transfer ceiling even when raw TCP/iperf reaches line rate. During an AutoModSync bundle only, the server therefore raises **only the specific peer connection's** Steam `SendRateMax` (default target 8 MiB/s) and restores its previous value when the transfer completes or aborts. `SendRateMin` is deliberately untouched so Steam congestion control can still reduce the rate on weak links. Non-Steam/PlayFab paths simply skip this optimization.
 
+### Synchronized BepInEx roots
+
+2.5.0 no longer assumes every required mod file lives under `BepInEx/plugins`. The signed manifest uses fixed kind codes with fixed destinations:
+
+```text
+P -> BepInEx/plugins
+R -> BepInEx/patchers
+C -> BepInEx/config
+```
+
+`plugins` and `patchers` are scanned recursively. Patchers are installed by the out-of-process apply helper before Valheim restarts, so preloader patchers are present before the next BepInEx preloader pass.
+
+`config` is deliberately different: it is **not mirrored by default**. The server must explicitly opt files in through `Compatibility.SyncConfigPatterns`. This avoids overwriting client keybind/UI/machine-local settings or accidentally distributing unrelated server configuration. `ValheimAutoModSync.private.xml` is hard-blocked even if a broad allowlist pattern would otherwise match.
+
+Server/client side classification is explicit rather than guessed from mod metadata because there is no universal BepInEx side marker across the Valheim ecosystem. `Compatibility.ServerOnlyPatterns` excludes server-only plugin/patcher files. `Compatibility.ClientRequiredPatterns` is optional; when empty, every non-excluded/non-server-only plugin/patcher file remains client-required, preserving existing behavior. When set, only matching plugin/patcher files are advertised.
+
+The hello advertises the optional `roots1` client capability. Plugin-only AMS4 interoperability remains intact with older peers; a server whose signed manifest actually contains patcher/config entries requires a roots-capable 2.5 client rather than silently installing those files under the wrong root.
+
+AutoModSync still does **not** remotely synchronize `BepInEx/core`, game-root proxy/bootstrap DLLs, `Valheim_Data/Managed`, or arbitrary filesystem paths. Those remain outside the synchronization trust boundary.
+
 ### Dependency recovery
 
 If BepInEx skipped a server-required plugin because a hard dependency was absent, AutoModSync itself can still preflight (provided AutoModSync loaded). The missing dependency is synchronized, then the restart lets BepInEx resolve the full dependency graph normally.
@@ -78,9 +98,10 @@ If BepInEx skipped a server-required plugin because a hard dependency was absent
 - Never suppress Jotunn/ServerSync/ValheimPlus compatibility results after preflight.
 - Never patch another mod's private compatibility functions.
 - Never blindly delete extra client plugins.
-- Never synchronize BepInEx core/patchers as ordinary server plugins.
+- Never synchronize BepInEx core, game-root proxy/bootstrap DLLs, or managed game assemblies through the mod manifest.
+- Synchronize patchers only to the dedicated `BepInEx/patchers` root; synchronize config only through the explicit config allowlist.
 - Preserve unknown `version.dll` / proxy DLL safeguards.
-- Keep all synchronization paths rooted under the expected BepInEx plugin/staging directories.
+- Keep all synchronization paths rooted under the fixed BepInEx plugin/patcher/config and AutoModSync staging directories.
 - Keep cryptographic manifest verification mandatory before applying transferred files.
 
 ## Signing architecture
@@ -111,6 +132,9 @@ Before release:
 | Jotunn + Epic Loot missing client-side | AutoModSync sync occurs before Jotunn validates |
 | Epic Loot present but JsonDotNET dependency missing | Dependency sync -> restart -> Epic Loot loads -> Jotunn validates |
 | ServerSync-based configuration mods | Their normal post-preflight behavior remains intact |
+| Required preloader patcher | Signed `R` entry -> stage -> apply to `BepInEx/patchers` -> restart before preloader runs |
+| Explicitly allowlisted config | Signed `C` entry -> stage -> apply to `BepInEx/config`; non-allowlisted configs remain local |
+| Server-only plugin/patcher pattern | Excluded from client manifest while remaining installed on the server |
 | Client has extra client-only plugins | Preserved; AutoModSync does not delete them |
 | Package-manager profile | Apply/relaunch stays inside active profile |
 | Dedicated server | Server role only; client role disables itself |
