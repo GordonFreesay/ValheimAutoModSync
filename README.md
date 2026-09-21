@@ -21,7 +21,7 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 - Automatic reconnect to the server that triggered synchronization.
 - Existing extra client plugins are not automatically deleted.
 - One installer supports Client, Dedicated Server, and Host & Play roles.
-- The same runtime source also supports native Thunderstore/r2modman packaging.
+- One shared semantic version is used across the standalone, Nexus Mods, CurseForge, and Thunderstore/r2modman packages.
 
 ## Installation
 
@@ -43,6 +43,12 @@ Choose one of the install modes in the installer:
 
 Launch Valheim or the dedicated server normally after installation.
 
+## Distribution channels
+
+AutoModSync uses one shared version across every channel. The current software version is **2.5.0** whether it is installed from the standalone GitHub release, Nexus Mods, CurseForge, or Thunderstore/r2modman.
+
+Store-specific archive names identify packaging targets only; they do not create separate AutoModSync versions or separate GitHub releases. See `DISTRIBUTION.md` for the build/publishing workflows and required store credentials.
+
 ## What happens when a client connects
 
 1. **Trust** — on first contact, the client is shown the server signing fingerprint and chooses whether to trust it.
@@ -63,17 +69,24 @@ The generated server private signing identity (`BepInEx/config/ValheimAutoModSyn
 ## Repository layout
 
 ```text
+VERSION                         Authoritative semantic version shared by every distribution target
 Source/                         Authoritative AutoModSync C# source
-Server/server-config-example.cfg  Example 2.5.0 server configuration
-Thunderstore/                   Thunderstore/r2modman package documentation and assets
+Server/server-config-example.cfg  Example server configuration
+Thunderstore/                   Thunderstore/r2modman metadata, documentation, icon, and tcli config
+ModSites/                       Nexus/CurseForge package documentation
 THIRD_PARTY_LICENSES/           Third-party license texts
 build-release.bat               Windows standalone release builder
 build-thunderstore.ps1          Thunderstore/r2modman package builder
-build-all-releases.bat          Combined release build entry point
-install.bat                     Readable/manual fallback installer included in releases
+build-nexus.ps1                 Nexus package builder
+build-curseforge.ps1            CurseForge package builder
+build-store-packages.ps1        Builds every distribution package from one compiled release
+build-all-releases.bat          Convenience entry point for all distribution formats
+DISTRIBUTION.md                 Distribution/version/publishing policy and required store credentials
+install.bat                     Readable/manual fallback installer included in standalone releases
 SIGNING.md                      Current unsigned-release policy and optional future Authenticode signing paths
 SOURCE-WALKTHROUGH.md           End-to-end source, trust-boundary, handshake, and restart flow map
 verify-source-docs.ps1          Verifies source-level Intent documentation
+verify-version.ps1              Prevents package/plugin/assembly version drift
 ```
 
 Generated runtime payloads such as `Client/`, `Tools/`, the compiled server DLL, installers, and `Dist/` are build outputs and are intentionally not versioned. Installable binaries are published through GitHub Releases rather than stored in the source tree.
@@ -84,7 +97,9 @@ There are intentionally no nested `README.txt` files; this root `README.md` is t
 
 Local builds can run `build-release.bat` on a Windows PC with Valheim installed. The builder uses the Windows .NET Framework C# compiler to build the managed AutoModSync components and produces the runtime files used by the release package. These generated payloads are ignored by Git; a source checkout is not itself an install package.
 
-The repository also contains `.github/workflows/signpath-release.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, and uploads the resulting ZIP as a GitHub Actions artifact. Public releases are currently distributed unsigned. The workflow retains optional SignPath submission steps for a future eligible Foundation application or another SignPath subscription, but those steps remain inactive unless signing credentials are configured.
+The root `VERSION` file is the authoritative distribution version. `verify-version.ps1` checks the client/server plugin versions and all AutoModSync assembly/installer versions before a release build. `build-all-releases.bat` builds the standalone, Nexus, CurseForge, and Thunderstore packages from the same compiled binaries.
+
+The repository also contains `.github/workflows/release-build.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, and uploads the resulting ZIP as a GitHub Actions artifact. Public releases are currently distributed unsigned. The workflow retains optional SignPath submission steps for a future eligible Foundation application or another SignPath subscription, but those steps remain inactive unless signing credentials are configured.
 
 The release builder pins **BepInExPack Valheim 5.4.2350** and verifies this SHA-256 before using it:
 
@@ -126,7 +141,7 @@ SHA-256:
 106f7cad4b4f4e75ffc7227d28332101ea01fd70631ee15d94d153fce0ed67ad
 ```
 
-GitHub Releases is the authoritative source for installable release artifacts. Repository source files are integrity-tracked by Git rather than by a generated repository-wide checksum file.
+GitHub Releases is the authoritative source for the standalone installer artifact. Nexus Mods, CurseForge, and Thunderstore use store-specific packaging variants of the same AutoModSync version. Those variants are not separate GitHub releases. See `DISTRIBUTION.md`. Repository source files are integrity-tracked by Git rather than by a generated repository-wide checksum file.
 
 ## License
 
