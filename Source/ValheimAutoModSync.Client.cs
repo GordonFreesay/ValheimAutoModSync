@@ -1064,7 +1064,7 @@ namespace ValheimAutoModSync
             _serverRecognized = false;
             _serverAcknowledged = false;
             _serverSupportsBundleWindow = false;
-                _serverSupportsBundleBatch = false;
+            _serverSupportsBundleBatch = false;
             _preflightGateActive = true;
             _serverHandshakeHeld = false;
             _heldServerHandshakeParameters = new object[0];
@@ -1108,6 +1108,8 @@ namespace ValheimAutoModSync
                 _waitingForServer = false;
                 _serverRecognized = false;
                 _serverAcknowledged = false;
+                _serverSupportsBundleWindow = false;
+                _serverSupportsBundleBatch = false;
                 _preflightGateActive = false;
                 _serverHandshakeHeld = false;
                 _heldServerHandshakeParameters = new object[0];
