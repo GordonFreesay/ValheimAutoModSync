@@ -145,4 +145,4 @@ Before release:
 
 ## Release gate
 
-Do not publish 2.5.0 until the Jotunn/Epic Loot reproduction that exposed the 2.4.8 ordering issue succeeds from a deliberately incomplete client.
+Do not publish 2.5.0 until the Jotunn/Epic Loot reproduction that exposed the 2.4.8 ordering issue succeeds from a deliberately incomplete client, and the patcher/config/server-only multi-root checks in TESTING-2.5.0.md pass.
