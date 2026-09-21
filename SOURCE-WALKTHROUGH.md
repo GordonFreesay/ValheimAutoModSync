@@ -43,6 +43,8 @@ After a successful/matching preflight, AutoModSync stops gating and Valheim plus
 
 The older SendPeerInfo AMS4 probe remains as a fallback for connection paths that do not pass through the early gate. Keeping the same AMS4 protocol preserves compatibility with existing 2.4.x AutoModSync peers.
 
+For large first-time synchronizations, 2.5.0 also negotiates the optional `bundle-window1` capability through `AMS4_Ack`. A capable client requests up to 16 ordered bundle chunks per pull instead of one. The server holds one read stream open for the prepared ZIP and services the entire requested window sequentially. If the capability is absent, the client keeps the original one-chunk AMS4 behavior.
+
 ### Source/ValheimAutoModSync.Server.cs
 
 The server plugin registers AMS4 RPCs on incoming Valheim connections and serves a deterministic signed view of eligible `BepInEx/plugins` files.
@@ -125,7 +127,7 @@ The intended public-release path Authenticode-signs only AutoModSync-authored PE
 
 ## Review-surface inventory
 
-A source review of the four C# files shows the following intentional privileged surfaces:
+A source review of the five C# files shows the following intentional privileged surfaces:
 
 - **No HTTP/WebClient/HttpClient downloader exists in the C# runtime.** Plugin bytes are transferred only over Valheim's existing `ZRpc` connection. The separate build/install scripts may obtain the pinned BepInEx package and verify its fixed SHA-256.
 - **Process launch:** only the client starts `ValheimAutoModSync.Apply.exe`, and the helper starts Steam/Valheim for the requested restart. The installer itself does not launch downloaded code or fetch executables.
