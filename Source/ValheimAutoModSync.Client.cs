@@ -76,6 +76,7 @@ namespace ValheimAutoModSync
         private static string _bundleSha256 = "";
         private static long _bundleSize;
         private static long _bundleBytesReceived;
+        private static DateTime _bundleStartedUtc = DateTime.MinValue;
         private static int _bundleNextChunk;
         private static int _bundleTotalChunks;
         private static int _bundleWindowEndExclusive;
@@ -723,6 +724,7 @@ namespace ValheimAutoModSync
                 _bundleSha256 = sha;
                 _bundleSize = size;
                 _bundleBytesReceived = 0L;
+                _bundleStartedUtc = DateTime.UtcNow;
                 _bundleNextChunk = 0;
                 _bundleTotalChunks = chunks;
                 _bundleWindowEndExclusive = 0;
@@ -836,7 +838,12 @@ namespace ValheimAutoModSync
                 _overlayCompletedFiles = _overlayTotalFiles;
                 _overlayFileProgress = 1f;
                 _overlayBundleMode = false;
-                if (_instance != null) _instance.Logger.LogInfo("AutoModSync compressed package verified and unpacked: " + NeededFiles.Count + " changed file(s).");
+                if (_instance != null)
+                {
+                    double elapsedSeconds = _bundleStartedUtc == DateTime.MinValue ? 0.0 : Math.Max(0.001, (DateTime.UtcNow - _bundleStartedUtc).TotalSeconds);
+                    double mibPerSecond = (_bundleSize / (1024.0 * 1024.0)) / elapsedSeconds;
+                    _instance.Logger.LogInfo("AutoModSync compressed package verified and unpacked: " + NeededFiles.Count + " changed file(s). Transfer " + FormatBytes(_bundleSize) + " in " + elapsedSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "s (" + mibPerSecond.ToString("0.00", CultureInfo.InvariantCulture) + " MiB/s).");
+                }
                 BeginApplyAndRestart();
             }
             catch (Exception ex)
@@ -1196,6 +1203,7 @@ namespace ValheimAutoModSync
             _bundleTotalChunks = 0;
             _bundleWindowEndExclusive = 0;
             _bundleBytesReceived = 0L;
+            _bundleStartedUtc = DateTime.MinValue;
             CloseBundleStream();
         }
 
