@@ -119,9 +119,10 @@ namespace ValheimAutoModSync
             _chunkBytes = Config.Bind("Transfer", "ChunkBytes", 24576, "Raw file bytes per RPC chunk before Base64 encoding. 24576 is conservative for Valheim's RPC transport.");
             _maxFileMiB = Config.Bind("Transfer", "MaxFileMiB", 128, "Refuse to transfer a single file larger than this many MiB.");
             _maxBundleMiB = Config.Bind("Transfer", "MaxBundleMiB", 2048, "Refuse to build a compressed change package larger than this many MiB.");
-            _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 8388608, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
-            _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 1048576, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Raising the floor prevents short transfers from remaining parked near Valheim's ~153600 B/s default estimator floor. Set 0 to leave the minimum unchanged.");
-            _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 8388608, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
+            _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 33554432, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
+            _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 8388608, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
+            _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 16777216, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
+            UpgradeDevelopmentTransferDefaults();
 
             try
             {
@@ -192,6 +193,20 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Migrates the exact earlier 2.5-development transfer defaults so existing test servers do not remain unintentionally pinned to the 1 MiB/s floor after upgrading this branch.
+        // Scope: only the three known development-default values are changed; any administrator-customized value is preserved.
+        private static void UpgradeDevelopmentTransferDefaults()
+        {
+            if (_transferSendRateMin != null && _transferSendRateMax != null && _transferSendBufferBytes != null &&
+                _transferSendRateMin.Value == 1048576 && _transferSendRateMax.Value == 8388608 && _transferSendBufferBytes.Value == 8388608)
+            {
+                _transferSendRateMin.Value = 8388608;
+                _transferSendRateMax.Value = 33554432;
+                _transferSendBufferBytes.Value = 16777216;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync upgraded the earlier 2.5 development transfer defaults to Min=8 MiB/s, Max=32 MiB/s, Buffer=16 MiB.");
+            }
+        }
+
         // Intent: Registers all AMS4 RPC names once on a peer's ZRpc.
         // The server handles hello/bundle requests and installs no-op receivers for response-only message names so protocol traffic is explicit and bounded.
         private static void RegisterRpc(ZRpc rpc)
@@ -246,7 +261,7 @@ namespace ValheimAutoModSync
                 ZPackage ack = new ZPackage();
                 ack.Write(ProtocolVersion);
                 ack.Write(PluginVersion);
-                ack.Write("bundle-window1;bundle-batch1");
+                ack.Write("bundle-window1;bundle-batch1;bundle-pipeline1");
                 rpc.Invoke(RpcAck, new object[] { ack });
 
                 EnsureManifest(false);
@@ -423,8 +438,8 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Serves a bounded binary batch of consecutive compressed-bundle chunks, or the unchanged completion message when the client requests TotalChunks.
-        // Performance: sends raw bytes in one ZPackage instead of Base64 strings across many RPC messages; the raw batch is capped near 384 KiB to stay conservative for Valheim/Steam reliable-message transport.
+        // Intent: Serves one or more bounded binary batch messages for a requested compressed-bundle window, or the unchanged completion message when the client requests TotalChunks.
+        // Performance: each Steam message remains capped near 384 KiB, but a current client can request up to 128 chunks at once so several batch messages are queued back-to-back and the reliable pipe stays full instead of waiting for a client request after every ~384 KiB.
         private static void RPC_GetBundleBatch(ZRpc rpc, ZPackage pkg)
         {
             try
@@ -433,7 +448,7 @@ namespace ValheimAutoModSync
                 int index = pkg.ReadInt();
                 int requestedCount = 1;
                 try { requestedCount = pkg.ReadInt(); } catch { requestedCount = 1; }
-                requestedCount = Math.Max(1, Math.Min(16, requestedCount));
+                requestedCount = Math.Max(1, Math.Min(128, requestedCount));
 
                 BundleTransfer transfer;
                 if (!BundleTransfers.TryGetValue(rpc, out transfer) || transfer == null || !File.Exists(transfer.ZipPath))
@@ -451,36 +466,45 @@ namespace ValheimAutoModSync
                 }
 
                 const int maxBatchBytes = 384 * 1024;
-                int maxChunksByBytes = Math.Max(1, maxBatchBytes / Math.Max(1, transfer.ChunkBytes));
-                int count = Math.Min(requestedCount, Math.Min(maxChunksByBytes, transfer.TotalChunks - index));
-                ZPackage batch = new ZPackage();
-                batch.Write(index);
-                batch.Write(count);
-
+                int maxChunksPerMessage = Math.Max(1, maxBatchBytes / Math.Max(1, transfer.ChunkBytes));
+                int remaining = Math.Min(requestedCount, transfer.TotalChunks - index);
                 byte[] buffer = new byte[transfer.ChunkBytes];
+
                 using (FileStream stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read))
                 {
                     stream.Seek((long)index * transfer.ChunkBytes, SeekOrigin.Begin);
-                    int sent;
-                    for (sent = 0; sent < count; sent++)
+                    int cursor = index;
+                    while (remaining > 0)
                     {
-                        int read = stream.Read(buffer, 0, buffer.Length);
-                        if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
-                        batch.Write(index + sent);
-                        if (read == buffer.Length)
+                        int count = Math.Min(maxChunksPerMessage, remaining);
+                        ZPackage batch = new ZPackage();
+                        batch.Write(cursor);
+                        batch.Write(count);
+
+                        int sent;
+                        for (sent = 0; sent < count; sent++)
                         {
-                            batch.Write(buffer);
+                            int read = stream.Read(buffer, 0, buffer.Length);
+                            if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
+                            batch.Write(cursor + sent);
+                            if (read == buffer.Length)
+                            {
+                                batch.Write(buffer);
+                            }
+                            else
+                            {
+                                byte[] tail = new byte[read];
+                                Buffer.BlockCopy(buffer, 0, tail, 0, read);
+                                batch.Write(tail);
+                            }
                         }
-                        else
-                        {
-                            byte[] tail = new byte[read];
-                            Buffer.BlockCopy(buffer, 0, tail, 0, read);
-                            batch.Write(tail);
-                        }
+
+                        rpc.Invoke(RpcBundleBatch, new object[] { batch });
+                        cursor += count;
+                        remaining -= count;
                     }
                 }
 
-                rpc.Invoke(RpcBundleBatch, new object[] { batch });
                 LogTransferSteamTelemetry(transfer);
             }
             catch (Exception ex)
