@@ -95,6 +95,7 @@ namespace ValheimAutoModSync
             public bool ChangedSendRateMax;
             public bool ChangedSendRateMin;
             public bool ChangedSendBuffer;
+            public DateTime LastSteamTelemetryUtc;
         }
 
         // Intent: BepInEx server entry point; binds server/transfer limits, loads the signing identity, clears stale cache files, and installs only the server-side connection hooks.
@@ -480,6 +481,7 @@ namespace ValheimAutoModSync
                 }
 
                 rpc.Invoke(RpcBundleBatch, new object[] { batch });
+                LogTransferSteamTelemetry(transfer);
             }
             catch (Exception ex)
             {
@@ -645,6 +647,35 @@ namespace ValheimAutoModSync
             for (i = 0; i < fields.Length; i++)
                 if (fields[i].FieldType == typeof(uint)) return (uint)fields[i].GetValue(con);
             return 0u;
+        }
+
+        // Intent: Samples Steam's live connection telemetry at a low rate during bundle delivery so throughput tests show whether Steam's own bandwidth estimator or reliable queue is still the limiting layer.
+        private static void LogTransferSteamTelemetry(BundleTransfer transfer)
+        {
+            if (transfer == null || transfer.SteamConnectionHandle == 0u || _instance == null) return;
+            DateTime now = DateTime.UtcNow;
+            if (transfer.LastSteamTelemetryUtc != DateTime.MinValue && (now - transfer.LastSteamTelemetryUtc).TotalSeconds < 5.0) return;
+            transfer.LastSteamTelemetryUtc = now;
+            try
+            {
+                HSteamNetConnection connection = new HSteamNetConnection(transfer.SteamConnectionHandle);
+                SteamNetConnectionRealTimeStatus_t status = default(SteamNetConnectionRealTimeStatus_t);
+                SteamNetConnectionRealTimeLaneStatus_t lane = default(SteamNetConnectionRealTimeLaneStatus_t);
+                EResult result = SteamGameServerNetworkingSockets.GetConnectionRealTimeStatus(connection, ref status, 0, ref lane);
+                if (result != EResult.k_EResultOK)
+                {
+                    _instance.Logger.LogDebug("AutoModSync Steam telemetry unavailable: " + result.ToString());
+                    return;
+                }
+                _instance.Logger.LogInfo("AutoModSync Steam transfer telemetry: rate=" + status.m_nSendRateBytesPerSecond.ToString(CultureInfo.InvariantCulture) +
+                    " B/s, pendingReliable=" + status.m_cbPendingReliable.ToString(CultureInfo.InvariantCulture) +
+                    " B, unackedReliable=" + status.m_cbSentUnackedReliable.ToString(CultureInfo.InvariantCulture) +
+                    " B, ping=" + status.m_nPing.ToString(CultureInfo.InvariantCulture) + " ms.");
+            }
+            catch (Exception ex)
+            {
+                _instance.Logger.LogDebug("AutoModSync Steam telemetry read failed: " + ex.Message);
+            }
         }
 
         // Intent: Formats a SteamNetworkingSockets integer setting for transfer diagnostics without hiding unavailable reads behind a plausible numeric value.
