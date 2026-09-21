@@ -57,6 +57,7 @@ namespace ValheimAutoModSync
         private static bool _preflightGateActive;
         private static bool _allowServerHandshake;
         private static bool _serverHandshakeHeld;
+        private static object[] _heldServerHandshakeParameters = new object[0];
         private static DateTime _helloSentUtc;
         private static readonly HashSet<ZRpc> Registered = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> PreflightComplete = new HashSet<ZRpc>();
@@ -336,7 +337,8 @@ namespace ValheimAutoModSync
                 if (!String.Equals(method, "ServerHandshake", StringComparison.Ordinal)) return true;
 
                 _serverHandshakeHeld = true;
-                if (_instance != null) _instance.Logger.LogDebug("AutoModSync held Valheim ServerHandshake until preflight completes.");
+                _heldServerHandshakeParameters = parameters == null ? new object[0] : (object[])parameters.Clone();
+                if (_instance != null) _instance.Logger.LogDebug("AutoModSync held Valheim ServerHandshake with " + _heldServerHandshakeParameters.Length.ToString(CultureInfo.InvariantCulture) + " argument(s) until preflight completes.");
                 return false;
             }
         }
@@ -1020,6 +1022,7 @@ namespace ValheimAutoModSync
             _serverSupportsBundleWindow = false;
             _preflightGateActive = true;
             _serverHandshakeHeld = false;
+            _heldServerHandshakeParameters = new object[0];
             _helloSentUtc = DateTime.MinValue;
             ResetManifestState();
 
@@ -1056,11 +1059,13 @@ namespace ValheimAutoModSync
             {
                 ZRpc rpc = _pendingRpc;
                 bool releaseServerHandshake = _serverHandshakeHeld;
+                object[] serverHandshakeParameters = _heldServerHandshakeParameters == null ? new object[0] : (object[])_heldServerHandshakeParameters.Clone();
                 _waitingForServer = false;
                 _serverRecognized = false;
                 _serverAcknowledged = false;
                 _preflightGateActive = false;
                 _serverHandshakeHeld = false;
+                _heldServerHandshakeParameters = new object[0];
                 _pendingRpc = null;
                 _helloSentUtc = DateTime.MinValue;
                 if (!_restartRequested) HideSyncOverlay();
@@ -1072,8 +1077,8 @@ namespace ValheimAutoModSync
                 try
                 {
                     _allowServerHandshake = true;
-                    rpc.Invoke("ServerHandshake", new object[0]);
-                    if (_instance != null) _instance.Logger.LogDebug("AutoModSync released Valheim ServerHandshake after preflight.");
+                    rpc.Invoke("ServerHandshake", serverHandshakeParameters);
+                    if (_instance != null) _instance.Logger.LogDebug("AutoModSync released the original Valheim ServerHandshake with " + serverHandshakeParameters.Length.ToString(CultureInfo.InvariantCulture) + " argument(s) after preflight.");
                 }
                 catch (Exception ex)
                 {
