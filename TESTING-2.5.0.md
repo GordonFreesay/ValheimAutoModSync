@@ -4,7 +4,7 @@
 
 **Release gate: PASSED — 2026-09-21**
 
-Completed live validation before release preparation:
+Completed live validation before the v2.5.0 release:
 
 - Jotunn/Epic Loot deliberately incomplete-client pre-handshake synchronization: **PASS**
 - Plugin-root synchronization: **PASS**
@@ -14,7 +14,7 @@ Completed live validation before release preparation:
 - Restart/apply/reconnect flow: **PASS**
 - Client/server synchronized config SHA-256 equality: **PASS**
 
-The signed-release test remains intentionally deferred until a trusted signing identity is available and is not a blocker for publishing the unsigned 2.5.0 release.
+The signed-release test remains intentionally deferred until a trusted signing identity is available. It did not block the unsigned v2.5.0 release.
 
 ## 1. Build the release
 
