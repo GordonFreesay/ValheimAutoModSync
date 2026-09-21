@@ -43,37 +43,41 @@ if errorlevel 1 goto :Fail
 copy /y "%BUILDTOOL%" "%TOOLSDIR%\AutoModSync.BuildTool.exe" >nul
 if errorlevel 1 goto :Fail
 
-set "VALHEIMROOT="
-if exist "%ProgramFiles(x86)%\Steam\steamapps\common\Valheim\valheim.exe" set "VALHEIMROOT=%ProgramFiles(x86)%\Steam\steamapps\common\Valheim"
+set "VALHEIMROOT=%AMS_VALHEIMROOT%"
+if defined VALHEIMROOT set "VALHEIMROOT=%VALHEIMROOT:"=%"
+if not defined VALHEIMROOT if exist "%ProgramFiles(x86)%\Steam\steamapps\common\Valheim\valheim.exe" set "VALHEIMROOT=%ProgramFiles(x86)%\Steam\steamapps\common\Valheim"
 if not defined VALHEIMROOT if exist "%ProgramFiles%\Steam\steamapps\common\Valheim\valheim.exe" set "VALHEIMROOT=%ProgramFiles%\Steam\steamapps\common\Valheim"
 for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if not defined VALHEIMROOT if exist "%%D:\SteamLibrary\steamapps\common\Valheim\valheim.exe" set "VALHEIMROOT=%%D:\SteamLibrary\steamapps\common\Valheim"
 if not defined VALHEIMROOT (
-  echo Enter the folder containing valheim.exe.
+  echo Enter the Valheim or Valheim Dedicated Server installation folder.
   set /p "VALHEIMROOT=Valheim path: "
 )
 set "VALHEIMROOT=%VALHEIMROOT:"=%"
-if not exist "%VALHEIMROOT%\valheim.exe" goto :BadClient
-if not exist "%VALHEIMROOT%\valheim_Data\Managed\assembly_valheim.dll" goto :BadClient
+set "VALHEIMMANAGED=%VALHEIMROOT%\valheim_Data\Managed"
+if not exist "%VALHEIMMANAGED%\assembly_valheim.dll" set "VALHEIMMANAGED=%VALHEIMROOT%\valheim_server_Data\Managed"
+if not exist "%VALHEIMMANAGED%\assembly_valheim.dll" goto :BadClient
+if not exist "%VALHEIMROOT%\valheim.exe" if not exist "%VALHEIMROOT%\valheim_server.exe" goto :BadClient
 
 echo Valheim path: "%VALHEIMROOT%"
+echo Managed references: "%VALHEIMMANAGED%"
 call :PreparePinnedBepInEx
 if errorlevel 1 goto :Fail
 
 set "BEPINEX_DLL=%BEPSOURCE%\BepInEx\core\BepInEx.dll"
 set "HARMONY_DLL=%BEPSOURCE%\BepInEx\core\0Harmony.dll"
-set "GAME_DLL=%VALHEIMROOT%\valheim_Data\Managed\assembly_valheim.dll"
-set "ASSEMBLY_UTILS=%VALHEIMROOT%\valheim_Data\Managed\assembly_utils.dll"
-set "SPLATFORM_DLL=%VALHEIMROOT%\valheim_Data\Managed\Splatform.dll"
-set "STEAMWORKS_DLL=%VALHEIMROOT%\valheim_Data\Managed\com.rlabrecque.steamworks.net.dll"
-set "NETSTANDARD_DLL=%VALHEIMROOT%\valheim_Data\Managed\netstandard.dll"
+set "GAME_DLL=%VALHEIMMANAGED%\assembly_valheim.dll"
+set "ASSEMBLY_UTILS=%VALHEIMMANAGED%\assembly_utils.dll"
+set "SPLATFORM_DLL=%VALHEIMMANAGED%\Splatform.dll"
+set "STEAMWORKS_DLL=%VALHEIMMANAGED%\com.rlabrecque.steamworks.net.dll"
+set "NETSTANDARD_DLL=%VALHEIMMANAGED%\netstandard.dll"
 set "UNITY_ENGINE=%BEPSOURCE%\unstripped_corlib\UnityEngine.dll"
-if not exist "%UNITY_ENGINE%" set "UNITY_ENGINE=%VALHEIMROOT%\valheim_Data\Managed\UnityEngine.dll"
+if not exist "%UNITY_ENGINE%" set "UNITY_ENGINE=%VALHEIMMANAGED%\UnityEngine.dll"
 set "UNITY_CORE=%BEPSOURCE%\unstripped_corlib\UnityEngine.CoreModule.dll"
-if not exist "%UNITY_CORE%" set "UNITY_CORE=%VALHEIMROOT%\valheim_Data\Managed\UnityEngine.CoreModule.dll"
+if not exist "%UNITY_CORE%" set "UNITY_CORE=%VALHEIMMANAGED%\UnityEngine.CoreModule.dll"
 set "UNITY_IMGUI=%BEPSOURCE%\unstripped_corlib\UnityEngine.IMGUIModule.dll"
-if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%VALHEIMROOT%\valheim_Data\Managed\UnityEngine.IMGUIModule.dll"
+if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%VALHEIMMANAGED%\UnityEngine.IMGUIModule.dll"
 set "UNITY_TEXT=%BEPSOURCE%\unstripped_corlib\UnityEngine.TextRenderingModule.dll"
-if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%VALHEIMROOT%\valheim_Data\Managed\UnityEngine.TextRenderingModule.dll"
+if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%VALHEIMMANAGED%\UnityEngine.TextRenderingModule.dll"
 
 set "REFS=%WORK%\refs.rsp"
 >"%REFS%" echo /nologo
@@ -229,7 +233,7 @@ echo BepInEx SHA-256 verified.
 exit /b 0
 
 :BadClient
-echo ERROR: A valid Valheim client installation was not found.
+echo ERROR: A valid Valheim or Valheim Dedicated Server installation was not found.
 goto :Fail
 
 :NoCompiler
