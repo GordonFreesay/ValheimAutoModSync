@@ -35,6 +35,8 @@ connection created
 
 The gate is intentionally below Jotunn and other framework-specific handshake patches. It does not patch those frameworks or force them to report compatibility.
 
+The held RPC is replayed with the **exact argument array supplied by Valheim**. AutoModSync must never manufacture a parameterless `ServerHandshake`: current Valheim builds can attach handshake data, and dropping those arguments causes the server's registered RPC decoder to read beyond the received package.
+
 ### Non-AutoModSync servers
 
 If no AutoModSync acknowledgement/manifest is seen within the short discovery timeout (currently 3 seconds), the held `ServerHandshake` is released and the connection continues normally.
