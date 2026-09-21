@@ -27,7 +27,7 @@ Back up the private identity. Deleting it changes the server fingerprint and cli
 
 ## Security
 
-BepInEx plugins are executable .NET code. Only trust AutoModSync server fingerprints belonging to server operators you recognize and trust.
+BepInEx plugins and preloader patchers can execute code. Only trust AutoModSync server fingerprints belonging to server operators you recognize and trust.
 
 The server signs its synchronization manifest, and transferred files are verified against it with SHA-256.
 
