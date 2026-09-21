@@ -46,6 +46,10 @@ namespace ValheimAutoModSync
         private static ServerPlugin _instance;
         private static ConfigEntry<bool> _enabled;
         private static ConfigEntry<string> _excludePatterns;
+        private static ConfigEntry<string> _serverOnlyPatterns;
+        private static ConfigEntry<string> _clientRequiredPatterns;
+        private static ConfigEntry<string> _syncConfigPatterns;
+        private static ConfigEntry<bool> _syncPatchers;
         private static ConfigEntry<int> _manifestCacheSeconds;
         private static ConfigEntry<int> _chunkBytes;
         private static ConfigEntry<int> _maxFileMiB;
@@ -62,6 +66,7 @@ namespace ValheimAutoModSync
         private static RSACryptoServiceProvider _signer;
         private static Dictionary<string, FileRecord> _files = new Dictionary<string, FileRecord>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<ZRpc, string> ClientVersions = new Dictionary<ZRpc, string>();
+        private static readonly Dictionary<ZRpc, string> ClientCapabilities = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, BundleTransfer> BundleTransfers = new Dictionary<ZRpc, BundleTransfer>();
         
         private sealed class FileRecord
@@ -94,8 +99,16 @@ namespace ValheimAutoModSync
             _enabled = Config.Bind("General", "Enabled", true, "Enable the AutoModSync server role on this Valheim instance.");
             _excludePatterns = Config.Bind("General", "ExcludePatterns",
                 "ValheimAutoModSync.Server.dll;ValheimAutoModSync.Client.dll;ValheimAutoModSync.Apply.exe;manifest.json;icon.png;README.md;CHANGELOG.md;LICENSE;THIRD-PARTY-NOTICES.md;*.pdb;*.mdb;*.log;*.tmp;*.bak;*.md",
-                "Semicolon-separated wildcard patterns that will not be sent to clients. Match is checked against both the relative path and file name.");
-            _manifestCacheSeconds = Config.Bind("General", "ManifestCacheSeconds", 5, "How long the server caches plugin hashes before rescanning BepInEx\\plugins.");
+                "Semicolon-separated wildcard patterns that will not be sent to clients from any synchronized root. Match is checked against both the relative path and file name.");
+            _serverOnlyPatterns = Config.Bind("Compatibility", "ServerOnlyPatterns", "",
+                "Semicolon-separated plugin/patcher wildcard patterns that exist on the server but must never be copied to clients.");
+            _clientRequiredPatterns = Config.Bind("Compatibility", "ClientRequiredPatterns", "",
+                "Optional semicolon-separated plugin/patcher wildcard allowlist. Empty means every non-excluded, non-server-only plugin/patcher file is client-required. When set, only matching files are advertised.");
+            _syncPatchers = Config.Bind("Compatibility", "SyncPatchers", true,
+                "Synchronize BepInEx\\patchers recursively. Disable only if this server's patchers are known to be server-only; ServerOnlyPatterns can exclude individual patchers.");
+            _syncConfigPatterns = Config.Bind("Compatibility", "SyncConfigPatterns", "",
+                "Explicit semicolon-separated allowlist for BepInEx\\config files that clients must receive. Empty disables config synchronization. Never use '*' unless every server config is intentionally client-safe.");
+            _manifestCacheSeconds = Config.Bind("General", "ManifestCacheSeconds", 5, "How long the server caches synchronized-root hashes before rescanning.");
             _chunkBytes = Config.Bind("Transfer", "ChunkBytes", 24576, "Raw file bytes per RPC chunk before Base64 encoding. 24576 is conservative for Valheim's RPC transport.");
             _maxFileMiB = Config.Bind("Transfer", "MaxFileMiB", 128, "Refuse to transfer a single file larger than this many MiB.");
             _maxBundleMiB = Config.Bind("Transfer", "MaxBundleMiB", 2048, "Refuse to build a compressed change package larger than this many MiB.");
@@ -210,8 +223,11 @@ namespace ValheimAutoModSync
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
                 int protocol = pkg.ReadInt();
                 string clientVersion = "";
+                string clientCapabilities = "";
                 try { clientVersion = pkg.ReadString(); } catch { clientVersion = ""; }
+                try { clientCapabilities = pkg.ReadString(); } catch { clientCapabilities = ""; }
                 ClientVersions[rpc] = clientVersion ?? "";
+                ClientCapabilities[rpc] = clientCapabilities ?? "";
                 if (protocol != ProtocolVersion)
                 {
                     SendError(rpc, "AutoModSync protocol mismatch. Server=" + ProtocolVersion + " Client=" + protocol);
@@ -225,6 +241,11 @@ namespace ValheimAutoModSync
                 rpc.Invoke(RpcAck, new object[] { ack });
 
                 EnsureManifest(false);
+                if (ManifestRequiresRootSync() && clientCapabilities.IndexOf("roots1", StringComparison.Ordinal) < 0)
+                {
+                    SendError(rpc, "This server requires AutoModSync root synchronization support (patchers/config). Update the AutoModSync client to 2.5.0 or newer.");
+                    return;
+                }
                 byte[] bytes = Encoding.UTF8.GetBytes(_manifestText);
                 int partChars = 24000;
                 int totalParts = Math.Max(1, (_manifestText.Length + partChars - 1) / partChars);
@@ -295,7 +316,7 @@ namespace ValheimAutoModSync
                     for (i = 0; i < records.Count; i++)
                     {
                         FileRecord record = records[i];
-                        string entryName = "plugins/" + record.RelativePath.Replace('\\', '/');
+                        string entryName = ArchivePrefix(record.Kind) + record.RelativePath.Replace('\\', '/');
                         ZipArchiveEntry entry = archive.CreateEntry(entryName, CompressionLevel.Fastest);
                         using (Stream entryStream = entry.Open())
                         using (FileStream input = new FileStream(record.FullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
@@ -467,7 +488,7 @@ namespace ValheimAutoModSync
             if (String.IsNullOrEmpty(requested) || requested.Length < 3 || requested[1] != ':')
                 throw new InvalidDataException("Invalid AutoModSync file request.");
             char kind = requested[0];
-            if (kind != 'P') throw new InvalidDataException("Invalid AutoModSync file kind.");
+            if (!IsSupportedManifestKind(kind)) throw new InvalidDataException("Invalid AutoModSync file kind.");
             string relative = NormalizeRelative(requested.Substring(2));
             if (relative.Length == 0) throw new InvalidDataException("Invalid AutoModSync relative path.");
             string lookup = kind + ":" + relative;
@@ -689,27 +710,14 @@ namespace ValheimAutoModSync
                 int seconds = _manifestCacheSeconds == null ? 5 : Math.Max(0, _manifestCacheSeconds.Value);
                 if (!force && _manifestBuiltUtc != DateTime.MinValue && (DateTime.UtcNow - _manifestBuiltUtc).TotalSeconds <= seconds) return;
 
-                string root = Paths.PluginPath;
                 List<FileRecord> records = new List<FileRecord>();
-                if (Directory.Exists(root))
-                {
-                    string[] files = Directory.GetFiles(root, "*", SearchOption.AllDirectories);
-                    int i;
-                    for (i = 0; i < files.Length; i++)
-                    {
-                        string full = files[i];
-                        string rel = MakeRelative(root, full).Replace('\\', '/');
-                        if (IsExcluded(rel, Path.GetFileName(full))) continue;
-                        FileInfo fi = new FileInfo(full);
-                        FileRecord r = new FileRecord();
-                        r.Kind = 'P';
-                        r.RelativePath = rel;
-                        r.FullPath = full;
-                        r.Size = fi.Length;
-                        r.Sha256 = Sha256File(full);
-                        records.Add(r);
-                    }
-                }
+                AddManifestRoot(records, 'P', Paths.PluginPath, false);
+
+                string patcherRoot = Path.Combine(Paths.BepInExRootPath, "patchers");
+                if (_syncPatchers == null || _syncPatchers.Value) AddManifestRoot(records, 'R', patcherRoot, false);
+
+                string configPatterns = _syncConfigPatterns == null ? "" : (_syncConfigPatterns.Value ?? "");
+                if (!String.IsNullOrWhiteSpace(configPatterns)) AddManifestRoot(records, 'C', Paths.ConfigPath, true);
 
                 // 2.4.5+: no packed game-root bootstrap is distributed or synchronized.
 
@@ -727,7 +735,11 @@ namespace ValheimAutoModSync
                     records.Add(cr);
                 }
 
-                records.Sort(delegate(FileRecord a, FileRecord b) { return StringComparer.OrdinalIgnoreCase.Compare(a.RelativePath, b.RelativePath); });
+                records.Sort(delegate(FileRecord a, FileRecord b)
+                {
+                    int byKind = a.Kind.CompareTo(b.Kind);
+                    return byKind != 0 ? byKind : StringComparer.OrdinalIgnoreCase.Compare(a.RelativePath, b.RelativePath);
+                });
                 Dictionary<string, FileRecord> map = new Dictionary<string, FileRecord>(StringComparer.OrdinalIgnoreCase);
                 StringBuilder sb = new StringBuilder();
                 int j;
@@ -745,6 +757,80 @@ namespace ValheimAutoModSync
                 _manifestBuiltUtc = DateTime.UtcNow;
                 if (_instance != null) _instance.Logger.LogDebug("AutoModSync manifest: " + map.Count + " files.");
             }
+        }
+
+        // Intent: Adds one permitted BepInEx subtree to the signed manifest while preserving paths relative to that subtree.
+        // Policy: plugin/patcher roots honor exclusion, server-only, and optional client-required rules; config files are included only by the explicit SyncConfigPatterns allowlist.
+        private static void AddManifestRoot(List<FileRecord> records, char kind, string root, bool configAllowlistRequired)
+        {
+            if (records == null || String.IsNullOrEmpty(root) || !Directory.Exists(root)) return;
+            string[] files = Directory.GetFiles(root, "*", SearchOption.AllDirectories);
+            int i;
+            for (i = 0; i < files.Length; i++)
+            {
+                string full = files[i];
+                string rel = NormalizeRelative(MakeRelative(root, full));
+                string name = Path.GetFileName(full);
+                if (rel.Length == 0 || IsExcluded(rel, name)) continue;
+                if (kind == 'C')
+                {
+                    if (String.Equals(name, "ValheimAutoModSync.private.xml", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (configAllowlistRequired && !MatchesPatterns(rel, name, _syncConfigPatterns == null ? "" : (_syncConfigPatterns.Value ?? ""))) continue;
+                }
+                else
+                {
+                    if (MatchesPatterns(rel, name, _serverOnlyPatterns == null ? "" : (_serverOnlyPatterns.Value ?? ""))) continue;
+                    string required = _clientRequiredPatterns == null ? "" : (_clientRequiredPatterns.Value ?? "");
+                    if (!String.IsNullOrWhiteSpace(required) && !MatchesPatterns(rel, name, required)) continue;
+                }
+
+                FileInfo fi = new FileInfo(full);
+                FileRecord r = new FileRecord();
+                r.Kind = kind;
+                r.RelativePath = rel;
+                r.FullPath = full;
+                r.Size = fi.Length;
+                r.Sha256 = Sha256File(full);
+                records.Add(r);
+            }
+        }
+
+        // Intent: Reports whether the current signed manifest contains roots that legacy AMS4 clients cannot install safely.
+        private static bool ManifestRequiresRootSync()
+        {
+            foreach (FileRecord record in _files.Values)
+                if (record != null && record.Kind != 'P') return true;
+            return false;
+        }
+
+        // Intent: Maps a manifest kind to its fixed ZIP namespace so no server-supplied path can choose an arbitrary client destination.
+        private static string ArchivePrefix(char kind)
+        {
+            if (kind == 'P') return "plugins/";
+            if (kind == 'R') return "patchers/";
+            if (kind == 'C') return "config/";
+            throw new InvalidDataException("Unsupported AutoModSync manifest kind.");
+        }
+
+        // Intent: Limits synchronized manifest kinds to the three hardcoded BepInEx destinations supported by the 2.5 client/apply helper.
+        private static bool IsSupportedManifestKind(char kind)
+        {
+            return kind == 'P' || kind == 'R' || kind == 'C';
+        }
+
+        // Intent: Applies one semicolon-separated wildcard list to both a relative path and filename for compatibility classification and config allowlisting.
+        private static bool MatchesPatterns(string relative, string name, string raw)
+        {
+            if (String.IsNullOrWhiteSpace(raw)) return false;
+            string[] patterns = raw.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            int i;
+            for (i = 0; i < patterns.Length; i++)
+            {
+                string p = patterns[i].Trim().Replace('\\', '/');
+                if (p.Length == 0) continue;
+                if (WildcardMatch(relative, p) || WildcardMatch(name, p)) return true;
+            }
+            return false;
         }
 
         // Intent: Detects whether the server plugin itself is running from a package-manager subdirectory so standalone release-client payload behavior is not mixed into managed profiles.
@@ -780,16 +866,9 @@ namespace ValheimAutoModSync
             if (String.Equals(name, "CHANGELOG.md", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "LICENSE", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "THIRD-PARTY-NOTICES.md", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "ValheimAutoModSync.private.xml", StringComparison.OrdinalIgnoreCase)) return true;
             string raw = _excludePatterns == null ? "" : (_excludePatterns.Value ?? "");
-            string[] patterns = raw.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-            int i;
-            for (i = 0; i < patterns.Length; i++)
-            {
-                string p = patterns[i].Trim().Replace('\\', '/');
-                if (p.Length == 0) continue;
-                if (WildcardMatch(relative, p) || WildcardMatch(name, p)) return true;
-            }
-            return false;
+            return MatchesPatterns(relative, name, raw);
         }
 
         // Intent: Implements case-insensitive '*'/'?' wildcard matching for exclusion rules without invoking a shell or regular-expression engine.
