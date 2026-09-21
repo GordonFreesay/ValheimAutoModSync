@@ -98,6 +98,14 @@ AutoModSync Steam bundle transport: SendRateMin 153600 -> 1048576, SendRateMax 1
 
 At transfer cleanup it should log that the previous Steam bundle transport settings were restored. If the transport line says `n/a`, names a non-Steam socket, or reports a lower value than requested, preserve that log: it identifies which Steam/transport setting refused the live override.
 
+While a longer transfer is active, the server also emits low-rate live Steam telemetry (at most once every five seconds), for example:
+
+```text
+AutoModSync Steam transfer telemetry: rate=..., pendingReliable=... B, unackedReliable=... B, ping=... ms.
+```
+
+This line distinguishes an AutoModSync framing problem from Steam's own bandwidth estimator or reliable queue remaining pinned.
+
 After verification, the client also logs the measured transfer size, elapsed time, and MiB/s.
 
 If binary batching is unavailable, transfer falls back to `bundle-window1`, then to the original one-chunk AMS4 behavior.
