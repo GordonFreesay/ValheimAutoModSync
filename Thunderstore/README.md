@@ -2,9 +2,11 @@
 
 ## Join the server. The mods follow.
 
-AutoModSync keeps a trusted Valheim server's synchronized BepInEx plugin set matched on its clients.
+AutoModSync keeps a trusted Valheim server's synchronized BepInEx mod files matched on its clients.
 
 Connect normally. AutoModSync compares the server's signed manifest with the client's installed files, transfers only missing or changed synchronized files, verifies them, stages updates, restarts Valheim when required, and reconnects.
+
+2.5.0 can synchronize normal `BepInEx/plugins` content plus required `BepInEx/patchers` files. `BepInEx/config` files are never mirrored by default; the server must explicitly allowlist the specific config files that clients need. Arbitrary game-root/core/managed-assembly paths are not synchronization targets.
 
 **No additional synchronization port is required.**
 
