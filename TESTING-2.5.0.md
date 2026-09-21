@@ -104,6 +104,24 @@ If binary batching is unavailable, transfer falls back to `bundle-window1`, then
 
 If files are missing, AutoModSync should request, verify, stage, restart, and reconnect before Jotunn or another compatibility framework can reject the incomplete client.
 
+### Multi-root compatibility checks
+
+Test at least one real or fixture file in each supported root:
+
+```text
+BepInEx/plugins   -> manifest kind P
+BepInEx/patchers  -> manifest kind R
+BepInEx/config    -> manifest kind C (only when SyncConfigPatterns matches)
+```
+
+For the patcher test, remove the required patcher from the client, connect, let AutoModSync restart, and verify the file is physically under `BepInEx/patchers` **before** the new BepInEx boot completes. It must never be written under `plugins`.
+
+For the config test, first leave `SyncConfigPatterns` empty and verify the server config is not advertised. Then add one exact/controlled pattern and verify only that file is synchronized to `BepInEx/config`. A broad pattern must still never synchronize `ValheimAutoModSync.private.xml`.
+
+For side-classification, place a harmless server-only fixture under plugins/patchers, match it with `ServerOnlyPatterns`, and verify it does not appear in the client manifest. Then test `ClientRequiredPatterns` with a folder wildcard and verify only the selected client-required subtree is advertised.
+
+A 2.4.x client may still interoperate with a plugin-only 2.5 server. If the server manifest contains patcher/config roots, it should require the 2.5 `roots1` capability instead of silently treating those entries as plugins.
+
 ## 4. Second-boot/reconnect test
 
 After the synchronized restart, BepInEx should load the newly synchronized dependency set before the reconnect reaches mod compatibility checks.
