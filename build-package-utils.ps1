@@ -42,7 +42,7 @@ function New-AutoModSyncZip {
     $stream = [System.IO.File]::Open($DestinationZip, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
     $archive = $null
     try {
-        $archive = New-Object System.IO.Compression.ZipArchive($stream, [System.IO.Compression.ZipArchiveMode]::Create, $false)
+        $archive = [System.IO.Compression.ZipArchive]::new($stream, [System.IO.Compression.ZipArchiveMode]::Create, $false)
         foreach ($item in Get-ChildItem -LiteralPath $source -File -Recurse | Sort-Object FullName) {
             $relative = $item.FullName.Substring($source.Length).TrimStart('\','/').Replace('\','/')
             $entry = $archive.CreateEntry($relative, [System.IO.Compression.CompressionLevel]::Optimal)
@@ -69,7 +69,7 @@ function Assert-NoNestedArchives {
     $stream = [System.IO.File]::OpenRead($ZipPath)
     $archive = $null
     try {
-        $archive = New-Object System.IO.Compression.ZipArchive($stream, [System.IO.Compression.ZipArchiveMode]::Read, $false)
+        $archive = [System.IO.Compression.ZipArchive]::new($stream, [System.IO.Compression.ZipArchiveMode]::Read, $false)
         $nested = @($archive.Entries | Where-Object { $_.FullName -match '\.(zip|7z|rar|tar|gz|bz2|xz)$' })
         if ($nested.Count -gt 0) {
             throw "Nested archives are not allowed in this package: $($nested.FullName -join ', ')"
