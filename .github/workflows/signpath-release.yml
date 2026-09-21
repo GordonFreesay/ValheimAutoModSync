@@ -41,10 +41,17 @@ jobs:
           & $steamCmd +quit
           Write-Host "SteamCMD bootstrap exit code: $LASTEXITCODE (self-update may return a nonzero code)."
           Start-Sleep -Seconds 2
-          & $steamCmd +force_install_dir $valheimDir +login anonymous +app_update 896660 validate +quit
-          if ($LASTEXITCODE -ne 0) { throw "SteamCMD Valheim install failed with exit code $LASTEXITCODE" }
-          $gameAssembly = Get-ChildItem -LiteralPath $valheimDir -Filter 'assembly_valheim.dll' -Recurse -File | Select-Object -First 1
-          if (-not $gameAssembly) { throw 'Valheim Dedicated Server did not provide assembly_valheim.dll.' }
+          $gameAssembly = $null
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            Write-Host "Valheim Dedicated Server install attempt $attempt of 5..."
+            & $steamCmd +@sSteamCmdForcePlatformType windows +force_install_dir $valheimDir +login anonymous +app_info_update 1 +app_update 896660 validate +quit
+            $steamExit = $LASTEXITCODE
+            $gameAssembly = Get-ChildItem -LiteralPath $valheimDir -Filter 'assembly_valheim.dll' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($steamExit -eq 0 -and $gameAssembly) { break }
+            Write-Warning "SteamCMD attempt $attempt exited $steamExit without usable Valheim references."
+            Start-Sleep -Seconds 5
+          }
+          if (-not $gameAssembly) { throw 'Valheim Dedicated Server did not provide assembly_valheim.dll after 5 attempts.' }
           if (-not (Test-Path (Join-Path $valheimDir 'valheim_server.exe'))) { throw 'valheim_server.exe was not installed.' }
           "AMS_VALHEIMROOT=$valheimDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Using managed references from $($gameAssembly.DirectoryName)"
