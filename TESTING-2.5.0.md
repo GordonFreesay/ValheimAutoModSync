@@ -16,12 +16,12 @@ Completed live validation before release preparation:
 
 The signed-release test remains intentionally deferred until a trusted signing identity is available and is not a blocker for publishing the unsigned 2.5.0 release.
 
-## 1. Build the development release
+## 1. Build the release
 
 From a Windows machine with Valheim installed:
 
 ```powershell
-git checkout ai/2.5.0-compat-signing
+git checkout main
 git pull
 .\verify-source-docs.ps1
 .\build-release.bat
@@ -46,7 +46,7 @@ Bundled\BepInExPack_Valheim-5.4.2350.zip
 
 The GUI installer is the primary path. `install.bat` is the manual fallback.
 
-Unsigned development builds can still receive Windows SmartScreen/reputation warnings. The signing-required release path is tested separately after a trusted signing identity is configured.
+Unsigned builds can still receive Windows SmartScreen/reputation warnings. The signing-required release path is tested separately after a trusted signing identity is configured.
 
 ## 2. Installer test
 
