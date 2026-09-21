@@ -53,7 +53,7 @@ The original AMS4 transfer is a conservative stop-and-wait pull: one client requ
 bundle-window1
 ```
 
-When both peers support it, the client requests up to 16 sequential chunks at a time. The server sends those chunks in order from one persistent prepared-bundle stream. This removes most RPC round trips and per-chunk file open/seek overhead while preserving the existing chunk order, bundle SHA-256, signed manifest, exact-file verification, and final completion message.
+When both peers support it, the client requests up to 16 sequential chunks at a time. The server opens/seeks the prepared bundle once per requested window and sends those chunks in order from that stream. This removes most RPC round trips and per-chunk file open/seek overhead while preserving the existing chunk order, bundle SHA-256, signed manifest, exact-file verification, and final completion message.
 
 A 2.5 client talking to an older AMS4 server automatically falls back to the original one-chunk request loop because the capability is absent. Older clients talking to a 2.5 server continue sending only the original index and therefore receive one chunk per request.
 
