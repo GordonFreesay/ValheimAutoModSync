@@ -204,9 +204,13 @@ echo Downloading pinned BepInEx package...
 curl.exe -L --fail --retry 3 --retry-delay 2 -o "%BEPZIP%" "%BEPINEX_URL%"
 if errorlevel 1 exit /b 1
 set "ACTUALSHA="
-"%BUILDTOOL%" sha256 "%BEPZIP%" >"%WORK%\sha.txt"
-if errorlevel 1 exit /b 1
-set /p "ACTUALSHA="<"%WORK%\sha.txt"
+set "AMS_HASH_TARGET=%BEPZIP%"
+for /f "usebackq delims=" %%H in (`powershell.exe -NoLogo -NoProfile -Command "(Get-FileHash -LiteralPath $env:AMS_HASH_TARGET -Algorithm SHA256).Hash.ToLowerInvariant()"`) do set "ACTUALSHA=%%H"
+set "AMS_HASH_TARGET="
+if not defined ACTUALSHA (
+  echo ERROR: Could not calculate BepInEx SHA-256 with Windows PowerShell.
+  exit /b 1
+)
 if /i not "%ACTUALSHA%"=="%BEPINEX_SHA256%" (
   echo ERROR: BepInEx SHA-256 verification failed.
   exit /b 1
