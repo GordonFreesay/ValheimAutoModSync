@@ -122,7 +122,7 @@ AutoModSync Steam transfer telemetry: rate=..., pendingReliable=... B, unackedRe
 
 This line distinguishes an AutoModSync framing problem from Steam's own bandwidth estimator or reliable queue remaining pinned.
 
-A prior live run reported `rate=1048576 B/s` on every sample after the old 1 MiB/s minimum was applied. That result means the Steam estimator was not climbing above the floor during the short sync; current development defaults intentionally raise the temporary floor to 8 MiB/s. The expected next test should therefore report a live rate materially above 1 MiB/s.
+A prior live run reported `rate=1048576 B/s` on every sample after the old 1 MiB/s minimum was applied. That result means the Steam estimator was not climbing above the floor during the short sync; the 2.5.0 defaults intentionally raise the temporary floor to 8 MiB/s. The expected next test should therefore report a live rate materially above 1 MiB/s.
 
 After verification, the client also logs the measured transfer size, elapsed time, and MiB/s.
 
