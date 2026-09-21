@@ -1,6 +1,6 @@
 # AutoModSync 2.5.0 compatibility and signing plan
 
-**Branch status:** core pre-handshake gate, AMS4 acknowledgement, signing pipeline, and source-documentation pass are implemented on `ai/2.5.0-compat-signing`. Live Valheim/Jotunn/Epic Loot validation is still required before release.
+**Validation status:** 2.5.0 release-gate testing is complete. The pre-handshake Jotunn/Epic Loot incomplete-client reproduction and the multi-root plugin/patcher/config/server-only validation passed before release preparation. Code signing remains a separate post-approval step and is not required for an unsigned 2.5.0 release.
 
 ## Goals
 
@@ -147,4 +147,13 @@ Before release:
 
 ## Release gate
 
-Do not publish 2.5.0 until the Jotunn/Epic Loot reproduction that exposed the 2.4.8 ordering issue succeeds from a deliberately incomplete client, and the patcher/config/server-only multi-root checks in TESTING-2.5.0.md pass.
+**PASSED — 2026-09-21**
+
+The 2.5.0 release gate has been satisfied:
+
+- The deliberately incomplete-client Jotunn/Epic Loot reproduction completed successfully with AutoModSync preflight occurring before the normal compatibility checks.
+- The multi-root validation passed for ordinary plugins, required patchers, explicitly allowlisted config files, and server-only exclusion.
+- Restart/apply/reconnect behavior passed during the multi-root validation.
+- The synchronized client/server config SHA-256 matched during validation.
+
+Code signing is tracked separately. An unsigned 2.5.0 release may be published while SignPath Foundation approval is pending.
