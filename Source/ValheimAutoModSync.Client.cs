@@ -40,6 +40,7 @@ namespace ValheimAutoModSync
         private const string RpcBundleChunk = "AMS4_BundleChunk";
         private const string RpcBundleEnd = "AMS4_BundleEnd";
         private const string RpcError = "AMS4_Error";
+        private const int BundleWindowChunks = 16;
 
         private static ClientPlugin _instance;
         private static ZRpc _pendingRpc;
@@ -51,6 +52,7 @@ namespace ValheimAutoModSync
         private static bool _waitingForServer;
         private static bool _serverRecognized;
         private static bool _serverAcknowledged;
+        private static bool _serverSupportsBundleWindow;
         private static bool _allowPeerInfo;
         private static bool _preflightGateActive;
         private static bool _allowServerHandshake;
@@ -72,6 +74,7 @@ namespace ValheimAutoModSync
         private static long _bundleBytesReceived;
         private static int _bundleNextChunk;
         private static int _bundleTotalChunks;
+        private static int _bundleWindowEndExclusive;
         private static bool _restartRequested;
         private static DateTime _quitAfterUtc = DateTime.MinValue;
         private static bool _quitIssued;
@@ -420,6 +423,7 @@ namespace ValheimAutoModSync
                 _waitingForServer = true;
                 _serverRecognized = false;
                 _serverAcknowledged = false;
+                _serverSupportsBundleWindow = false;
                 _preflightGateActive = false;
                 _helloSentUtc = DateTime.UtcNow;
                 ResetManifestState();
@@ -478,10 +482,17 @@ namespace ValheimAutoModSync
             {
                 int protocol = pkg.ReadInt();
                 string serverVersion = "";
+                string capabilities = "";
                 try { serverVersion = pkg.ReadString(); } catch { serverVersion = ""; }
+                try { capabilities = pkg.ReadString(); } catch { capabilities = ""; }
                 if (protocol != ProtocolVersion) throw new InvalidDataException("AutoModSync protocol mismatch during preflight acknowledgement.");
                 _serverAcknowledged = true;
-                if (_instance != null) _instance.Logger.LogDebug("AutoModSync preflight acknowledged by server " + serverVersion + ".");
+                _serverSupportsBundleWindow = capabilities.IndexOf("bundle-window1", StringComparison.Ordinal) >= 0;
+                if (_instance != null)
+                {
+                    _instance.Logger.LogDebug("AutoModSync preflight acknowledged by server " + serverVersion + ".");
+                    if (_serverSupportsBundleWindow) _instance.Logger.LogDebug("AutoModSync server supports windowed bundle transfer.");
+                }
             }
             catch (Exception ex)
             {
@@ -704,10 +715,13 @@ namespace ValheimAutoModSync
                 _bundleBytesReceived = 0L;
                 _bundleNextChunk = 0;
                 _bundleTotalChunks = chunks;
+                _bundleWindowEndExclusive = 0;
                 _overlayBundleMode = true;
                 _overlayBytesReceived = 0L;
                 _overlayBytesTotal = size;
                 ShowSyncOverlay("Downloading compressed mod package...", "");
+                if (_instance != null && _serverSupportsBundleWindow)
+                    _instance.Logger.LogInfo("AutoModSync using windowed bundle transfer (" + BundleWindowChunks.ToString(CultureInfo.InvariantCulture) + " chunks per request).");
                 RequestBundleChunk();
             }
             catch (Exception ex)
@@ -732,7 +746,8 @@ namespace ValheimAutoModSync
                 _bundleNextChunk++;
                 _overlayBytesReceived = _bundleBytesReceived;
                 _overlayFileProgress = _bundleTotalChunks <= 0 ? 1f : Mathf.Clamp01(_bundleNextChunk / (float)_bundleTotalChunks);
-                RequestBundleChunk();
+                if (_bundleNextChunk >= _bundleTotalChunks || _bundleNextChunk >= _bundleWindowEndExclusive)
+                    RequestBundleChunk();
             }
             catch (Exception ex)
             {
@@ -740,12 +755,16 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Requests the current next bundle-chunk index; the server uses this pull model to keep transfer ordering deterministic.
+        // Intent: Requests the next verified bundle-transfer window, or one chunk when connected to a legacy AMS4 server.
+        // Workflow: 2.5-capable servers receive a start index plus a bounded 16-chunk window so one RPC round trip can deliver many ordered chunks; the final index still requests the unchanged AMS4 completion message.
         private static void RequestBundleChunk()
         {
             if (_pendingRpc == null || _bundleStream == null) return;
+            int requestCount = _serverSupportsBundleWindow ? BundleWindowChunks : 1;
+            _bundleWindowEndExclusive = Math.Min(_bundleTotalChunks, _bundleNextChunk + requestCount);
             ZPackage request = new ZPackage();
             request.Write(_bundleNextChunk);
+            if (_serverSupportsBundleWindow) request.Write(requestCount);
             _pendingRpc.Invoke(RpcGetBundleChunk, new object[] { request });
         }
 
@@ -998,6 +1017,7 @@ namespace ValheimAutoModSync
             _waitingForServer = true;
             _serverRecognized = false;
             _serverAcknowledged = false;
+            _serverSupportsBundleWindow = false;
             _preflightGateActive = true;
             _serverHandshakeHeld = false;
             _helloSentUtc = DateTime.MinValue;
@@ -1119,6 +1139,7 @@ namespace ValheimAutoModSync
             _bundleSha256 = "";
             _bundleNextChunk = 0;
             _bundleTotalChunks = 0;
+            _bundleWindowEndExclusive = 0;
             _bundleBytesReceived = 0L;
             CloseBundleStream();
         }
