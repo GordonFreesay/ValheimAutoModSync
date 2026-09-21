@@ -4,6 +4,7 @@
 
 - Moves AutoModSync preflight ahead of the normal Valheim ServerHandshake so Jotunn/Epic Loot and similar mod-compatibility checks run only after synchronization has had a chance to complete.
 - Holds/replays only Valheim's own ServerHandshake; third-party compatibility results are not bypassed or rewritten.
+- Preserves and replays the exact original `ServerHandshake` argument list instead of synthesizing an empty call, preventing malformed-handshake `EndOfStreamException` failures on current Valheim builds.
 - Adds an optional AMS4 preflight acknowledgement before potentially expensive manifest generation.
 - Speeds up first-time/bare-client synchronization with a backward-compatible windowed bundle transfer: 2.5 peers can deliver up to 16 ordered chunks per request while legacy AMS4 peers keep the original one-chunk pull behavior.
 - Opens/seeks the prepared bundle ZIP once per transfer window instead of once for every ~24 KiB chunk.
