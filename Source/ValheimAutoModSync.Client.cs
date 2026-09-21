@@ -43,6 +43,7 @@ namespace ValheimAutoModSync
         private const string RpcBundleEnd = "AMS4_BundleEnd";
         private const string RpcError = "AMS4_Error";
         private const int BundleWindowChunks = 16;
+        private const string RootSyncCapability = "roots1";
 
         private static ClientPlugin _instance;
         private static ZRpc _pendingRpc;
@@ -440,6 +441,7 @@ namespace ValheimAutoModSync
                     ZPackage hello = new ZPackage();
                     hello.Write(ProtocolVersion);
                     hello.Write(PluginVersion);
+                    hello.Write(RootSyncCapability);
                     rpc.Invoke(RpcHello, new object[] { hello });
                     if (_instance != null) _instance.Logger.LogDebug("AutoModSync probe sent before PeerInfo.");
                 }
@@ -632,12 +634,12 @@ namespace ValheimAutoModSync
                 string[] fields = lines[i].Split(new char[] { '\t' }, 4);
                 if (fields.Length != 4 || fields[0].Length != 1) continue;
                 char kind = fields[0][0];
-                if (kind != 'P') continue;
+                if (!IsSupportedManifestKind(kind)) throw new InvalidDataException("Server manifest contained an unsupported AutoModSync file kind.");
                 long size;
                 if (!long.TryParse(fields[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size < 0) continue;
                 string rel = NormalizeRelative(fields[3]);
                 if (rel.Length == 0) continue;
-                if (IsPackageManagedAutoModSync() && IsAutoModSyncOwnedRelativePath(rel))
+                if (kind == 'P' && IsPackageManagedAutoModSync() && IsAutoModSyncOwnedRelativePath(rel))
                 {
                     if (_instance != null) _instance.Logger.LogDebug("Ignoring server-advertised package-managed AutoModSync file: " + rel);
                     continue;
@@ -861,7 +863,7 @@ namespace ValheimAutoModSync
             for (i = 0; i < NeededFiles.Count; i++)
             {
                 ManifestEntry e = NeededFiles[i];
-                string entryName = "plugins/" + e.RelativePath.Replace('\\', '/');
+                string entryName = ManifestKindDirectory(e.Kind) + "/" + e.RelativePath.Replace('\\', '/');
                 expected[entryName] = e;
             }
 
@@ -877,7 +879,7 @@ namespace ValheimAutoModSync
                     if (!expected.TryGetValue(name, out expectedEntry)) throw new InvalidDataException("Compressed package contained an unexpected file: " + name);
                     if (!extracted.Add(name)) throw new InvalidDataException("Compressed package contained a duplicate file: " + name);
 
-                    string stagingRoot = Path.Combine(GetAutoModSyncRoot(), "staging", "plugins");
+                    string stagingRoot = Path.Combine(GetAutoModSyncRoot(), "staging", ManifestKindDirectory(expectedEntry.Kind));
                     string output = SafeUnder(stagingRoot, expectedEntry.RelativePath) + ".amsnew";
                     string parent = Path.GetDirectoryName(output);
                     if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
@@ -1094,6 +1096,7 @@ namespace ValheimAutoModSync
                 ZPackage hello = new ZPackage();
                 hello.Write(ProtocolVersion);
                 hello.Write(PluginVersion);
+                hello.Write(RootSyncCapability);
                 rpc.Invoke(RpcHello, new object[] { hello });
                 if (_instance != null) _instance.Logger.LogDebug("AutoModSync preflight probe sent before Valheim ServerHandshake.");
             }
@@ -1725,18 +1728,6 @@ namespace ValheimAutoModSync
             return Path.Combine(Paths.BepInExRootPath, "AutoModSync");
         }
 
-        // Intent: Resolves a synchronized plugin relative path beneath BepInEx/plugins and verifies full-path containment before returning it.
-        private static string SafePluginPath(string relative)
-        {
-            string rel = NormalizeRelative(relative);
-            if (rel.Length == 0) throw new InvalidDataException("Unsafe plugin path.");
-            string root = Path.GetFullPath(Paths.PluginPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            string full = Path.GetFullPath(Path.Combine(Paths.PluginPath, rel.Replace('/', Path.DirectorySeparatorChar)));
-            if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Plugin path escaped BepInEx\\plugins.");
-            return full;
-        }
-
-
         // Intent: General containment helper for staging/state roots; rejects any normalized relative path whose full path escapes the supplied root.
         private static string SafeUnder(string rootPath, string relative)
         {
@@ -1764,12 +1755,40 @@ namespace ValheimAutoModSync
             using (SHA256 sha = SHA256.Create()) return ToHex(sha.ComputeHash(fs));
         }
 
-        // Intent: Maps a manifest file-kind code to its permitted destination root.
-        // Current protocol intentionally supports only plugin files ('P'); unknown kinds are rejected.
+        // Intent: Maps a manifest file-kind code to one hardcoded BepInEx destination root and rejects every other kind.
+        // Security: the server can choose only a path relative to plugins, patchers, or explicitly allowlisted config; it cannot supply arbitrary filesystem destinations.
         private static string SafeTargetPath(char kind, string relative)
         {
-            if (kind == 'P') return SafePluginPath(relative);
+            if (kind == 'P') return SafeBepInExRootPath(Paths.PluginPath, relative, "plugins");
+            if (kind == 'R') return SafeBepInExRootPath(Path.Combine(Paths.BepInExRootPath, "patchers"), relative, "patchers");
+            if (kind == 'C') return SafeBepInExRootPath(Paths.ConfigPath, relative, "config");
             throw new InvalidDataException("Unsupported AutoModSync target kind.");
+        }
+
+        // Intent: Maps each supported manifest kind to its fixed archive/staging directory name.
+        private static string ManifestKindDirectory(char kind)
+        {
+            if (kind == 'P') return "plugins";
+            if (kind == 'R') return "patchers";
+            if (kind == 'C') return "config";
+            throw new InvalidDataException("Unsupported AutoModSync manifest kind.");
+        }
+
+        // Intent: Recognizes only the manifest kinds implemented by both the client verifier and out-of-process apply helper.
+        private static bool IsSupportedManifestKind(char kind)
+        {
+            return kind == 'P' || kind == 'R' || kind == 'C';
+        }
+
+        // Intent: Resolves one relative synchronized path beneath a fixed BepInEx root with full-path containment enforcement.
+        private static string SafeBepInExRootPath(string rootPath, string relative, string label)
+        {
+            string rel = NormalizeRelative(relative);
+            if (rel.Length == 0) throw new InvalidDataException("Unsafe " + label + " path.");
+            string root = Path.GetFullPath(rootPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string full = Path.GetFullPath(Path.Combine(rootPath, rel.Replace('/', Path.DirectorySeparatorChar)));
+            if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Path escaped BepInEx\\" + label + ".");
+            return full;
         }
 
         // Intent: Verifies the server's RSA/SHA-256 manifest signature using only the public key delivered in the manifest header.
