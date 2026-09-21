@@ -43,6 +43,20 @@ If no AutoModSync acknowledgement/manifest is seen within the short discovery ti
 
 The server sends a lightweight acknowledgement before hashing/building the manifest. Once acknowledged, the client uses a longer manifest-start timeout (currently 15 seconds) instead of falling back while the server is still scanning plugins.
 
+### Bundle transfer throughput
+
+The original AMS4 transfer is a conservative stop-and-wait pull: one client request produces one chunk response. That is compatible but becomes slow when a bare client needs a large mod set.
+
+2.5.0 keeps protocol version 4 and adds an optional capability in `AMS4_Ack`:
+
+```text
+bundle-window1
+```
+
+When both peers support it, the client requests up to 16 sequential chunks at a time. The server sends those chunks in order from one persistent prepared-bundle stream. This removes most RPC round trips and per-chunk file open/seek overhead while preserving the existing chunk order, bundle SHA-256, signed manifest, exact-file verification, and final completion message.
+
+A 2.5 client talking to an older AMS4 server automatically falls back to the original one-chunk request loop because the capability is absent. Older clients talking to a 2.5 server continue sending only the original index and therefore receive one chunk per request.
+
 ### Dependency recovery
 
 If BepInEx skipped a server-required plugin because a hard dependency was absent, AutoModSync itself can still preflight (provided AutoModSync loaded). The missing dependency is synchronized, then the restart lets BepInEx resolve the full dependency graph normally.
