@@ -116,7 +116,7 @@ BepInEx/config    -> manifest kind C (only when SyncConfigPatterns matches)
 
 For the patcher test, remove the required patcher from the client, connect, let AutoModSync restart, and verify the file is physically under `BepInEx/patchers` **before** the new BepInEx boot completes. It must never be written under `plugins`.
 
-For the config test, first leave `SyncConfigPatterns` empty and verify the server config is not advertised. Then add one exact/controlled pattern and verify only that file is synchronized to `BepInEx/config`. A broad pattern must still never synchronize `ValheimAutoModSync.private.xml`.
+For the config test, first leave `SyncConfigPatterns` empty and verify the server config is not advertised. Then add one exact/controlled pattern and verify only that file is synchronized to `BepInEx/config`. A broad pattern must still never synchronize `ValheimAutoModSync.private.xml`, `ValheimAutoModSync.public.xml`, or `BepInEx.cfg`.
 
 For side-classification, place a harmless server-only fixture under plugins/patchers, match it with `ServerOnlyPatterns`, and verify it does not appear in the client manifest. Then test `ClientRequiredPatterns` with a folder wildcard and verify only the selected client-required subtree is advertised.
 
