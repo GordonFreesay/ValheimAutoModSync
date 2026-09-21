@@ -14,13 +14,13 @@ Unsigned releases remain the supported public release path unless and until trus
 
 The repository workflow is:
 
-`.github/workflows/signpath-release.yml`
+`.github/workflows/release-build.yml`
 
-Despite the historical filename, its normal public-release function is to build and preserve an origin-verifiable unsigned artifact. It runs on a GitHub-hosted Windows runner and:
+Its normal public-release function is to build and preserve an origin-verifiable unsigned artifact. It runs on a GitHub-hosted Windows runner and:
 
 1. checks out the exact source revision;
 2. installs the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references;
-3. runs `build-release.bat` to build the AutoModSync release from source;
+3. runs the unified release/package build so the standalone and store packages are validated from the same source and compiled binaries;
 4. uploads the unsigned release ZIP as a GitHub Actions artifact.
 
 Public GitHub Releases may be created from that verified unsigned artifact. The release ZIP SHA-256 should be published with the release.
