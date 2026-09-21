@@ -90,6 +90,14 @@ AutoModSync server supports binary batched bundle transfer.
 AutoModSync using binary batched bundle transfer (up to 16 chunks per request).
 ```
 
+On a Steam dedicated-server connection that still has Valheim's low inherited rate, the server should additionally log something like:
+
+```text
+AutoModSync temporarily raised Steam SendRateMax for bundle transfer: 153600 -> 8388608 B/s.
+```
+
+At transfer cleanup it should restore the prior value. If the rate-lift line is absent, inspect whether the peer transport is Steam vs PlayFab/wrapped and whether the per-connection Steam config read succeeded.
+
 After verification, the client also logs the measured transfer size, elapsed time, and MiB/s.
 
 If binary batching is unavailable, transfer falls back to `bundle-window1`, then to the original one-chunk AMS4 behavior.
