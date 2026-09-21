@@ -83,14 +83,16 @@ AutoModSync preflight acknowledged by server 2.5.0.
 AutoModSync server detected; checking required mods before joining.
 ```
 
-When a 2.5 server and client are both present, a large synchronization should also log:
+When a current 2.5 server and client are both present, a large synchronization should log:
 
 ```text
-AutoModSync server supports windowed bundle transfer.
-AutoModSync using windowed bundle transfer (16 chunks per request).
+AutoModSync server supports binary batched bundle transfer.
+AutoModSync using binary batched bundle transfer (up to 16 chunks per request).
 ```
 
-If those lines are absent, transfer falls back to the original one-chunk AMS4 behavior.
+After verification, the client also logs the measured transfer size, elapsed time, and MiB/s.
+
+If binary batching is unavailable, transfer falls back to `bundle-window1`, then to the original one-chunk AMS4 behavior.
 
 If files are missing, AutoModSync should request, verify, stage, restart, and reconnect before Jotunn or another compatibility framework can reject the incomplete client.
 
