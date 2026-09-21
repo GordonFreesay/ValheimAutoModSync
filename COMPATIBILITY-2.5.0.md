@@ -67,6 +67,8 @@ When both peers support it, the server reads a bounded window from the prepared 
 
 Fallback order is: `bundle-batch1` -> `bundle-window1` -> original single-chunk AMS4. Older AMS4 clients and servers therefore continue to interoperate without a protocol-version bump.
 
+Live testing on a gigabit LAN isolated a second bottleneck below AutoModSync's framing: Valheim's Steam transport pins `SendRateMax` near 153600 B/s, which closely matches the observed ~0.1-0.15 MiB/s transfer ceiling even when raw TCP/iperf reaches line rate. During an AutoModSync bundle only, the server therefore raises **only the specific peer connection's** Steam `SendRateMax` (default target 8 MiB/s) and restores its previous value when the transfer completes or aborts. `SendRateMin` is deliberately untouched so Steam congestion control can still reduce the rate on weak links. Non-Steam/PlayFab paths simply skip this optimization.
+
 ### Dependency recovery
 
 If BepInEx skipped a server-required plugin because a hard dependency was absent, AutoModSync itself can still preflight (provided AutoModSync loaded). The missing dependency is synchronized, then the restart lets BepInEx resolve the full dependency graph normally.
