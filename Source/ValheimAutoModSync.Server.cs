@@ -76,6 +76,7 @@ namespace ValheimAutoModSync
             public int ChunkBytes;
             public int TotalChunks;
             public int FileCount;
+            public FileStream Stream;
         }
 
         // Intent: BepInEx server entry point; binds server/transfer limits, loads the signing identity, clears stale cache files, and installs only the server-side connection hooks.
@@ -210,6 +211,7 @@ namespace ValheimAutoModSync
                 ZPackage ack = new ZPackage();
                 ack.Write(ProtocolVersion);
                 ack.Write(PluginVersion);
+                ack.Write("bundle-window1");
                 rpc.Invoke(RpcAck, new object[] { ack });
 
                 EnsureManifest(false);
@@ -309,6 +311,7 @@ namespace ValheimAutoModSync
                 transfer.ChunkBytes = rawChunk;
                 transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
                 transfer.FileCount = records.Count;
+                transfer.Stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read, FileShare.Read);
                 BundleTransfers[rpc] = transfer;
 
                 ZPackage begin = new ZPackage();
@@ -328,14 +331,18 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Serves one requested bundle chunk by index and emits the completion message when all chunks have been requested.
-        // The transfer is pull-based so ordering and memory usage remain predictable.
+        // Intent: Serves one legacy chunk or a bounded 2.5 transfer window beginning at the requested chunk index, then emits the unchanged AMS4 completion message when the client requests TotalChunks.
+        // Performance: keeps the prepared ZIP stream open for the transfer and sends up to 16 sequential chunks per request, removing most per-chunk RPC round trips and file open/seek operations while preserving ordered delivery.
         private static void RPC_GetBundleChunk(ZRpc rpc, ZPackage pkg)
         {
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
                 int index = pkg.ReadInt();
+                int requestedCount = 1;
+                try { requestedCount = pkg.ReadInt(); } catch { requestedCount = 1; }
+                requestedCount = Math.Max(1, Math.Min(16, requestedCount));
+
                 BundleTransfer transfer;
                 if (!BundleTransfers.TryGetValue(rpc, out transfer) || transfer == null || !File.Exists(transfer.ZipPath))
                     throw new InvalidDataException("No active AutoModSync package exists for this client.");
@@ -351,19 +358,22 @@ namespace ValheimAutoModSync
                     return;
                 }
 
-                byte[] buffer = new byte[transfer.ChunkBytes];
-                int read;
-                using (FileStream stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    stream.Seek((long)index * transfer.ChunkBytes, SeekOrigin.Begin);
-                    read = stream.Read(buffer, 0, buffer.Length);
-                }
-                if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
+                if (transfer.Stream == null) transfer.Stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                long expectedOffset = (long)index * transfer.ChunkBytes;
+                if (transfer.Stream.Position != expectedOffset) transfer.Stream.Seek(expectedOffset, SeekOrigin.Begin);
 
-                ZPackage chunk = new ZPackage();
-                chunk.Write(index);
-                chunk.Write(Convert.ToBase64String(buffer, 0, read));
-                rpc.Invoke(RpcBundleChunk, new object[] { chunk });
+                byte[] buffer = new byte[transfer.ChunkBytes];
+                int sent;
+                for (sent = 0; sent < requestedCount && index + sent < transfer.TotalChunks; sent++)
+                {
+                    int read = transfer.Stream.Read(buffer, 0, buffer.Length);
+                    if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
+
+                    ZPackage chunk = new ZPackage();
+                    chunk.Write(index + sent);
+                    chunk.Write(Convert.ToBase64String(buffer, 0, read));
+                    rpc.Invoke(RpcBundleChunk, new object[] { chunk });
+                }
             }
             catch (Exception ex)
             {
@@ -402,9 +412,14 @@ namespace ValheimAutoModSync
             BundleTransfer transfer;
             if (!BundleTransfers.TryGetValue(rpc, out transfer)) return;
             BundleTransfers.Remove(rpc);
-            if (transfer != null && !String.IsNullOrEmpty(transfer.ZipPath))
+            if (transfer != null)
             {
-                try { if (File.Exists(transfer.ZipPath)) File.Delete(transfer.ZipPath); } catch { }
+                try { if (transfer.Stream != null) transfer.Stream.Dispose(); } catch { }
+                transfer.Stream = null;
+                if (!String.IsNullOrEmpty(transfer.ZipPath))
+                {
+                    try { if (File.Exists(transfer.ZipPath)) File.Delete(transfer.ZipPath); } catch { }
+                }
             }
         }
 
