@@ -71,7 +71,7 @@ build-release.bat               Windows standalone release builder
 build-thunderstore.ps1          Thunderstore/r2modman package builder
 build-all-releases.bat          Combined release build entry point
 install.bat                     Readable/manual fallback installer included in releases
-SIGNING.md                      Authenticode/SignPath release-signing workflow
+SIGNING.md                      Current unsigned-release policy and optional future Authenticode signing paths
 SOURCE-WALKTHROUGH.md           End-to-end source, trust-boundary, handshake, and restart flow map
 verify-source-docs.ps1          Verifies source-level Intent documentation
 ```
@@ -84,7 +84,7 @@ There are intentionally no nested `README.txt` files; this root `README.md` is t
 
 Local builds can run `build-release.bat` on a Windows PC with Valheim installed. The builder uses the Windows .NET Framework C# compiler to build the managed AutoModSync components and produces the runtime files used by the release package. These generated payloads are ignored by Git; a source checkout is not itself an install package.
 
-The repository also contains `.github/workflows/signpath-release.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, and uploads the resulting ZIP as a GitHub Actions artifact. The uploaded workflow artifact is the artifact submitted to SignPath for origin-verified signing once the SignPath Foundation project credentials are configured.
+The repository also contains `.github/workflows/signpath-release.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, and uploads the resulting ZIP as a GitHub Actions artifact. Public releases are currently distributed unsigned. The workflow retains optional SignPath submission steps for a future eligible Foundation application or another SignPath subscription, but those steps remain inactive unless signing credentials are configured.
 
 The release builder pins **BepInExPack Valheim 5.4.2350** and verifies this SHA-256 before using it:
 
@@ -96,11 +96,15 @@ Valheim and Unity assemblies required for compilation are taken from the user's 
 
 ## Code signing policy
 
-Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+AutoModSync public Windows releases are currently **unsigned**.
 
-Public release signing is performed from the `main` branch through the repository's GitHub Actions workflow on GitHub-hosted runners. The unsigned release ZIP is uploaded as a GitHub Actions artifact before any signing request is submitted so SignPath can verify the repository, branch, commit, workflow, and build origin.
+The project applied to the SignPath Foundation program in September 2026. The application was declined at this stage because the project did not yet have enough external public-trust and adoption signals such as community usage, stars/forks/contributors, independent references, or sustained public engagement. The decision was not a technical rejection of AutoModSync. The project may reapply after broader adoption or use another trusted Authenticode signing path in the future.
 
-Only AutoModSync-authored PE files are intended to receive the AutoModSync project signature. Third-party BepInEx and Unity Doorstop binaries included in release packages are not re-signed.
+Release builds continue to run from `main` through GitHub Actions on GitHub-hosted runners. The resulting unsigned ZIP is uploaded as a GitHub Actions artifact so the public build origin remains independently inspectable even without an Authenticode publisher certificate.
+
+The workflow retains optional SignPath support but does not submit signing requests unless valid SignPath credentials are explicitly configured.
+
+Only AutoModSync-authored PE files would receive an AutoModSync project signature if trusted signing is enabled in the future. Third-party BepInEx and Unity Doorstop binaries included in release packages are not re-signed.
 
 Project roles:
 
@@ -110,7 +114,7 @@ Project roles:
 
 Privacy policy: This program will not transfer information to other networked systems unless specifically requested by the user or by the person installing or operating it. AutoModSync communicates with the Valheim server the user chooses to connect to for synchronization and uses the game's existing network connection.
 
-See `SIGNING.md` for the release-signing workflow and configuration details.
+See `SIGNING.md` for the current unsigned-release policy and the retained optional signing infrastructure.
 
 ## Release integrity
 
