@@ -87,13 +87,13 @@ When a current 2.5 server and client are both present, a large synchronization s
 
 ```text
 AutoModSync server supports binary batched bundle transfer.
-AutoModSync using binary batched bundle transfer (up to 16 chunks per request).
+AutoModSync using pipelined binary bundle transfer (up to 128 chunks requested per window; 16 chunks per Steam message).
 ```
 
 On a Steam dedicated-server connection, the server should additionally log the live per-connection values, for example:
 
 ```text
-AutoModSync Steam bundle transport: SendRateMin 153600 -> 1048576, SendRateMax 153600 -> 8388608, SendBuffer <old> -> 8388608 B.
+AutoModSync Steam bundle transport: SendRateMin 153600 -> 8388608, SendRateMax 153600 -> 33554432, SendBuffer <old> -> 16777216 B.
 ```
 
 At transfer cleanup it should log that the previous Steam bundle transport settings were restored. If the transport line says `n/a`, names a non-Steam socket, or reports a lower value than requested, preserve that log: it identifies which Steam/transport setting refused the live override.
@@ -105,6 +105,8 @@ AutoModSync Steam transfer telemetry: rate=..., pendingReliable=... B, unackedRe
 ```
 
 This line distinguishes an AutoModSync framing problem from Steam's own bandwidth estimator or reliable queue remaining pinned.
+
+A prior live run reported `rate=1048576 B/s` on every sample after the old 1 MiB/s minimum was applied. That result means the Steam estimator was not climbing above the floor during the short sync; current development defaults intentionally raise the temporary floor to 8 MiB/s. The expected next test should therefore report a live rate materially above 1 MiB/s.
 
 After verification, the client also logs the measured transfer size, elapsed time, and MiB/s.
 
