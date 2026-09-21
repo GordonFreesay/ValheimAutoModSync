@@ -47,7 +47,7 @@ Launch Valheim or the dedicated server normally after installation.
 ## What happens when a client connects
 
 1. **Trust** — on first contact, the client is shown the server signing fingerprint and chooses whether to trust it.
-2. **Compare** — local plugin hashes are compared with the server's signed manifest.
+2. **Compare** — local synchronized BepInEx file hashes are compared with the server's signed manifest.
 3. **Download** — only missing or changed synchronized files are transferred.
 4. **Verify** — received data and extracted files are verified before installation.
 5. **Restart** — changed files are staged and Valheim restarts so BepInEx can load them.
@@ -55,7 +55,7 @@ Launch Valheim or the dedicated server normally after installation.
 
 ## Security model
 
-BepInEx plugins are executable .NET code. Only trust AutoModSync server fingerprints belonging to server operators you recognize and trust.
+BepInEx plugins and preloader patchers can execute code. Only trust AutoModSync server fingerprints belonging to server operators you recognize and trust.
 
 Each AutoModSync server has its own signing identity. The server signs its synchronization manifest, and files are checked against that manifest before being applied. A server's private signing key must not be distributed to clients.
 
