@@ -10,7 +10,7 @@
 - Opens/seeks the prepared bundle ZIP once per transfer window instead of once for every ~24 KiB chunk.
 - Adds a faster `bundle-batch1` path that packs up to ~384 KiB of raw compressed bundle bytes into one RPC, eliminating Base64 expansion and most per-chunk RPC message overhead while keeping the older windowed/single-chunk AMS4 fallbacks.
 - Logs measured bundle transfer size, elapsed time, and MiB/s after verification so throughput regressions are visible in normal client logs.
-- Works around Valheim's ~153600 B/s SteamNetworkingSockets send-rate ceiling during bundle delivery by temporarily raising only `SendRateMax` on the specific Steam connection, then restoring the previous value after success/failure. `SendRateMin` is never raised.
+- Works around Valheim's ~153600 B/s SteamNetworkingSockets transfer floor/ceiling during bundle delivery by tuning the **live ZRpc Steam connection directly**: temporarily raises its send-rate maximum, a bounded send-rate minimum, and reliable send buffer, then restores the exact previous values after success/failure. This avoids relying on the pre-handshake peer already being visible in `ZNet.GetPeers()`.
 - Extends the signed manifest/install pipeline beyond `BepInEx/plugins`: preloader files under `BepInEx/patchers` can now be synchronized to their real patcher root, and selected `BepInEx/config` files can be synchronized through an explicit server allowlist.
 - Adds `ServerOnlyPatterns` and optional `ClientRequiredPatterns` compatibility classification so dedicated-server-only files do not have to be advertised to clients.
 - Keeps config synchronization opt-in and hard-blocks the AutoModSync signing identity files and loader-wide `BepInEx.cfg` from ever entering the synchronized config manifest.
