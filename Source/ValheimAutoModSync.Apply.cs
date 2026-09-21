@@ -74,8 +74,11 @@ internal static class Program
                     else if (kind == 'R') { srcRoot = Path.Combine(stagingRoot, "patchers"); dstRoot = patcherRoot; }
                     else if (kind == 'C')
                     {
-                        if (String.Equals(Path.GetFileName(rel), "ValheimAutoModSync.private.xml", StringComparison.OrdinalIgnoreCase))
-                            throw new InvalidDataException("Refusing to apply an AutoModSync private identity as synchronized config.");
+                        string configName = Path.GetFileName(rel);
+                        if (String.Equals(configName, "ValheimAutoModSync.private.xml", StringComparison.OrdinalIgnoreCase)
+                            || String.Equals(configName, "ValheimAutoModSync.public.xml", StringComparison.OrdinalIgnoreCase)
+                            || String.Equals(configName, "BepInEx.cfg", StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidDataException("Refusing to apply a protected BepInEx/AutoModSync config file.");
                         srcRoot = Path.Combine(stagingRoot, "config");
                         dstRoot = configRoot;
                     }
