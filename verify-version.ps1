@@ -56,6 +56,7 @@ foreach ($source in @(
 }
 
 Assert-RegexValue "Source\AutoModSyncInstaller.manifest" 'assemblyIdentity\s+version="([^"]+)"' $assemblyVersion "installer manifest version"
+Assert-RegexValue "Thunderstore\thunderstore.toml" 'versionNumber\s*=\s*"([^"]+)"' $version "Thunderstore package version"
 
 if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Error $_ }
