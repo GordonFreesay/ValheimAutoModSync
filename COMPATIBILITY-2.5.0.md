@@ -55,9 +55,17 @@ The original AMS4 transfer is a conservative stop-and-wait pull: one client requ
 bundle-window1
 ```
 
-When both peers support it, the client requests up to 16 sequential chunks at a time. The server opens/seeks the prepared bundle once per requested window and sends those chunks in order from that stream. This removes most RPC round trips and per-chunk file open/seek overhead while preserving the existing chunk order, bundle SHA-256, signed manifest, exact-file verification, and final completion message.
+2.5.0 first added `bundle-window1`, which lets the client request up to 16 sequential chunks at a time. Live testing showed that sending those chunks as separate Base64 RPC messages was still too slow for a bare-client 32 MiB synchronization.
 
-A 2.5 client talking to an older AMS4 server automatically falls back to the original one-chunk request loop because the capability is absent. Older clients talking to a 2.5 server continue sending only the original index and therefore receive one chunk per request.
+The preferred 2.5.0 path is now the additional optional capability:
+
+```text
+bundle-batch1
+```
+
+When both peers support it, the server reads a bounded window from the prepared ZIP and packs up to roughly 384 KiB of **raw binary chunk data** into one `AMS4_BundleBatch` RPC. This removes Base64's ~33% wire expansion and collapses many RPC messages into one reliable Valheim/Steam message. Chunk ordering, final bundle SHA-256, signed-manifest verification, exact-file verification, staging, and completion semantics remain unchanged.
+
+Fallback order is: `bundle-batch1` -> `bundle-window1` -> original single-chunk AMS4. Older AMS4 clients and servers therefore continue to interoperate without a protocol-version bump.
 
 ### Dependency recovery
 
