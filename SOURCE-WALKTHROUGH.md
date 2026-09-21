@@ -45,6 +45,8 @@ The older SendPeerInfo AMS4 probe remains as a fallback for connection paths tha
 
 For large first-time synchronizations, 2.5.0 negotiates optional transfer capabilities through `AMS4_Ack`. The preferred `bundle-batch1` path packs a bounded set of raw binary ZIP chunks (up to roughly 384 KiB total) into one `AMS4_BundleBatch` RPC, avoiding Base64 expansion and reducing message overhead. If binary batching is unavailable, `bundle-window1` requests up to 16 ordered legacy chunk RPCs per pull; if neither capability exists, the client keeps the original one-chunk AMS4 behavior.
 
+For Steam-backed dedicated-server peers, the server also temporarily raises only that connection's SteamNetworkingSockets `SendRateMax` while the bundle is active, then restores the previous ceiling. This avoids Valheim's low default send ceiling becoming the dominant bottleneck without globally changing gameplay traffic or raising `SendRateMin`.
+
 ### Source/ValheimAutoModSync.Server.cs
 
 The server plugin registers AMS4 RPCs on incoming Valheim connections and serves a deterministic signed view of eligible `BepInEx/plugins` files.
