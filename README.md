@@ -63,26 +63,26 @@ The generated server private signing identity (`BepInEx/config/ValheimAutoModSyn
 ## Repository layout
 
 ```text
-Client/                  Normal visible BepInEx client runtime, AutoModSync plugin, and apply helper
-Server/                  Prebuilt server plugin and example configuration
-Source/                  AutoModSync source, including client, server, installer, build tool, and apply helper
-Tools/                   Prebuilt release build tool
-build-release.bat        Windows release builder
-ValheimAutoModSyncInstaller.exe  Primary standalone installer in built release packages
-install.bat              Readable/manual fallback installer
-CHECKSUMS.txt             SHA-256 hashes for repository/package files
-LICENSE                   MIT license for AutoModSync-authored code
-THIRD-PARTY-NOTICES.md    Bundled dependency attribution and license information
-SOURCE-WALKTHROUGH.md      End-to-end source, trust-boundary, handshake, and restart flow map
-SIGNING.md                 Authenticode/public-release signing workflow
-verify-source-docs.ps1      Checks that every C# function retains an Intent comment
+Source/                         Authoritative AutoModSync C# source
+Server/server-config-example.cfg  Example 2.5.0 server configuration
+Thunderstore/                   Thunderstore/r2modman package documentation and assets
+THIRD_PARTY_LICENSES/           Third-party license texts
+build-release.bat               Windows standalone release builder
+build-thunderstore.ps1          Thunderstore/r2modman package builder
+build-all-releases.bat          Combined release build entry point
+install.bat                     Readable/manual fallback installer included in releases
+SIGNING.md                      Authenticode/SignPath release-signing workflow
+SOURCE-WALKTHROUGH.md           End-to-end source, trust-boundary, handshake, and restart flow map
+verify-source-docs.ps1          Verifies source-level Intent documentation
 ```
+
+Generated runtime payloads such as `Client/`, `Tools/`, the compiled server DLL, installers, and `Dist/` are build outputs and are intentionally not versioned. Installable binaries are published through GitHub Releases rather than stored in the source tree.
 
 There are intentionally no nested `README.txt` files; this root `README.md` is the project documentation.
 
 ## Building from source
 
-Local builds can run `build-release.bat` on a Windows PC with Valheim installed. The builder uses the Windows .NET Framework C# compiler to build the managed AutoModSync components and produces the runtime files used by the release package.
+Local builds can run `build-release.bat` on a Windows PC with Valheim installed. The builder uses the Windows .NET Framework C# compiler to build the managed AutoModSync components and produces the runtime files used by the release package. These generated payloads are ignored by Git; a source checkout is not itself an install package.
 
 The repository also contains `.github/workflows/signpath-release.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, and uploads the resulting ZIP as a GitHub Actions artifact. The uploaded workflow artifact is the artifact submitted to SignPath for origin-verified signing once the SignPath Foundation project credentials are configured.
 
@@ -112,9 +112,17 @@ Privacy policy: This program will not transfer information to other networked sy
 
 See `SIGNING.md` for the release-signing workflow and configuration details.
 
-## Checksums
+## Release integrity
 
-`CHECKSUMS.txt` contains SHA-256 hashes for the files shipped with the package/repository. The checksum file itself is intentionally excluded from its own list.
+The current public standalone release is `ValheimAutoModSync-2.5.0.zip`.
+
+SHA-256:
+
+```text
+106f7cad4b4f4e75ffc7227d28332101ea01fd70631ee15d94d153fce0ed67ad
+```
+
+GitHub Releases is the authoritative source for installable release artifacts. Repository source files are integrity-tracked by Git rather than by a generated repository-wide checksum file.
 
 ## License
 
