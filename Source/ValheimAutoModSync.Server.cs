@@ -34,8 +34,10 @@ namespace ValheimAutoModSync
         internal const string RpcManifestEnd = "AMS4_ManifestEnd";
         internal const string RpcGetBundle = "AMS4_GetBundle";
         internal const string RpcGetBundleChunk = "AMS4_GetBundleChunk";
+        internal const string RpcGetBundleBatch = "AMS4_GetBundleBatch";
         internal const string RpcBundleBegin = "AMS4_BundleBegin";
         internal const string RpcBundleChunk = "AMS4_BundleChunk";
+        internal const string RpcBundleBatch = "AMS4_BundleBatch";
         internal const string RpcBundleEnd = "AMS4_BundleEnd";
         internal const string RpcError = "AMS4_Error";
 
@@ -172,11 +174,13 @@ namespace ValheimAutoModSync
                 rpc.Register<ZPackage>(RpcAck, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcGetBundle, new Action<ZRpc, ZPackage>(RPC_GetBundle));
                 rpc.Register<ZPackage>(RpcGetBundleChunk, new Action<ZRpc, ZPackage>(RPC_GetBundleChunk));
+                rpc.Register<ZPackage>(RpcGetBundleBatch, new Action<ZRpc, ZPackage>(RPC_GetBundleBatch));
                 rpc.Register<ZPackage>(RpcManifestBegin, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcManifestChunk, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcManifestEnd, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcBundleBegin, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcBundleChunk, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcBundleBatch, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcBundleEnd, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcError, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 Registered.Add(rpc);
@@ -210,7 +214,7 @@ namespace ValheimAutoModSync
                 ZPackage ack = new ZPackage();
                 ack.Write(ProtocolVersion);
                 ack.Write(PluginVersion);
-                ack.Write("bundle-window1");
+                ack.Write("bundle-window1;bundle-batch1");
                 rpc.Invoke(RpcAck, new object[] { ack });
 
                 EnsureManifest(false);
@@ -378,6 +382,73 @@ namespace ValheimAutoModSync
                 if (_instance != null) _instance.Logger.LogWarning("Bundle chunk transfer failed: " + ex);
                 CleanupBundle(rpc);
                 SendError(rpc, "Server failed while transferring the compressed AutoModSync package: " + ex.Message);
+            }
+        }
+
+        // Intent: Serves a bounded binary batch of consecutive compressed-bundle chunks, or the unchanged completion message when the client requests TotalChunks.
+        // Performance: sends raw bytes in one ZPackage instead of Base64 strings across many RPC messages; the raw batch is capped near 384 KiB to stay conservative for Valheim/Steam reliable-message transport.
+        private static void RPC_GetBundleBatch(ZRpc rpc, ZPackage pkg)
+        {
+            try
+            {
+                if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                int index = pkg.ReadInt();
+                int requestedCount = 1;
+                try { requestedCount = pkg.ReadInt(); } catch { requestedCount = 1; }
+                requestedCount = Math.Max(1, Math.Min(16, requestedCount));
+
+                BundleTransfer transfer;
+                if (!BundleTransfers.TryGetValue(rpc, out transfer) || transfer == null || !File.Exists(transfer.ZipPath))
+                    throw new InvalidDataException("No active AutoModSync package exists for this client.");
+                if (index < 0 || index > transfer.TotalChunks) throw new InvalidDataException("Invalid AutoModSync package batch request.");
+
+                if (index == transfer.TotalChunks)
+                {
+                    ZPackage end = new ZPackage();
+                    end.Write(transfer.Sha256);
+                    end.Write(transfer.FileCount);
+                    rpc.Invoke(RpcBundleEnd, new object[] { end });
+                    CleanupBundle(rpc);
+                    return;
+                }
+
+                const int maxBatchBytes = 384 * 1024;
+                int maxChunksByBytes = Math.Max(1, maxBatchBytes / Math.Max(1, transfer.ChunkBytes));
+                int count = Math.Min(requestedCount, Math.Min(maxChunksByBytes, transfer.TotalChunks - index));
+                ZPackage batch = new ZPackage();
+                batch.Write(index);
+                batch.Write(count);
+
+                byte[] buffer = new byte[transfer.ChunkBytes];
+                using (FileStream stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    stream.Seek((long)index * transfer.ChunkBytes, SeekOrigin.Begin);
+                    int sent;
+                    for (sent = 0; sent < count; sent++)
+                    {
+                        int read = stream.Read(buffer, 0, buffer.Length);
+                        if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
+                        batch.Write(index + sent);
+                        if (read == buffer.Length)
+                        {
+                            batch.Write(buffer);
+                        }
+                        else
+                        {
+                            byte[] tail = new byte[read];
+                            Buffer.BlockCopy(buffer, 0, tail, 0, read);
+                            batch.Write(tail);
+                        }
+                    }
+                }
+
+                rpc.Invoke(RpcBundleBatch, new object[] { batch });
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Bundle batch transfer failed: " + ex);
+                CleanupBundle(rpc);
+                SendError(rpc, "Server failed while transferring the compressed AutoModSync package batch: " + ex.Message);
             }
         }
 
