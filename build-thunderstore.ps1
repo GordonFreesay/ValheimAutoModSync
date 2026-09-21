@@ -6,23 +6,13 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $Root = $PSScriptRoot
-$ClientSource = Join-Path $Root "Source\ValheimAutoModSync.Client.cs"
-$match = [regex]::Match([System.IO.File]::ReadAllText($ClientSource), 'PluginVersion\s*=\s*"([^"]+)"')
-if (-not $match.Success) { throw "Could not read PluginVersion from client source." }
-$Version = $match.Groups[1].Value
+. (Join-Path $Root "build-package-utils.ps1")
+$Version = Get-AutoModSyncVersion -Root $Root
 
 if (-not $SkipStandaloneBuild) {
     Write-Host ""
     Write-Host "Building standalone release from unified source..." -ForegroundColor Cyan
-    $old = $env:AMS_NO_PAUSE
-    try {
-        $env:AMS_NO_PAUSE = "1"
-        & cmd.exe /d /c "`"$Root\build-release.bat`""
-        if ($LASTEXITCODE -ne 0) { throw "build-release.bat failed with exit code $LASTEXITCODE" }
-    }
-    finally {
-        $env:AMS_NO_PAUSE = $old
-    }
+    Invoke-AutoModSyncStandaloneBuild -Root $Root
 }
 
 $ClientDll = Join-Path $Root "Client\ValheimAutoModSync.Client.dll"
@@ -68,8 +58,7 @@ $enc = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText((Join-Path $Package "manifest.json"), $manifest + [Environment]::NewLine, $enc)
 
 $Zip = Join-Path $Dist ("GordonFreesay-ValheimAutoModSync-" + $Version + ".zip")
-if (Test-Path $Zip) { Remove-Item -LiteralPath $Zip -Force }
-Compress-Archive -Path (Join-Path $Package "*") -DestinationPath $Zip -Force
+New-AutoModSyncZip -SourceDirectory $Package -DestinationZip $Zip
 
 $standalone = Join-Path $Dist ("ValheimAutoModSync-" + $Version + ".zip")
 Write-Host ""
