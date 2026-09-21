@@ -1,0 +1,102 @@
+name: Publish CurseForge
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Upload to CurseForge after the package builds'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  curseforge:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read shared version
+        id: meta
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'VERSION is empty.' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "AMS_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Valheim Dedicated Server build references
+        shell: pwsh
+        run: ./.github/scripts/prepare-valheim-build.ps1
+
+      - name: Build CurseForge package
+        shell: pwsh
+        env:
+          AMS_NO_PAUSE: "1"
+          AMS_REQUIRE_SIGNING: "0"
+        run: ./build-curseforge.ps1
+
+      - name: Upload CurseForge package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ValheimAutoModSync-${{ env.AMS_VERSION }}-CurseForge
+          path: Dist/ValheimAutoModSync-${{ env.AMS_VERSION }}-CurseForge.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Validate CurseForge publishing configuration
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          CURSEFORGE_API_TOKEN: ${{ secrets.CURSEFORGE_API_TOKEN }}
+          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CURSEFORGE_API_TOKEN)) { throw 'CURSEFORGE_API_TOKEN secret is not configured.' }
+          if ([string]::IsNullOrWhiteSpace($env:CURSEFORGE_PROJECT_ID)) { throw 'CURSEFORGE_PROJECT_ID variable is not configured.' }
+
+      - name: Upload to CurseForge as manual-release file
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          CURSEFORGE_API_TOKEN: ${{ secrets.CURSEFORGE_API_TOKEN }}
+          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          CURSEFORGE_BEPINEX_PROJECT_ID: ${{ vars.CURSEFORGE_BEPINEX_PROJECT_ID }}
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          $zip = Join-Path $PWD "Dist/ValheimAutoModSync-$version-CurseForge.zip"
+          $changelogText = Get-Content -LiteralPath Thunderstore/CHANGELOG.md -Raw
+          $m = [regex]::Match($changelogText, "(?ms)^##\s+$([regex]::Escape($version))\s*\r?\n(.*?)(?=^##\s+|\z)")
+          $changelog = if ($m.Success) { $m.Groups[1].Value.Trim() } else { "Valheim AutoModSync $version" }
+
+          $metadata = [ordered]@{
+            changelog = $changelog
+            changelogType = 'markdown'
+            displayName = "Valheim AutoModSync $version"
+            gameVersionNames = @('Client','Server')
+            releaseType = 'release'
+            isMarkedForManualRelease = $true
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:CURSEFORGE_BEPINEX_PROJECT_ID)) {
+            $metadata.relations = @{
+              projects = @(@{
+                projectID = $env:CURSEFORGE_BEPINEX_PROJECT_ID
+                type = 'requiredDependency'
+              })
+            }
+          }
+
+          $json = $metadata | ConvertTo-Json -Depth 8 -Compress
+          $response = Invoke-RestMethod -Method Post -Uri "https://www.curseforge.com/api/projects/$env:CURSEFORGE_PROJECT_ID/upload-file" -Headers @{'X-Api-Token'=$env:CURSEFORGE_API_TOKEN} -Form @{
+            metadata = $json
+            file = Get-Item -LiteralPath $zip
+          }
+          if (-not $response.id) { throw 'CurseForge upload returned no file ID.' }
+          Write-Host "CurseForge upload accepted. File ID: $($response.id). It is marked for manual release."
