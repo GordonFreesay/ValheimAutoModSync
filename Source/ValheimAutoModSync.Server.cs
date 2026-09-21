@@ -122,7 +122,6 @@ namespace ValheimAutoModSync
             _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 33554432, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
             _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 8388608, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
             _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 16777216, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
-            UpgradeDevelopmentTransferDefaults();
 
             try
             {
@@ -131,6 +130,9 @@ namespace ValheimAutoModSync
                 Logger.LogInfo("AutoModSync uses Valheim's existing ZRpc connection; no additional listening port is opened.");
                 Logger.LogInfo("AutoModSync server fingerprint: " + _publicFingerprint);
                 new Harmony(PluginGuid).PatchAll(typeof(NetworkPatches));
+                Logger.LogInfo("AutoModSync early connection hooks installed.");
+                try { UpgradeDevelopmentTransferDefaults(); }
+                catch (Exception migrateEx) { Logger.LogWarning("AutoModSync could not migrate development transfer defaults; continuing with existing values: " + migrateEx.Message); }
             }
             catch (Exception ex)
             {
@@ -228,6 +230,7 @@ namespace ValheimAutoModSync
                 rpc.Register<ZPackage>(RpcBundleEnd, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcError, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 Registered.Add(rpc);
+                if (_instance != null) _instance.Logger.LogDebug("AutoModSync registered AMS4 handlers on a new peer ZRpc.");
             }
             catch (Exception ex)
             {
@@ -245,6 +248,7 @@ namespace ValheimAutoModSync
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync received AMS4 preflight hello.");
                 int protocol = pkg.ReadInt();
                 string clientVersion = "";
                 string clientCapabilities = "";
