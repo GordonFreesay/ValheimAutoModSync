@@ -43,7 +43,7 @@ After a successful/matching preflight, AutoModSync stops gating and Valheim plus
 
 The older SendPeerInfo AMS4 probe remains as a fallback for connection paths that do not pass through the early gate. Keeping the same AMS4 protocol preserves compatibility with existing 2.4.x AutoModSync peers.
 
-For large first-time synchronizations, 2.5.0 also negotiates the optional `bundle-window1` capability through `AMS4_Ack`. A capable client requests up to 16 ordered bundle chunks per pull instead of one. The server holds one read stream open for the prepared ZIP and services the entire requested window sequentially. If the capability is absent, the client keeps the original one-chunk AMS4 behavior.
+For large first-time synchronizations, 2.5.0 also negotiates the optional `bundle-window1` capability through `AMS4_Ack`. A capable client requests up to 16 ordered bundle chunks per pull instead of one. The server opens/seeks the prepared ZIP once for each requested window and services the entire window sequentially. If the capability is absent, the client keeps the original one-chunk AMS4 behavior.
 
 ### Source/ValheimAutoModSync.Server.cs
 
