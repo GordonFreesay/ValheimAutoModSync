@@ -1,0 +1,88 @@
+name: Standalone Release Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    name: Build release packages on GitHub-hosted Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+      SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read shared version
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'VERSION is empty.' }
+          "AMS_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Valheim Dedicated Server build references
+        shell: pwsh
+        run: ./.github/scripts/prepare-valheim-build.ps1
+
+      - name: Build unsigned release and distribution packages from source
+        shell: pwsh
+        env:
+          AMS_NO_PAUSE: "1"
+          AMS_REQUIRE_SIGNING: "0"
+        run: ./build-store-packages.ps1
+
+      - name: Locate canonical standalone release ZIP
+        shell: pwsh
+        run: |
+          $release = Join-Path $PWD "Dist/ValheimAutoModSync-$env:AMS_VERSION.zip"
+          if (-not (Test-Path -LiteralPath $release)) { throw "Standalone release ZIP was not produced: $release" }
+          "RELEASE_ZIP=$release" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Unsigned standalone release artifact: $release"
+
+      - name: Upload unsigned artifact for origin verification
+        id: upload_unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.RELEASE_ZIP }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Submit signing request to SignPath
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' && env.SIGNPATH_ORGANIZATION_ID != '' && env.SIGNPATH_PROJECT_SLUG != '' && env.SIGNPATH_SIGNING_POLICY_SLUG != '' }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ env.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload_unsigned.outputs.artifact-id }}
+          skip-decompress: true
+          wait-for-completion: true
+          output-artifact-directory: ${{ runner.temp }}\signpath-signed
+
+      - name: Upload SignPath-signed artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' && env.SIGNPATH_ORGANIZATION_ID != '' && env.SIGNPATH_PROJECT_SLUG != '' && env.SIGNPATH_SIGNING_POLICY_SLUG != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: signpath-signed-release
+          path: ${{ runner.temp }}\signpath-signed\*
+          if-no-files-found: error
+
+      - name: Optional signing status
+        if: ${{ github.event_name == 'workflow_dispatch' && (env.SIGNPATH_API_TOKEN == '' || env.SIGNPATH_ORGANIZATION_ID == '' || env.SIGNPATH_PROJECT_SLUG == '' || env.SIGNPATH_SIGNING_POLICY_SLUG == '') }}
+        shell: pwsh
+        run: Write-Host 'Build and GitHub artifact upload succeeded. Public releases are currently unsigned. Optional SignPath signing remains dormant unless valid SignPath credentials are configured in the future.'
