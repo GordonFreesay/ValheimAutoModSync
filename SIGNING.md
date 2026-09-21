@@ -1,67 +1,57 @@
 # AutoModSync release signing
 
-AutoModSync 2.5.0 is staged so public releases can be Authenticode-signed before packaging.
+AutoModSync public Windows releases are prepared for origin-verified Authenticode signing through SignPath Foundation.
 
-Supported signing backends:
-- Microsoft Artifact Signing / Trusted Signing via SignTool `/dlib` and metadata.
-- A CA-issued code-signing PFX.
-- A trusted code-signing certificate already installed in the Windows certificate store.
+## Public release path: GitHub Actions + SignPath
 
-A self-signed certificate is useful for local testing but is not a SmartScreen reputation solution.
+The repository workflow is:
 
-## Files signed
+`.github/workflows/signpath-release.yml`
 
-Only AutoModSync-authored PE files are signed:
+It runs on a GitHub-hosted Windows runner and:
+
+1. checks out the exact source revision;
+2. installs the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references;
+3. runs `build-release.bat` to build the AutoModSync release from source;
+4. uploads the unsigned release ZIP as a GitHub Actions artifact;
+5. on a manually started release-signing run, submits that GitHub artifact ID to SignPath;
+6. waits for SignPath approval/signing and makes the signed result available as a workflow artifact.
+
+This structure is intentional: SignPath's GitHub trusted-build connector verifies that the build came from a GitHub workflow and that the artifact existed as a GitHub Actions artifact before the signing request was submitted.
+
+After the SignPath Foundation application is approved, configure:
+
+### GitHub Actions secret
+
+- `SIGNPATH_API_TOKEN`
+
+### GitHub Actions repository variables
+
+- `SIGNPATH_ORGANIZATION_ID`
+- `SIGNPATH_PROJECT_SLUG`
+- `SIGNPATH_SIGNING_POLICY_SLUG`
+- `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` when a non-default artifact configuration is used
+
+Public signing requests are intentionally made only from manually dispatched workflow runs. Normal pushes to `main` still build and upload the unsigned artifact so the GitHub-hosted build remains continuously verifiable.
+
+## Files that receive the project signature
+
+Only AutoModSync-authored PE files should be signed:
+
 - `ValheimAutoModSync.Client.dll`
 - `ValheimAutoModSync.Server.dll`
 - `ValheimAutoModSync.Apply.exe`
 - `AutoModSync.BuildTool.exe`
 - `ValheimAutoModSyncInstaller.exe`
 
-Third-party BepInEx / Unity Doorstop files, including `winhttp.dll`, are not re-signed.
+Third-party BepInEx / Unity Doorstop files, including `winhttp.dll`, must not be re-signed with the AutoModSync project certificate.
 
-## Public signed release
+The SignPath artifact configuration should use the release ZIP as its root and apply Authenticode signing only to the AutoModSync-authored files listed above.
 
-Configure exactly one signing mode, then run:
+## Local development signing
 
-```text
-build-signed-release.bat
-```
+The repository retains `sign-release.ps1` and `build-signed-release.bat` for local development/testing with a developer-controlled certificate or Microsoft Artifact Signing identity.
 
-This sets `AMS_REQUIRE_SIGNING=1`, builds both release formats, and fails if signing or signature verification fails.
+Those local paths are not the SignPath Foundation public-release path and do not provide SignPath origin verification.
 
-Normal development builds remain usable without a certificate. If a signing identity is configured they sign automatically; otherwise they are explicitly unsigned development builds.
-
-## Artifact Signing / Trusted Signing
-
-```bat
-set "AMS_ARTIFACT_SIGNING_DLIB=C:\Path\To\Azure.CodeSigning.Dlib.dll"
-set "AMS_ARTIFACT_SIGNING_METADATA=C:\Secure\artifact-signing-metadata.json"
-```
-
-If SignTool is not discoverable automatically:
-
-```bat
-set "AMS_SIGNTOOL=C:\Path\To\signtool.exe"
-```
-
-## PFX
-
-```bat
-set "AMS_SIGN_PFX=C:\Secure\GordonFreesay-CodeSigning.pfx"
-set "AMS_SIGN_PFX_PASSWORD=your-password-if-required"
-```
-
-## Windows certificate store
-
-```bat
-set "AMS_SIGN_THUMBPRINT=0123456789ABCDEF..."
-```
-
-Set `AMS_SIGN_MACHINE_STORE=1` for Local Machine instead of Current User.
-
-Use `AMS_TIMESTAMP_URL` to override the RFC3161 timestamp server.
-
-Never commit signing credentials, private keys, PFX files, or Artifact Signing metadata.
-
-Signing improves publisher identity and gives SmartScreen a stable publisher reputation path, but does not guarantee every brand-new file will immediately be reputation-whitelisted.
+Never commit signing credentials, private keys, PFX files, API tokens, or signing metadata.
