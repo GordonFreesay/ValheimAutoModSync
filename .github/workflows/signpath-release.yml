@@ -39,7 +39,8 @@ jobs:
           Expand-Archive -LiteralPath $steamCmdZip -DestinationPath $steamCmdDir -Force
           $steamCmd = Join-Path $steamCmdDir 'steamcmd.exe'
           & $steamCmd +quit
-          if ($LASTEXITCODE -ne 0) { throw "SteamCMD bootstrap failed with exit code $LASTEXITCODE" }
+          Write-Host "SteamCMD bootstrap exit code: $LASTEXITCODE (self-update may return a nonzero code)."
+          Start-Sleep -Seconds 2
           & $steamCmd +force_install_dir $valheimDir +login anonymous +app_update 896660 validate +quit
           if ($LASTEXITCODE -ne 0) { throw "SteamCMD Valheim install failed with exit code $LASTEXITCODE" }
           $gameAssembly = Get-ChildItem -LiteralPath $valheimDir -Filter 'assembly_valheim.dll' -Recurse -File | Select-Object -First 1
