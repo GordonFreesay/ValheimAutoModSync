@@ -1767,11 +1767,19 @@ namespace ValheimAutoModSync
             if (kind == 'R') return SafeBepInExRootPath(Path.Combine(Paths.BepInExRootPath, "patchers"), relative, "patchers");
             if (kind == 'C')
             {
-                if (String.Equals(Path.GetFileName(relative), "ValheimAutoModSync.private.xml", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException("Refusing to synchronize an AutoModSync private identity.");
+                if (IsProtectedConfigName(Path.GetFileName(relative)))
+                    throw new InvalidDataException("Refusing to synchronize a protected BepInEx/AutoModSync config file.");
                 return SafeBepInExRootPath(Paths.ConfigPath, relative, "config");
             }
             throw new InvalidDataException("Unsupported AutoModSync target kind.");
+        }
+
+        // Intent: Independently rejects loader-wide BepInEx configuration and AutoModSync signing identity files even if a server attempts to advertise them as config entries.
+        private static bool IsProtectedConfigName(string name)
+        {
+            return String.Equals(name, "ValheimAutoModSync.private.xml", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(name, "ValheimAutoModSync.public.xml", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(name, "BepInEx.cfg", StringComparison.OrdinalIgnoreCase);
         }
 
         // Intent: Maps each supported manifest kind to its fixed archive/staging directory name.
