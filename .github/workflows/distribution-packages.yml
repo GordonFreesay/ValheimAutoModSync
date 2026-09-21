@@ -1,0 +1,75 @@
+name: Distribution Packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build all distribution packages
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate tag and shared version
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'VERSION is empty.' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match VERSION v$version."
+          }
+          "AMS_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Valheim Dedicated Server build references
+        shell: pwsh
+        run: ./.github/scripts/prepare-valheim-build.ps1
+
+      - name: Build standalone and store packages
+        shell: pwsh
+        env:
+          AMS_NO_PAUSE: "1"
+          AMS_REQUIRE_SIGNING: "0"
+        run: ./build-store-packages.ps1
+
+      - name: Upload standalone package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ValheimAutoModSync-${{ env.AMS_VERSION }}-Standalone
+          path: Dist/ValheimAutoModSync-${{ env.AMS_VERSION }}.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload Nexus package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ValheimAutoModSync-${{ env.AMS_VERSION }}-Nexus
+          path: Dist/ValheimAutoModSync-${{ env.AMS_VERSION }}-Nexus.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload CurseForge package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ValheimAutoModSync-${{ env.AMS_VERSION }}-CurseForge
+          path: Dist/ValheimAutoModSync-${{ env.AMS_VERSION }}-CurseForge.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload Thunderstore package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ValheimAutoModSync-${{ env.AMS_VERSION }}-Thunderstore
+          path: Dist/GordonFreesay-ValheimAutoModSync-${{ env.AMS_VERSION }}.zip
+          archive: false
+          if-no-files-found: error

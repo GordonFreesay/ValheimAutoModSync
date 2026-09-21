@@ -1,0 +1,75 @@
+name: Publish Thunderstore
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to Thunderstore after the package builds'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  thunderstore:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read shared version
+        id: meta
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'VERSION is empty.' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "AMS_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Valheim Dedicated Server build references
+        shell: pwsh
+        run: ./.github/scripts/prepare-valheim-build.ps1
+
+      - name: Build Thunderstore package
+        shell: pwsh
+        env:
+          AMS_NO_PAUSE: "1"
+          AMS_REQUIRE_SIGNING: "0"
+        run: ./build-thunderstore.ps1
+
+      - name: Upload Thunderstore package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ValheimAutoModSync-${{ env.AMS_VERSION }}-Thunderstore
+          path: Dist/GordonFreesay-ValheimAutoModSync-${{ env.AMS_VERSION }}.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Validate Thunderstore publishing configuration
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          THUNDERSTORE_TOKEN: ${{ secrets.THUNDERSTORE_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:THUNDERSTORE_TOKEN)) { throw 'THUNDERSTORE_TOKEN secret is not configured.' }
+
+      - name: Install official Thunderstore CLI
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        run: dotnet tool install --global tcli --version 0.2.4
+
+      - name: Publish through official Thunderstore CLI
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          THUNDERSTORE_TOKEN: ${{ secrets.THUNDERSTORE_TOKEN }}
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          $zip = Join-Path $PWD "Dist/GordonFreesay-ValheimAutoModSync-$version.zip"
+          tcli publish --file "$zip" --token "$env:THUNDERSTORE_TOKEN" --config-path "Thunderstore/thunderstore.toml" --package-version "$version"

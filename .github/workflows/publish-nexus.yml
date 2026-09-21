@@ -1,0 +1,98 @@
+name: Publish Nexus
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Upload to Nexus Mods after the package builds'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  nexus:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read shared version
+        id: meta
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'VERSION is empty.' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "AMS_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Valheim Dedicated Server build references
+        shell: pwsh
+        run: ./.github/scripts/prepare-valheim-build.ps1
+
+      - name: Build Nexus package
+        shell: pwsh
+        env:
+          AMS_NO_PAUSE: "1"
+          AMS_REQUIRE_SIGNING: "0"
+        run: ./build-nexus.ps1
+
+      - name: Upload Nexus package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ValheimAutoModSync-${{ env.AMS_VERSION }}-Nexus
+          path: Dist/ValheimAutoModSync-${{ env.AMS_VERSION }}-Nexus.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Enforce Nexus network-tool clearance
+        if: ${{ inputs.publish && vars.NEXUS_NETWORK_TOOL_CLEARANCE != 'approved' }}
+        shell: pwsh
+        run: throw 'Nexus publication is blocked until Nexus staff clearance is recorded as repository variable NEXUS_NETWORK_TOOL_CLEARANCE=approved.'
+
+      - name: Validate Nexus publishing configuration
+        if: ${{ inputs.publish && vars.NEXUS_NETWORK_TOOL_CLEARANCE == 'approved' }}
+        shell: pwsh
+        env:
+          NEXUSMODS_API_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+          NEXUSMODS_FILE_ID: ${{ vars.NEXUSMODS_FILE_ID }}
+          NEXUSMODS_MOD_ID: ${{ vars.NEXUSMODS_MOD_ID }}
+        run: |
+          foreach ($name in 'NEXUSMODS_API_KEY','NEXUSMODS_FILE_ID','NEXUSMODS_MOD_ID') {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($value)) { throw "$name is not configured." }
+          }
+
+      - name: Read current changelog
+        id: changelog
+        if: ${{ inputs.publish && vars.NEXUS_NETWORK_TOOL_CLEARANCE == 'approved' }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          $text = Get-Content -LiteralPath Thunderstore/CHANGELOG.md -Raw
+          $m = [regex]::Match($text, "(?ms)^##\s+$([regex]::Escape($version))\s*\r?\n(.*?)(?=^##\s+|\z)")
+          $body = if ($m.Success) { $m.Groups[1].Value.Trim() } else { "Valheim AutoModSync $version" }
+          "text<<EOF" >> $env:GITHUB_OUTPUT
+          $body >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
+
+      - name: Upload to Nexus Mods
+        if: ${{ inputs.publish && vars.NEXUS_NETWORK_TOOL_CLEARANCE == 'approved' }}
+        uses: Nexus-Mods/upload-action@98532f7670c27cbecc78fae03fa3e278147827e2
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          file_id: ${{ vars.NEXUSMODS_FILE_ID }}
+          mod_id: ${{ vars.NEXUSMODS_MOD_ID }}
+          filename: Dist/ValheimAutoModSync-${{ steps.meta.outputs.version }}-Nexus.zip
+          display_name: Valheim AutoModSync ${{ steps.meta.outputs.version }}
+          description: Lightweight Nexus package. Requires BepInEx. AutoModSync synchronizes signed and SHA-256-verified mod files over the Valheim server connection selected by the user.
+          version: ${{ steps.meta.outputs.version }}
+          category: main
+          changelog: ${{ steps.changelog.outputs.text }}
+          update_mod_version: true

@@ -3,8 +3,10 @@ setlocal EnableExtensions DisableDelayedExpansion
 cd /d "%~dp0"
 title Valheim AutoModSync Installer
 
-set "AMS_VERSION=2.5.0"
 set "PACKAGEROOT=%~dp0"
+set "AMS_VERSION="
+if exist "%PACKAGEROOT%VERSION" set /p AMS_VERSION=<"%PACKAGEROOT%VERSION"
+if not defined AMS_VERSION set "AMS_VERSION=unknown"
 set "CLIENTDLL_PAYLOAD=%PACKAGEROOT%Client\ValheimAutoModSync.Client.dll"
 set "CLIENTAPPLY_PAYLOAD=%PACKAGEROOT%Client\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe"
 set "CLIENTRUNTIME=%PACKAGEROOT%Client"

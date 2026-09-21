@@ -3,8 +3,11 @@ setlocal EnableExtensions DisableDelayedExpansion
 cd /d "%~dp0"
 title Valheim AutoModSync Release Builder
 
-set "AMS_VERSION=2.5.0"
 set "ROOT=%~dp0"
+set "AMS_VERSION="
+if not exist "%ROOT%VERSION" goto :MissingVersion
+set /p AMS_VERSION=<"%ROOT%VERSION"
+if not defined AMS_VERSION goto :MissingVersion
 set "SOURCE=%ROOT%Source"
 set "CLIENTDIR=%ROOT%Client"
 set "SERVERDIR=%ROOT%Server"
@@ -28,6 +31,10 @@ if not defined CSC goto :NoCompiler
 
 if exist "%ROOT%verify-source-docs.ps1" (
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-source-docs.ps1"
+  if errorlevel 1 goto :FailNoWork
+)
+if exist "%ROOT%verify-version.ps1" (
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-version.ps1"
   if errorlevel 1 goto :FailNoWork
 )
 
@@ -138,6 +145,7 @@ mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Tools" >nul 2>&1
 mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Bundled" >nul 2>&1
 mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD_PARTY_LICENSES" >nul 2>&1
 copy /y "%ROOT%README.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\README.md" >nul
+copy /y "%ROOT%VERSION" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\VERSION" >nul
 copy /y "%ROOT%LICENSE" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\LICENSE" >nul
 copy /y "%ROOT%THIRD-PARTY-NOTICES.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD-PARTY-NOTICES.md" >nul
 copy /y "%ROOT%install.bat" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\install.bat" >nul
@@ -231,6 +239,10 @@ set "BEPSOURCE=%BEPEXTRACT%\BepInExPack_Valheim"
 if not exist "%BEPSOURCE%\BepInEx\core\BepInEx.dll" exit /b 1
 echo BepInEx SHA-256 verified.
 exit /b 0
+
+:MissingVersion
+echo ERROR: VERSION is missing or empty.
+goto :FailNoWork
 
 :BadClient
 echo ERROR: A valid Valheim or Valheim Dedicated Server installation was not found.
