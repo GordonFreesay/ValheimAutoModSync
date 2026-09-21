@@ -45,7 +45,7 @@ The older SendPeerInfo AMS4 probe remains as a fallback for connection paths tha
 
 For large first-time synchronizations, 2.5.0 negotiates optional transfer capabilities through `AMS4_Ack`. The preferred `bundle-batch1` path packs a bounded set of raw binary ZIP chunks (up to roughly 384 KiB total) into one `AMS4_BundleBatch` RPC, avoiding Base64 expansion and reducing message overhead. If binary batching is unavailable, `bundle-window1` requests up to 16 ordered legacy chunk RPCs per pull; if neither capability exists, the client keeps the original one-chunk AMS4 behavior.
 
-For Steam-backed dedicated-server peers, the server also temporarily raises only that connection's SteamNetworkingSockets `SendRateMax` while the bundle is active, then restores the previous ceiling. This avoids Valheim's low default send ceiling becoming the dominant bottleneck without globally changing gameplay traffic or raising `SendRateMin`.
+For Steam-backed dedicated-server peers, the server resolves the transport directly from the active `ZRpc` (rather than depending on an early pre-handshake peer already appearing in `ZNet.GetPeers()`). During the bundle it temporarily tunes that exact Steam connection's send-rate maximum, bounded send-rate minimum, and reliable send buffer, then restores the exact previous values it changed. This keeps the acceleration scoped to synchronization instead of permanently rewriting gameplay networking.
 
 The client hello also advertises `roots1`. That capability means the client/apply helper understand the fixed `P`/ `R`/ `C` destinations. A server only requires it when its signed manifest actually contains patcher or config entries, so ordinary plugin-only AMS4 compatibility remains available.
 
