@@ -81,7 +81,7 @@ C -> BepInEx/config
 
 `plugins` and `patchers` are scanned recursively. Patchers are installed by the out-of-process apply helper before Valheim restarts, so preloader patchers are present before the next BepInEx preloader pass.
 
-`config` is deliberately different: it is **not mirrored by default**. The server must explicitly opt files in through `Compatibility.SyncConfigPatterns`. This avoids overwriting client keybind/UI/machine-local settings or accidentally distributing unrelated server configuration. `ValheimAutoModSync.private.xml` is hard-blocked even if a broad allowlist pattern would otherwise match.
+`config` is deliberately different: it is **not mirrored by default**. The server must explicitly opt files in through `Compatibility.SyncConfigPatterns`. This avoids overwriting client keybind/UI/machine-local settings or accidentally distributing unrelated server configuration. `ValheimAutoModSync.private.xml`, `ValheimAutoModSync.public.xml`, and loader-wide `BepInEx.cfg` are hard-blocked even if a broad allowlist pattern would otherwise match.
 
 Server/client side classification is explicit rather than guessed from mod metadata because there is no universal BepInEx side marker across the Valheim ecosystem. `Compatibility.ServerOnlyPatterns` excludes server-only plugin/patcher files. `Compatibility.ClientRequiredPatterns` is optional; when empty, every non-excluded/non-server-only plugin/patcher file remains client-required, preserving existing behavior. When set, only matching plugin/patcher files are advertised.
 
