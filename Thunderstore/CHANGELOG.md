@@ -11,6 +11,9 @@
 - Adds a faster `bundle-batch1` path that packs up to ~384 KiB of raw compressed bundle bytes into one RPC, eliminating Base64 expansion and most per-chunk RPC message overhead while keeping the older windowed/single-chunk AMS4 fallbacks.
 - Logs measured bundle transfer size, elapsed time, and MiB/s after verification so throughput regressions are visible in normal client logs.
 - Works around Valheim's ~153600 B/s SteamNetworkingSockets send-rate ceiling during bundle delivery by temporarily raising only `SendRateMax` on the specific Steam connection, then restoring the previous value after success/failure. `SendRateMin` is never raised.
+- Extends the signed manifest/install pipeline beyond `BepInEx/plugins`: preloader files under `BepInEx/patchers` can now be synchronized to their real patcher root, and selected `BepInEx/config` files can be synchronized through an explicit server allowlist.
+- Adds `ServerOnlyPatterns` and optional `ClientRequiredPatterns` compatibility classification so dedicated-server-only files do not have to be advertised to clients.
+- Keeps config synchronization opt-in and hard-blocks the AutoModSync private signing identity from ever entering the synchronized config manifest.
 - Keeps protocol version 4 / AMS4 for backward compatibility with 2.4.x peers.
 - Adds Authenticode signing/verification support for AutoModSync-authored release binaries.
 - Adds source-level intent/workflow documentation above every C# function.
