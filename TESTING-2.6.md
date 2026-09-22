@@ -18,7 +18,7 @@ Release builds/publication remain deferred until the maintainer has functionally
 - [ ] Non-AutoModSync server receives no AMS response and the original `ServerHandshake` is replayed after the discovery timeout.
 - [x] Valid 2.6 AutoModSync server with matching client files establishes/uses trust, then replays the original `ServerHandshake` unchanged.
 - [x] Jotunn/Epic Loot/other compatibility checks still run after successful AMS preflight.
-- [ ] Restart reconnect remains one-shot: after the first outgoing reconnect is created, later character-selection callbacks do not dispatch a second connection.
+- [x] Restart reconnect remains one-shot: after the first outgoing reconnect is created, later character-selection callbacks do not dispatch a second connection.
 - [ ] 2.6 client can still use the existing AMS4 transfer fallbacks with a 2.5 server.
 
 ### Recognized AMS must fail closed
@@ -81,7 +81,9 @@ Maintainer-provided client/server logs from development commit `37a4125f270a4174
 - Server restored the temporary SteamNetworkingSockets settings after the bundle transfer.
 - With development transfer settings Min=8 MiB/s, Max=32 MiB/s, Buffer=16 MiB, Steam telemetry repeatedly reported exactly **8,388,608 B/s**, while the client measured **313.4 MiB in 46.8 s (6.70 MiB/s payload throughput)**.
 - This evidence motivates the next controlled throughput run at Min=16 MiB/s, Max=64 MiB/s, Buffer=32 MiB. It does **not** qualify the concurrent-client scheduler, interruption/resume, adversarial protocol cases, or resource-limit cases.
-- A later 2.6 post-reconnect log exposed a duplicate one-shot reconnect edge case: after the first trusted AMS reconnect succeeded and released the held handshake, a later `ShowCharacterSelection` callback scheduled another automatic character start and created a second outgoing connection. Source now suppresses character-selection scheduling once reconnect is finished or already pending, and clears any stale delayed start when the outgoing connection is created. This fix is **not yet revalidated**.
+- A later 2.6 post-reconnect log exposed a duplicate one-shot reconnect edge case: after the first trusted AMS reconnect succeeded and released the held handshake, a later `ShowCharacterSelection` callback scheduled another automatic character start and created a second outgoing connection. Source now suppresses character-selection scheduling once reconnect is finished or already pending, and clears any stale delayed start when the outgoing connection is created.
+- Retest on 2026-09-22 with the patched client showed exactly one character-selection auto-start, one outgoing reconnect, one trusted AMS preflight, and normal downstream Jotunn/ConditionalConfigSync/Epic Loot processing. No second reconnect was dispatched.
+- The same run exercised the 16/64/32 MiB development transfer settings. Server telemetry reported `SendRateMin 153600 -> 16777216`, `SendRateMax 153600 -> 67108864`, `SendBuffer 524288 -> 33554432`, and repeated live send-rate samples of exactly **16,777,216 B/s** before restoring the original Steam transport values. The provided post-reconnect/server logs do not contain the client's end-to-end payload timing, so this proves the Steam rate-floor change took effect but does **not** yet prove a corresponding wall-clock throughput improvement.
 
 ## Evidence to record
 
