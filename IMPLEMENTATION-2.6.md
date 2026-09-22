@@ -62,12 +62,12 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `Source/AutoModSync.PathSafety.cs` | New shared, commented Windows path validator for reserved names, aliases, fixed-root containment, and reparse-point defense. |
 | `build-release.bat` | Compiles the shared path-safety source into client, server, and apply-helper assemblies. No release build has been run. |
 | `Source/ValheimAutoModSync.Client.cs` | Separates discovery fail-open from recognized-AMS fail-closed; establishes trust after signed-manifest verification; adds client hard limits, declared-size enforcement, bounded ZIP extraction, and shared path/reparse checks. |
-| `Source/ValheimAutoModSync.Server.cs` | Adds safe non-reparse recursive enumeration, fixed-root source rechecks, pre-compression expanded-size ceiling, and during-build compressed-size enforcement. |
+| `Source/ValheimAutoModSync.Server.cs` | Adds safe non-reparse recursive enumeration, fixed-root source rechecks, pre-compression expanded-size ceiling, during-build compressed-size enforcement, temporary Steam transfer telemetry/tuning, and the evidence-driven 16/64/32 development transfer baseline with exact-old-default migration. |
 | `Source/ValheimAutoModSync.Apply.cs` | Independently rechecks shared path/reparse rules immediately before staged/live filesystem writes. |
-| `Server/server-config-example.cfg` | Documents `MaxExpandedBundleMiB` and aligns the example exclusion defaults with the source default. |
+| `Server/server-config-example.cfg` | Documents `MaxExpandedBundleMiB`, aligns exclusion defaults, and records the current 16 MiB/s minimum / 64 MiB/s maximum / 32 MiB transfer-buffer development baseline. |
 | `SOURCE-WALKTHROUGH.md` | Documents current 2.6 trust, fail-open/fail-closed, resource-limit, and filesystem-containment behavior. |
 | `Thunderstore/CHANGELOG.md` | Records 2.6 Phase 1 development behavior; publication remains deferred. |
-| `TESTING-2.6.md` | New evidence checklist. All Phase 1 functional tests are explicitly NOT RUN until actual verification. |
+| `TESTING-2.6.md` | Evidence checklist plus dated maintainer runtime results; only observed cases are marked passed and the remaining security/resource matrix stays pending. |
 | `build-dev.bat` | Development-only compiler for client/server/apply binaries; deliberately creates no installer, release ZIP, store package, tag, or publication artifact. |
 | `IMPLEMENTATION-2.6.md` | Records this Phase 1 change set and validation status. |
 
@@ -78,7 +78,8 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 ## Validation status
 
 - Phase 0 repository setup: **complete**
-- Phase 1 implementation: **complete in source; functional validation pending**
-- Functional 2.6 validation: **not yet performed**
+- Phase 1 implementation: **complete in source; partial functional validation recorded**
+- Functional 2.6 validation: **partial** — a real 313.4 MiB fresh-client sync/apply/restart/reconnect and matching second preflight passed on commit `37a4125f270a417489e9d620326c4f92e808bc26`; adversarial, resource-limit, fallback, and concurrency cases remain pending.
+- Transfer performance validation: **in progress** — prior 8/32/16 MiB settings pinned Steam telemetry to the 8 MiB/s floor; source/config now stage a controlled 16/64/32 MiB follow-up test.
 - Release build validation: **not yet performed**
 - Public release: **not authorized**
