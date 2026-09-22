@@ -61,7 +61,7 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | --- | --- |
 | `Source/AutoModSync.PathSafety.cs` | New shared, commented Windows path validator for reserved names, aliases, fixed-root containment, and reparse-point defense. |
 | `build-release.bat` | Compiles the shared path-safety source into client, server, and apply-helper assemblies. No release build has been run. |
-| `Source/ValheimAutoModSync.Client.cs` | Separates discovery fail-open from recognized-AMS fail-closed; establishes trust after signed-manifest verification; adds client hard limits, declared-size enforcement, bounded ZIP extraction, and shared path/reparse checks. |
+| `Source/ValheimAutoModSync.Client.cs` | Separates discovery fail-open from recognized-AMS fail-closed; establishes trust after signed-manifest verification; adds client hard limits, declared-size enforcement, bounded ZIP extraction, shared path/reparse checks, and one-shot restart-reconnect guards that suppress duplicate character-selection callbacks after completion or while a start is already pending. |
 | `Source/ValheimAutoModSync.Server.cs` | Adds safe non-reparse recursive enumeration, fixed-root source rechecks, pre-compression expanded-size ceiling, during-build compressed-size enforcement, temporary Steam transfer telemetry/tuning, and the evidence-driven 16/64/32 development transfer baseline with exact-old-default migration. |
 | `Source/ValheimAutoModSync.Apply.cs` | Independently rechecks shared path/reparse rules immediately before staged/live filesystem writes. |
 | `Server/server-config-example.cfg` | Documents `MaxExpandedBundleMiB`, aligns exclusion defaults, and records the current 16 MiB/s minimum / 64 MiB/s maximum / 32 MiB transfer-buffer development baseline. |
@@ -81,5 +81,6 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Phase 1 implementation: **complete in source; partial functional validation recorded**
 - Functional 2.6 validation: **partial** — a real 313.4 MiB fresh-client sync/apply/restart/reconnect and matching second preflight passed on commit `37a4125f270a417489e9d620326c4f92e808bc26`; adversarial, resource-limit, fallback, and concurrency cases remain pending.
 - Transfer performance validation: **in progress** — prior 8/32/16 MiB settings pinned Steam telemetry to the 8 MiB/s floor; source/config now stage a controlled 16/64/32 MiB follow-up test.
+- Restart reconnect validation: **retest required** — a post-reconnect 2.6 log exposed a second character-start callback after the first successful reconnect; the client now makes this path explicitly one-shot, but the fix has not yet been runtime-validated.
 - Release build validation: **not yet performed**
 - Public release: **not authorized**
