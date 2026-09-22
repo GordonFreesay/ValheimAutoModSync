@@ -103,6 +103,7 @@ namespace ValheimAutoModSync
             public DateTime CreatedUtc;
             public DateTime LastUsedUtc;
             public int ActiveTransfers;
+            public bool StartupPinned;
             public double ZipBuildSeconds;
             public double ZipHashSeconds;
         }
@@ -240,6 +241,12 @@ namespace ValheimAutoModSync
                         records.Count.ToString(CultureInfo.InvariantCulture) + " signed file(s), " + FormatBytes(expandedBytes) + " expanded.");
 
                 artifact = AcquireBundleArtifact(records, expandedBytes, maxBundleBytes, out cacheStatus, out waitSeconds);
+                lock (BundleCacheLock)
+                {
+                    // Keep the startup baseline available for the first real client even if the server sits idle longer than BundleCacheSeconds.
+                    // Disk-budget eviction can still remove it if the administrator configured a cache too small to retain the artifact.
+                    artifact.StartupPinned = true;
+                }
                 watch.Stop();
 
                 if (_instance != null)
@@ -562,6 +569,8 @@ namespace ValheimAutoModSync
 
                             cached.ActiveTransfers++;
                             cached.LastUsedUtc = now;
+                            // The startup baseline is pinned only until its first real client use; afterward normal TTL/LRU policy applies.
+                            cached.StartupPinned = false;
                             cacheStatus = waited ? "WAIT-HIT" : "HIT";
                             waitSeconds = waited ? (now - waitStartedUtc).TotalSeconds : 0.0;
                             return cached;
@@ -750,7 +759,7 @@ namespace ValheimAutoModSync
 
                 if (artifact.ActiveTransfers > 0) continue;
                 bool missing = String.IsNullOrEmpty(artifact.ZipPath) || !File.Exists(artifact.ZipPath);
-                bool expired = cacheSeconds == 0 || (now - artifact.LastUsedUtc).TotalSeconds > cacheSeconds;
+                bool expired = !artifact.StartupPinned && (cacheSeconds == 0 || (now - artifact.LastUsedUtc).TotalSeconds > cacheSeconds);
                 if (missing || expired) removeKeys.Add(pair.Key);
             }
 
