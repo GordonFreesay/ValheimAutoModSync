@@ -121,9 +121,9 @@ namespace ValheimAutoModSync
             _maxFileMiB = Config.Bind("Transfer", "MaxFileMiB", 128, "Refuse to transfer a single file larger than this many MiB.");
             _maxBundleMiB = Config.Bind("Transfer", "MaxBundleMiB", 2048, "Refuse to build a compressed change package larger than this many MiB.");
             _maxExpandedBundleMiB = Config.Bind("Transfer", "MaxExpandedBundleMiB", 4096, "Refuse a requested change set whose signed source files exceed this many MiB before compression.");
-            _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 33554432, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
-            _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 8388608, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
-            _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 16777216, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
+            _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 67108864, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
+            _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 16777216, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
+            _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 33554432, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
 
             try
             {
@@ -197,17 +197,26 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Migrates the exact earlier 2.5-development transfer defaults so existing test servers do not remain unintentionally pinned to the 1 MiB/s floor after upgrading this branch.
-        // Scope: only the three known development-default values are changed; any administrator-customized value is preserved.
+        // Intent: Migrates only the exact earlier development-default tuples to the current 2.6 transfer baseline.
+        // Evidence: a 313.4 MiB fresh-client run stayed pinned to the configured 8 MiB/s Steam floor, so the next development baseline tests 16/64/32.
+        // Scope: administrator-customized values are preserved unless they exactly equal one of the known prior development defaults.
         private static void UpgradeDevelopmentTransferDefaults()
         {
-            if (_transferSendRateMin != null && _transferSendRateMax != null && _transferSendBufferBytes != null &&
-                _transferSendRateMin.Value == 1048576 && _transferSendRateMax.Value == 8388608 && _transferSendBufferBytes.Value == 8388608)
+            if (_transferSendRateMin == null || _transferSendRateMax == null || _transferSendBufferBytes == null) return;
+
+            bool old25Defaults = _transferSendRateMin.Value == 1048576 &&
+                                 _transferSendRateMax.Value == 8388608 &&
+                                 _transferSendBufferBytes.Value == 8388608;
+            bool old26Defaults = _transferSendRateMin.Value == 8388608 &&
+                                 _transferSendRateMax.Value == 33554432 &&
+                                 _transferSendBufferBytes.Value == 16777216;
+
+            if (old25Defaults || old26Defaults)
             {
-                _transferSendRateMin.Value = 8388608;
-                _transferSendRateMax.Value = 33554432;
-                _transferSendBufferBytes.Value = 16777216;
-                if (_instance != null) _instance.Logger.LogInfo("AutoModSync upgraded the earlier 2.5 development transfer defaults to Min=8 MiB/s, Max=32 MiB/s, Buffer=16 MiB.");
+                _transferSendRateMin.Value = 16777216;
+                _transferSendRateMax.Value = 67108864;
+                _transferSendBufferBytes.Value = 33554432;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync upgraded known development transfer defaults to Min=16 MiB/s, Max=64 MiB/s, Buffer=32 MiB.");
             }
         }
 
@@ -588,9 +597,9 @@ namespace ValheimAutoModSync
         private static void TryTuneTransferTransport(ZRpc rpc, BundleTransfer transfer)
         {
             if (rpc == null || transfer == null) return;
-            int desiredMax = _transferSendRateMax == null ? 8388608 : Math.Max(153600, _transferSendRateMax.Value);
-            int desiredMin = _transferSendRateMin == null ? 1048576 : Math.Max(0, Math.Min(desiredMax, _transferSendRateMin.Value));
-            int desiredBuffer = _transferSendBufferBytes == null ? 8388608 : Math.Max(0, _transferSendBufferBytes.Value);
+            int desiredMax = _transferSendRateMax == null ? 67108864 : Math.Max(153600, _transferSendRateMax.Value);
+            int desiredMin = _transferSendRateMin == null ? 16777216 : Math.Max(0, Math.Min(desiredMax, _transferSendRateMin.Value));
+            int desiredBuffer = _transferSendBufferBytes == null ? 33554432 : Math.Max(0, _transferSendBufferBytes.Value);
 
             try
             {
