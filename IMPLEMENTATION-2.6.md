@@ -80,7 +80,7 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Phase 0 repository setup: **complete**
 - Phase 1 implementation: **complete in source; partial functional validation recorded**
 - Functional 2.6 validation: **partial** — a real 313.4 MiB fresh-client sync/apply/restart/reconnect and matching second preflight passed on commit `37a4125f270a417489e9d620326c4f92e808bc26`; adversarial, resource-limit, fallback, and concurrency cases remain pending.
-- Transfer performance validation: **in progress** — prior 8/32/16 MiB settings pinned Steam telemetry to the 8 MiB/s floor; source/config now stage a controlled 16/64/32 MiB follow-up test.
-- Restart reconnect validation: **retest required** — a post-reconnect 2.6 log exposed a second character-start callback after the first successful reconnect; the client now makes this path explicitly one-shot, but the fix has not yet been runtime-validated.
+- Transfer performance validation: **in progress** — the 16/64/32 MiB follow-up successfully moved Steam's live send-rate telemetry from the prior 8 MiB/s floor to exactly 16 MiB/s and restored the original connection settings afterward. End-to-end client payload timing for this run is still needed before treating the higher settings as a proven wall-clock improvement.
+- Restart reconnect validation: **passed for the observed regression** — the patched client completed exactly one automatic character-start/reconnect sequence, then completed trusted AMS preflight and downstream mod synchronization without dispatching a second reconnect.
 - Release build validation: **not yet performed**
 - Public release: **not authorized**
