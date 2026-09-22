@@ -75,8 +75,8 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 
 | File | 2.6 reason |
 | --- | --- |
-| `Source/ValheimAutoModSync.Server.cs` | Adds deterministic content-keyed immutable bundle artifacts, identical-request single-flight construction, active-transfer reference counting, TTL/LRU disk-budget eviction, orphan cleanup, per-source re-hash before publication, and detailed MISS/HIT/WAIT preparation telemetry. Protocol remains AMS4 / 4. |
-| `Server/server-config-example.cfg` | Documents `BundleCacheSeconds` and `BundleCacheMaxMiB` with active-transfer-safe eviction semantics. |
+| `Source/ValheimAutoModSync.Server.cs` | Adds deterministic content-keyed immutable bundle artifacts, identical-request single-flight construction, active-transfer reference counting, TTL/LRU disk-budget eviction, orphan cleanup, per-source re-hash before publication, detailed MISS/HIT/WAIT preparation telemetry, and dedicated-server startup prewarming of the current-AMS nearly-bare-client baseline. The startup baseline stays TTL-pinned until its first real client hit, while remaining subject to the configured disk budget. Protocol remains AMS4 / 4. |
+| `Server/server-config-example.cfg` | Documents `BundleCacheSeconds`, `BundleCacheMaxMiB`, and `PrebuildFreshClientBundle`, including first-client pinning and active-transfer-safe eviction semantics. |
 | `SOURCE-WALKTHROUGH.md` | Documents the content-addressed cache lifecycle, single-flight behavior, publication boundary, source re-hash, and telemetry. |
 | `TESTING-2.6.md` | Adds the Phase 3 runtime gate for cache hit/miss, overlapping identical clients, invalidation, TTL/budget eviction, failed-build cleanup, and restart orphan handling. |
 | `IMPLEMENTATION-2.6.md` | Records this Phase 3 implementation and keeps its validation status distinct from implementation status. |
@@ -92,6 +92,6 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Functional 2.6 validation: **partial** — a real 313.4 MiB fresh-client sync/apply/restart/reconnect and matching second preflight passed on commit `37a4125f270a417489e9d620326c4f92e808bc26`; adversarial, resource-limit, fallback, and concurrency cases remain pending.
 - Transfer performance validation: **in progress** — the 16/64/32 MiB follow-up successfully moved Steam's live send-rate telemetry from the prior 8 MiB/s floor to exactly 16 MiB/s and restored the original connection settings afterward. End-to-end client payload timing for this run is still needed before treating the higher settings as a proven wall-clock improvement.
 - Restart reconnect validation: **passed for the observed regression** — the patched client completed exactly one automatic character-start/reconnect sequence, then completed trusted AMS preflight and downstream mod synchronization without dispatching a second reconnect.
-- Phase 3 implementation: **complete in source; runtime validation pending** — cached/single-flight bundle construction and preparation telemetry are implemented, but no cache HIT/WAIT-HIT or eviction behavior is marked passed until the maintainer runs the gate.
+- Phase 3 implementation: **complete in source; runtime validation pending** — cached/single-flight bundle construction, dedicated-server fresh-client prewarm, first-client TTL pinning, and preparation telemetry are implemented, but no startup HIT/WAIT-HIT or eviction behavior is marked passed until the maintainer runs the gate.
 - Release build validation: **not yet performed**
 - Public release: **not authorized**
