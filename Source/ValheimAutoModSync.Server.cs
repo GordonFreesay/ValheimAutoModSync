@@ -558,7 +558,7 @@ namespace ValheimAutoModSync
                         using (Stream entryStream = entry.Open())
                         using (FileStream input = new FileStream(record.FullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                         {
-                            CopyIntoBundleBounded(input, entryStream, output, maxBundleBytes);
+                            CopyIntoBundleBounded(input, entryStream, output, maxBundleBytes, record.Sha256);
                         }
                         if (output.Length > maxBundleBytes)
                             throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
@@ -706,18 +706,30 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Copies one source file into the ZIP while observing the compressed-output ceiling during construction.
+        // Intent: Copies one signed source file into the ZIP while observing the compressed-output ceiling and re-hashing the exact bytes being archived.
+        // Cache correctness: a same-size local file change after manifest signing must fail this build instead of poisoning the shared artifact cache under the old signed hash.
         // Resource safety: the final post-ZIP check remains authoritative because central-directory bytes are written when the archive closes.
-        private static void CopyIntoBundleBounded(Stream input, Stream entryStream, FileStream output, long maxBundleBytes)
+        private static void CopyIntoBundleBounded(Stream input, Stream entryStream, FileStream output, long maxBundleBytes, string expectedSha256)
         {
             byte[] buffer = new byte[81920];
-            while (true)
+            using (SHA256 sourceHash = SHA256.Create())
             {
-                int read = input.Read(buffer, 0, buffer.Length);
-                if (read <= 0) break;
-                entryStream.Write(buffer, 0, read);
-                if (output.Length > maxBundleBytes)
-                    throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
+                while (true)
+                {
+                    int read = input.Read(buffer, 0, buffer.Length);
+                    if (read <= 0) break;
+
+                    // HashAlgorithm permits the same array for input/output; this avoids a second full source-file read before cache publication.
+                    sourceHash.TransformBlock(buffer, 0, read, buffer, 0);
+                    entryStream.Write(buffer, 0, read);
+                    if (output.Length > maxBundleBytes)
+                        throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
+                }
+
+                sourceHash.TransformFinalBlock(new byte[0], 0, 0);
+                string actualSha256 = ToHex(sourceHash.Hash);
+                if (!String.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Server content changed after the signed manifest was created; reconnect to refresh synchronization state.");
             }
         }
 
