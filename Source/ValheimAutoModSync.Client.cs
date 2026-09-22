@@ -82,6 +82,10 @@ namespace ValheimAutoModSync
         private static string _manifestSignature = "";
         private static string _serverPublicKeyXml = "";
         private static string _serverFingerprint = "";
+        private static bool _trustPromptPending;
+        private static string _trustPromptFingerprint = "";
+        private static string _trustPromptManifest = "";
+        private static ZRpc _trustPromptRpc;
         private static readonly Dictionary<int, string> ManifestParts = new Dictionary<int, string>();
         private static readonly List<ManifestEntry> NeededFiles = new List<ManifestEntry>();
         private static FileStream _bundleStream;
@@ -206,6 +210,14 @@ namespace ValheimAutoModSync
                 }
             }
 
+            // Once a server has positively answered AMS, a dead socket is a failed protected session, not a non-AMS fail-open case.
+            // This also guarantees that trust/download UI cannot remain stranded on screen after Valheim has already lost the connection.
+            if (_waitingForServer && _pendingRpc != null && (_serverAcknowledged || _serverRecognized) && !IsRpcConnected(_pendingRpc))
+            {
+                HandleRecognizedConnectionLoss("AutoModSync connection ended before synchronization completed.");
+                return;
+            }
+
             if (_waitingForServer && _pendingRpc != null && _helloSentUtc != DateTime.MinValue)
             {
                 DateTime now = DateTime.UtcNow;
@@ -232,8 +244,8 @@ namespace ValheimAutoModSync
         {
             if (!_overlayVisible) return;
 
-            float width = Mathf.Min(560f, Mathf.Max(320f, Screen.width - 40f));
-            float height = _overlayTotalFiles > 0 ? 190f : 135f;
+            float width = Mathf.Min(620f, Mathf.Max(320f, Screen.width - 40f));
+            float height = _trustPromptPending ? 300f : (_overlayTotalFiles > 0 ? 190f : 135f);
             float left = (Screen.width - width) * 0.5f;
             float top = (Screen.height - height) * 0.5f;
             Rect panel = new Rect(left, top, width, height);
@@ -264,6 +276,29 @@ namespace ValheimAutoModSync
             detailStyle.normal.textColor = new Color(0.86f, 0.86f, 0.86f, 1f);
 
             GUI.Label(new Rect(left + 20f, top + 14f, width - 40f, 32f), "AutoModSync", titleStyle);
+
+            if (_trustPromptPending)
+            {
+                // Non-blocking in-game trust UI keeps Unity/ZRpc updates running while the player verifies the fingerprint.
+                // The old native MessageBox blocked the game thread long enough for Valheim's server-side ZRpc timeout to expire.
+                GUI.Label(new Rect(left + 25f, top + 50f, width - 50f, 34f), "Trust this server?", statusStyle);
+                GUI.Label(new Rect(left + 35f, top + 88f, width - 70f, 52f),
+                    "This server wants permission to install or update executable mod files on this PC.", detailStyle);
+                GUI.Label(new Rect(left + 35f, top + 138f, width - 70f, 44f),
+                    "Server fingerprint:\n" + FormatFingerprint(_trustPromptFingerprint), detailStyle);
+                GUI.Label(new Rect(left + 35f, top + 186f, width - 70f, 38f),
+                    "Choose Trust only if you intended to join this server. You will only be asked again if its server identity changes.", detailStyle);
+
+                if (GUI.Button(new Rect(left + 45f, top + 242f, 180f, 34f), "Cancel"))
+                    RejectPendingServerTrust();
+
+                if (GUI.Button(new Rect(left + width - 265f, top + 242f, 220f, 34f), "Trust Server & Continue"))
+                    AcceptPendingServerTrust();
+
+                GUI.color = previousColor;
+                return;
+            }
+
             GUI.Label(new Rect(left + 25f, top + 50f, width - 50f, 48f), _overlayStatus ?? "", statusStyle);
 
             if (_overlayTotalFiles > 0)
@@ -620,10 +655,30 @@ namespace ValheimAutoModSync
                     throw new CryptographicException("AutoModSync server signature verification failed.");
 
                 // 2.6 establishes TOFU identity even when every required file already happens to match.
-                // This makes trusted server identity independent from whether this particular join needs a download.
-                if (!EnsureServerTrusted(_serverFingerprint))
+                // First-contact trust is asynchronous so the Valheim networking loop stays alive while the player verifies the fingerprint.
+                if (!IsServerTrusted(_serverFingerprint))
                 {
-                    AbortAutoModSyncJoin("AutoModSync server identity was not trusted by the user.");
+                    BeginServerTrustPrompt(rpc, _serverFingerprint, manifest);
+                    return;
+                }
+
+                ContinueVerifiedManifest(manifest);
+            }
+            catch (Exception ex)
+            {
+                AbortAutoModSyncJoin("AutoModSync manifest verification failed: " + ex.Message);
+            }
+        }
+
+        // Intent: Continues only after the signed manifest's server identity is already trusted, then computes deltas and either resumes Valheim or requests the exact bundle.
+        // Security: this method is reachable from both an existing trust pin and the explicit in-game Trust action; neither path bypasses signature verification or TOFU identity checks.
+        private static void ContinueVerifiedManifest(string manifest)
+        {
+            try
+            {
+                if (!_serverRecognized || _pendingRpc == null || !IsRpcConnected(_pendingRpc))
+                {
+                    HandleRecognizedConnectionLoss("AutoModSync connection ended before the trusted manifest could continue.");
                     return;
                 }
 
@@ -649,7 +704,7 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                AbortAutoModSyncJoin("AutoModSync manifest verification failed: " + ex.Message);
+                AbortAutoModSyncJoin("AutoModSync manifest comparison failed: " + ex.Message);
             }
         }
 
@@ -1392,6 +1447,7 @@ namespace ValheimAutoModSync
         // Intent: Clears per-manifest and per-bundle state so stale data from one connection cannot contaminate the next synchronization attempt.
         private static void ResetManifestState()
         {
+            ClearPendingTrustPrompt();
             ManifestParts.Clear();
             _manifestPartCount = 0;
             _manifestSignature = "";
@@ -2035,43 +2091,141 @@ namespace ValheimAutoModSync
 
         // Intent: Implements first-contact server trust.
         // Workflow: accepts an already-pinned fingerprint silently; otherwise shows a Windows confirmation dialog and persists the exact accepted fingerprint for future connections.
-        private static bool EnsureServerTrusted(string fingerprint)
+        // Intent: Returns whether this exact verified server fingerprint is already pinned locally.
+        // First contact is handled separately by the non-blocking in-game trust prompt so network processing never pauses on a native modal dialog.
+        private static bool IsServerTrusted(string fingerprint)
         {
             if (String.IsNullOrEmpty(fingerprint) || fingerprint.Length != 64) return false;
-            string root = GetAutoModSyncRoot();
-            string trusted = Path.Combine(root, "trusted-servers.txt");
+            string trusted = Path.Combine(GetAutoModSyncRoot(), "trusted-servers.txt");
             try
             {
-                if (File.Exists(trusted))
-                {
-                    string[] lines = File.ReadAllLines(trusted);
-                    int i;
-                    for (i = 0; i < lines.Length; i++)
-                        if (String.Equals(lines[i].Trim(), fingerprint, StringComparison.OrdinalIgnoreCase)) return true;
-                }
-
-                string pretty = fingerprint.Substring(0, 8) + "-" + fingerprint.Substring(8, 8) + "-" + fingerprint.Substring(16, 8) + "-" + fingerprint.Substring(24, 8) + "\r\n" +
-                                fingerprint.Substring(32, 8) + "-" + fingerprint.Substring(40, 8) + "-" + fingerprint.Substring(48, 8) + "-" + fingerprint.Substring(56, 8);
-                string message = "This Valheim server wants AutoModSync permission to install or update executable mod files on this PC.\r\n\r\n" +
-                                 "Server fingerprint:\r\n" + pretty + "\r\n\r\n" +
-                                 "Choose Yes only if you intended to join this server. You will only be asked again if its server identity changes.";
-                int answer = MessageBox(IntPtr.Zero, message, "Valheim AutoModSync - Trust Server", 0x00000004u | 0x00000030u | 0x00000100u);
-                if (answer != 6) return false;
-                if (!Directory.Exists(root)) Directory.CreateDirectory(root);
-                File.AppendAllText(trusted, fingerprint.ToLowerInvariant() + Environment.NewLine, new UTF8Encoding(false));
-                return true;
+                if (!File.Exists(trusted)) return false;
+                string[] lines = File.ReadAllLines(trusted);
+                int i;
+                for (i = 0; i < lines.Length; i++)
+                    if (String.Equals(lines[i].Trim(), fingerprint, StringComparison.OrdinalIgnoreCase)) return true;
+                return false;
             }
             catch (Exception ex)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Could not save AutoModSync server trust: " + ex.Message);
+                if (_instance != null) _instance.Logger.LogWarning("Could not read AutoModSync server trust: " + ex.Message);
                 return false;
             }
         }
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        // Intent: Native Windows MessageBox import used only for the explicit first-contact executable-code trust prompt.
-        private static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
+        // Intent: Starts explicit first-contact trust without blocking Unity's main/network loop.
+        // Binding: the prompt stores the exact active ZRpc plus the already signature-verified manifest; acceptance is ignored if that session is no longer current/alive.
+        private static void BeginServerTrustPrompt(ZRpc rpc, string fingerprint, string manifest)
+        {
+            if (rpc == null || rpc != _pendingRpc || !_serverRecognized || String.IsNullOrEmpty(fingerprint) || fingerprint.Length != 64)
+                throw new InvalidDataException("AutoModSync could not bind the server trust prompt to the active verified session.");
 
+            _trustPromptRpc = rpc;
+            _trustPromptFingerprint = fingerprint;
+            _trustPromptManifest = manifest ?? "";
+            _trustPromptPending = true;
+            ShowSyncOverlay("", "");
+
+            if (_instance != null)
+                _instance.Logger.LogInfo("AutoModSync is waiting for first-contact trust confirmation for server fingerprint " + fingerprint + ".");
+        }
+
+        // Intent: Persists an explicitly accepted fingerprint and resumes only the same still-connected, signature-verified AMS session that opened the prompt.
+        private static void AcceptPendingServerTrust()
+        {
+            if (!_trustPromptPending) return;
+
+            ZRpc rpc = _trustPromptRpc;
+            string fingerprint = _trustPromptFingerprint;
+            string manifest = _trustPromptManifest;
+
+            if (rpc == null || rpc != _pendingRpc || !_serverRecognized || !IsRpcConnected(rpc))
+            {
+                HandleRecognizedConnectionLoss("AutoModSync connection ended before server trust was accepted.");
+                return;
+            }
+
+            try
+            {
+                string root = GetAutoModSyncRoot();
+                string trusted = Path.Combine(root, "trusted-servers.txt");
+                if (!Directory.Exists(root)) Directory.CreateDirectory(root);
+
+                // Recheck before appending so repeated GUI events cannot duplicate an existing pin.
+                if (!IsServerTrusted(fingerprint))
+                    File.AppendAllText(trusted, fingerprint.ToLowerInvariant() + Environment.NewLine, new UTF8Encoding(false));
+
+                ClearPendingTrustPrompt();
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync trusted server fingerprint " + fingerprint + ".");
+                ContinueVerifiedManifest(manifest);
+            }
+            catch (Exception ex)
+            {
+                ClearPendingTrustPrompt();
+                AbortAutoModSyncJoin("Could not save AutoModSync server trust: " + ex.Message);
+            }
+        }
+
+        // Intent: Rejects first-contact trust explicitly; the recognized AMS join is closed rather than falling through to an unsynchronized normal handshake.
+        private static void RejectPendingServerTrust()
+        {
+            if (!_trustPromptPending) return;
+            ClearPendingTrustPrompt();
+            AbortAutoModSyncJoin("AutoModSync server identity was not trusted by the user.");
+        }
+
+        // Intent: Clears only the transient first-contact decision state; the signed manifest/session state is managed by the normal preflight lifecycle.
+        private static void ClearPendingTrustPrompt()
+        {
+            _trustPromptPending = false;
+            _trustPromptFingerprint = "";
+            _trustPromptManifest = "";
+            _trustPromptRpc = null;
+        }
+
+        // Intent: Produces a readable two-line fingerprint without changing the exact 64-hex value that is pinned and compared.
+        private static string FormatFingerprint(string fingerprint)
+        {
+            if (String.IsNullOrEmpty(fingerprint) || fingerprint.Length != 64) return fingerprint ?? "";
+            return fingerprint.Substring(0, 8) + "-" + fingerprint.Substring(8, 8) + "-" + fingerprint.Substring(16, 8) + "-" + fingerprint.Substring(24, 8) + "\n" +
+                   fingerprint.Substring(32, 8) + "-" + fingerprint.Substring(40, 8) + "-" + fingerprint.Substring(48, 8) + "-" + fingerprint.Substring(56, 8);
+        }
+
+        // Intent: Checks the active ZRpc directly so a connection lost during trust/package preparation can clear UI/state immediately.
+        private static bool IsRpcConnected(ZRpc rpc)
+        {
+            try { return rpc != null && rpc.IsConnected(); }
+            catch { return false; }
+        }
+
+        // Intent: Clears a positively recognized AMS session when its transport dies before synchronization completes.
+        // Security: this is fail-closed; it never replays the held vanilla handshake, and it removes stale trust/download UI instead of leaving an actionable prompt for a dead connection.
+        private static void HandleRecognizedConnectionLoss(string reason)
+        {
+            CloseBundleStream();
+            DeleteActiveBundleFile();
+            ClearPendingTrustPrompt();
+
+            _waitingForServer = false;
+            _serverRecognized = false;
+            _serverAcknowledged = false;
+            _serverSupportsBundleWindow = false;
+            _serverSupportsBundleBatch = false;
+            _serverSupportsBundlePipeline = false;
+            _preflightGateActive = false;
+            _serverHandshakeHeld = false;
+            _heldServerHandshakeParameters = new object[0];
+            _pendingRpc = null;
+            _helloSentUtc = DateTime.MinValue;
+            _lastHelloAttemptUtc = DateTime.MinValue;
+            _helloAttemptCount = 0;
+
+            HideSyncOverlay();
+            ResetManifestState();
+
+            if (_instance != null)
+                _instance.Logger.LogWarning((reason ?? "AutoModSync connection ended.") + " The protected join was discarded; reconnect to try again.");
+        }
 
         // Intent: Converts hash/fingerprint bytes into deterministic lowercase hexadecimal.
         private static string ToHex(byte[] bytes)
