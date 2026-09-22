@@ -59,6 +59,7 @@ namespace ValheimAutoModSync
         private static ConfigEntry<int> _maxExpandedBundleMiB;
         private static ConfigEntry<int> _bundleCacheSeconds;
         private static ConfigEntry<int> _bundleCacheMaxMiB;
+        private static ConfigEntry<bool> _prebuildFreshClientBundle;
         private static ConfigEntry<int> _transferSendRateMax;
         private static ConfigEntry<int> _transferSendRateMin;
         private static ConfigEntry<int> _transferSendBufferBytes;
@@ -155,6 +156,7 @@ namespace ValheimAutoModSync
             _maxExpandedBundleMiB = Config.Bind("Transfer", "MaxExpandedBundleMiB", 4096, "Refuse a requested change set whose signed source files exceed this many MiB before compression.");
             _bundleCacheSeconds = Config.Bind("Transfer", "BundleCacheSeconds", 600, "How long a completed immutable bundle remains reusable after its last client use. 0 keeps artifacts only while actively referenced.");
             _bundleCacheMaxMiB = Config.Bind("Transfer", "BundleCacheMaxMiB", 4096, "Maximum total on-disk size of retained completed bundle artifacts. Active transfers are never deleted; idle least-recently-used artifacts are evicted to meet this budget.");
+            _prebuildFreshClientBundle = Config.Bind("Transfer", "PrebuildFreshClientBundle", true, "On a dedicated-server process, build the likely fresh-client bundle during startup so the first normal join can reuse it. The prebuilt baseline contains every signed distributable file except ValheimAutoModSync.Client.dll, which a connecting AutoModSync client already needs in order to request synchronization.");
             _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 67108864, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
             _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 16777216, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
             _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 33554432, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
@@ -173,6 +175,97 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 Logger.LogError("AutoModSync startup failed: " + ex);
+            }
+        }
+
+        // Intent: Moves the dominant public-server fresh-client ZIP cost into dedicated-server startup instead of the first player's join.
+        // Scope: prewarms the exact signed set a current AutoModSync-only client is expected to need: every distributable manifest record except the client plugin that must already be installed to initiate AMS.
+        // Compatibility: arbitrary partial/delta clients still use the normal content-keyed lazy cache; Host & Play remains lazy so opening Valheim does not incur dedicated-server prewarm cost.
+        private void Start()
+        {
+            if (_enabled == null || !_enabled.Value || _prebuildFreshClientBundle == null || !_prebuildFreshClientBundle.Value) return;
+            if (!IsDedicatedServerProcess()) return;
+
+            try
+            {
+                PrewarmFreshClientBundle();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("AutoModSync fresh-client bundle prewarm failed; normal on-demand bundle construction remains available: " + ex);
+            }
+        }
+
+        // Intent: Builds and retains the likely nearly-bare-client artifact before the dedicated server begins accepting normal gameplay joins.
+        // Safety: uses the same signed manifest records, fixed-root validation, per-file/source re-hash, expanded/compressed limits, immutable publication, TTL, and disk-budget eviction as a live request.
+        private static void PrewarmFreshClientBundle()
+        {
+            Stopwatch watch = Stopwatch.StartNew();
+            EnsureManifest(true);
+
+            List<string> keys = new List<string>(_files.Keys);
+            keys.Sort(StringComparer.OrdinalIgnoreCase);
+            List<FileRecord> records = new List<FileRecord>();
+            long expandedBytes = 0L;
+            long maxExpandedBytes = (long)Math.Max(1, _maxExpandedBundleMiB.Value) * 1024L * 1024L;
+
+            int i;
+            for (i = 0; i < keys.Count; i++)
+            {
+                string key = keys[i];
+                if (String.Equals(key, "P:ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)) continue;
+
+                FileRecord record = ResolveBundleRecord(key);
+                if (record.Size < 0 || record.Size > maxExpandedBytes - expandedBytes)
+                    throw new InvalidDataException("Fresh-client prewarm exceeds the configured expanded transfer limit.");
+
+                expandedBytes += record.Size;
+                records.Add(record);
+            }
+
+            if (records.Count == 0)
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync fresh-client bundle prewarm skipped because the signed distributable set is empty.");
+                return;
+            }
+
+            long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
+            string cacheStatus;
+            double waitSeconds;
+            BundleArtifact artifact = null;
+            try
+            {
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync prewarming fresh-client bundle during dedicated-server startup for " +
+                        records.Count.ToString(CultureInfo.InvariantCulture) + " signed file(s), " + FormatBytes(expandedBytes) + " expanded.");
+
+                artifact = AcquireBundleArtifact(records, expandedBytes, maxBundleBytes, out cacheStatus, out waitSeconds);
+                watch.Stop();
+
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync fresh-client bundle prewarm ready: cache=" + cacheStatus +
+                        ", key=" + ShortCacheKey(artifact.CacheKey) +
+                        ", compressed=" + FormatBytes(artifact.Size) +
+                        ", startupPrewarm=" + watch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s.");
+            }
+            finally
+            {
+                // Prewarm itself is not a transfer. Release its temporary reference so TTL/LRU policy owns the retained artifact.
+                if (artifact != null) ReleaseBundleArtifact(artifact);
+            }
+        }
+
+        // Intent: Limits startup prewarming to the dedicated-server executable; Host & Play retains lazy cache behavior until it actually needs a bundle.
+        private static bool IsDedicatedServerProcess()
+        {
+            try
+            {
+                string name = Process.GetCurrentProcess().ProcessName ?? "";
+                return name.IndexOf("valheim_server", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch
+            {
+                return false;
             }
         }
 
