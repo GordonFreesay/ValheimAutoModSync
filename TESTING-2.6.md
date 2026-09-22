@@ -72,7 +72,9 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 
 ## Phase 3 — cached/single-flight bundle construction
 
-- [ ] First request for a changed-file set logs `cache=MISS`, publishes one immutable content-addressed ZIP, and reports ZIP-build/SHA-256 preparation timings.
+- [ ] Dedicated-server startup with `PrebuildFreshClientBundle=true` constructs the nearly-bare-client baseline before normal joins, logs one prewarm MISS/build timing, and retains it for the first real client even if ordinary `BundleCacheSeconds` elapses.
+- [ ] A nearly-bare client with the current AutoModSync client DLL receives a startup-prewarmed `cache=HIT` with no join-time ZIP rebuild.
+- [ ] First request for a different changed-file set logs `cache=MISS`, publishes one immutable content-addressed ZIP, and reports ZIP-build/SHA-256 preparation timings.
 - [ ] A second fresh client requesting the identical signed file set within `BundleCacheSeconds` logs `cache=HIT`, uses the same cache key/SHA-256/size, and performs no second ZIP build.
 - [ ] Two overlapping identical fresh-client requests produce one build; the follower logs `WAIT` / `WAIT-HIT` and both transfers read the same published artifact.
 - [ ] Changing any requested file changes the content-derived cache key and causes a new MISS; stale content is never returned under the old key.
