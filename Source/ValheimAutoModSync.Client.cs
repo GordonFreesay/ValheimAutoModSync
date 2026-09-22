@@ -335,6 +335,8 @@ namespace ValheimAutoModSync
                 {
                     DeleteReconnectToken();
                     _startupReconnectFinished = true;
+                    // A created outgoing connection completes the one-shot restart reconnect; cancel any stale delayed character-start callback.
+                    _startupReconnectCharacterStartPending = false;
                     if (_instance != null) _instance.Logger.LogInfo("AutoModSync reconnect created an outgoing Valheim connection; reconnect token cleared.");
                 }
                 RegisterRpc(peer.m_rpc);
@@ -373,10 +375,11 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(FejdStartup), "ShowCharacterSelection")]
         private static class ReconnectCharacterSelectionPatch
         {
-            // Intent: During restart reconnect, notices when Valheim reaches character selection and schedules the normal selected-character start action.
+            // Intent: During restart reconnect, notices the first character-selection screen and schedules the normal selected-character start action exactly once.
+            // Safety: later ShowCharacterSelection callbacks can occur after the outgoing reconnect is already established; completed or already-pending reconnects must not start the character again.
             private static void Postfix()
             {
-                if (!_startupReconnectDispatched || _restartRequested) return;
+                if (!_startupReconnectDispatched || _startupReconnectFinished || _startupReconnectCharacterStartPending || _restartRequested) return;
                 _startupReconnectCharacterStartPending = true;
                 _startupReconnectCharacterStartUtc = DateTime.UtcNow.AddMilliseconds(650.0);
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync reconnect reached character selection; starting the selected character automatically.");
