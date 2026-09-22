@@ -16,8 +16,8 @@ using Steamworks;
 [assembly: AssemblyDescription("Server-side signed manifest and synchronized BepInEx plugin transfer component.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyVersion("2.6.0.0")]
+[assembly: AssemblyFileVersion("2.6.0.0")]
 
 namespace ValheimAutoModSync
 {
@@ -26,7 +26,7 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.server";
         public const string PluginName = "Valheim AutoModSync Server";
-        public const string PluginVersion = "2.5.0";
+        public const string PluginVersion = "2.6.0";
         public const int ProtocolVersion = 4;
 
         internal const string RpcHello = "AMS4_Hello";

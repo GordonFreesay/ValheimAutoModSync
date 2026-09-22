@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.6.0 (development)
+
+- Development work is isolated on `dev/2.6`; the current public release remains 2.5.0 until the 2.6 validation gates are complete.
+- 2.6 preserves AMS4/protocol 4 as the compatibility baseline and will add new behavior through negotiated capabilities where possible.
+- Release packaging/publication is intentionally deferred until functional validation is completed.
+
 ## 2.5.0
 
 - Moves AutoModSync preflight ahead of the normal Valheim ServerHandshake so Jotunn/Epic Loot and similar mod-compatibility checks run only after synchronization has had a chance to complete.

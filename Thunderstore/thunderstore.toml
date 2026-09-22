@@ -4,7 +4,7 @@ schemaVersion = "0.0.1"
 [package]
 namespace = "GordonFreesay"
 name = "ValheimAutoModSync"
-versionNumber = "2.5.0"
+versionNumber = "2.6.0"
 description = "Server-driven BepInEx mod sync for Valheim with signed manifests, SHA-256 verification, delta transfers, restart/reconnect, and no extra sync port."
 websiteUrl = "https://github.com/GordonFreesay/ValheimAutoModSync"
 containsNsfwContent = false

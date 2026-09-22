@@ -10,8 +10,8 @@ using System.Reflection;
 [assembly: AssemblyDescription("Applies verified staged AutoModSync BepInEx files after Valheim exits, then relaunches Valheim.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyVersion("2.6.0.0")]
+[assembly: AssemblyFileVersion("2.6.0.0")]
 
 internal static class Program
 {

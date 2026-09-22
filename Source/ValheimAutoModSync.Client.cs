@@ -16,8 +16,8 @@ using UnityEngine;
 [assembly: AssemblyDescription("Client-side Valheim plugin synchronization, trust, verification, restart, and reconnect component.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyVersion("2.6.0.0")]
+[assembly: AssemblyFileVersion("2.6.0.0")]
 
 namespace ValheimAutoModSync
 {
@@ -26,7 +26,7 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.client";
         public const string PluginName = "Valheim AutoModSync Client";
-        public const string PluginVersion = "2.5.0";
+        public const string PluginVersion = "2.6.0";
         public const int ProtocolVersion = 4;
 
         private const string RpcHello = "AMS4_Hello";

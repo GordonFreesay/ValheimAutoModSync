@@ -15,12 +15,12 @@ using System.Reflection;
 [assembly: AssemblyDescription("Standalone Windows installer for Valheim AutoModSync client, dedicated-server, and host roles.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyVersion("2.6.0.0")]
+[assembly: AssemblyFileVersion("2.6.0.0")]
 
 internal static class AutoModSyncInstaller
 {
-    private const string ProductVersion = "2.5.0";
+    private const string ProductVersion = "2.6.0";
     private const string BepInExVersion = "5.4.2350";
     private const string BepInExSha256 = "37a91c000b4e88f2ed7a4bd7d812239852d2e36cbf0ff0a9f5faacfba46b105f";
     private const string LegacyBootstrapSha256 = "e5b15848829648dc97c7f40df2800c33372500e3b8047944ef1c84a2a107c3b8";
