@@ -43,6 +43,8 @@ Valheim creates outgoing ZNet connection
 
 After a successful/matching preflight, AutoModSync stops gating and Valheim plus other mods continue their normal handshakes. Jotunn, ServerSync-style mods, and similar validators are not patched or told to ignore mismatches; they see the synchronized client after preflight.
 
+First-contact trust is shown as an in-game AutoModSync prompt rather than a blocking native Windows MessageBox. The signed manifest and exact active `ZRpc` are retained while the player verifies the fingerprint, allowing Valheim's networking loop to continue. Trust acceptance is valid only for that same still-connected, signature-verified AMS session. If the recognized socket dies while trust or package preparation is pending, AutoModSync discards the protected session and clears transient UI without replaying the held vanilla handshake.
+
 The older SendPeerInfo AMS4 probe remains as a fallback for connection paths that do not pass through the early gate. Keeping the same AMS4 protocol preserves compatibility with existing 2.4.x AutoModSync peers.
 
 For large first-time synchronizations, 2.5.0 negotiates optional transfer capabilities through `AMS4_Ack`. `bundle-batch1` packs up to roughly 384 KiB of raw ZIP data into one `AMS4_BundleBatch` RPC, avoiding Base64 expansion. Current peers prefer `bundle-pipeline1`: the client requests up to 128 chunks at once and the server emits multiple bounded batch RPCs back-to-back, keeping several MiB queued while preserving the same <=384 KiB per-message bound. If pipelining is unavailable, the client falls back to one binary batch request at a time, then to `bundle-window1`, then to the original one-chunk AMS4 behavior.
