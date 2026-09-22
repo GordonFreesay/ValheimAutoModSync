@@ -70,6 +70,19 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 - [ ] Server aborts bundle construction once compressed output crosses `MaxBundleMiB`.
 - [ ] Failed bundle construction removes its unpublished temporary ZIP.
 
+## Phase 3 — cached/single-flight bundle construction
+
+- [ ] First request for a changed-file set logs `cache=MISS`, publishes one immutable content-addressed ZIP, and reports ZIP-build/SHA-256 preparation timings.
+- [ ] A second fresh client requesting the identical signed file set within `BundleCacheSeconds` logs `cache=HIT`, uses the same cache key/SHA-256/size, and performs no second ZIP build.
+- [ ] Two overlapping identical fresh-client requests produce one build; the follower logs `WAIT` / `WAIT-HIT` and both transfers read the same published artifact.
+- [ ] Changing any requested file changes the content-derived cache key and causes a new MISS; stale content is never returned under the old key.
+- [ ] A same-size source-file change after manifest signing aborts the build during source re-hash rather than publishing a poisoned cache artifact.
+- [ ] `BundleCacheSeconds = 0` permits active sharing but removes the artifact after the last active transfer releases it.
+- [ ] TTL expiry removes only idle artifacts.
+- [ ] `BundleCacheMaxMiB` evicts idle least-recently-used artifacts without deleting an artifact referenced by an active transfer.
+- [ ] Failed ZIP construction leaves no published cache entry and removes its private `bundle-build-*.tmp` file.
+- [ ] Server restart deletes orphaned prior-process bundle ZIP/temp files and rebuilds rather than trusting stale cache metadata.
+
 ## Runtime evidence — 2026-09-22
 
 Maintainer-provided client/server logs from development commit `37a4125f270a417489e9d620326c4f92e808bc26` establish the following smoke-test evidence:
