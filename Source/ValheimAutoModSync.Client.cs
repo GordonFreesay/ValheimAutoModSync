@@ -2257,12 +2257,8 @@ namespace ValheimAutoModSync
             AbortAutoModSyncJoin("AutoModSync server identity was not trusted by the user.");
         }
 
-        // Intent: Gives the interactive trust dialog a real movable pointer even though Valheim's connection state normally hides/locks it.
-        // Calling this repeatedly is deliberate: Valheim may rewrite cursor state while a connection attempt is still in progress.
-
-
-        // Intent: Clears only the transient first-contact decision state and restores the cursor mode that Valheim owned before AMS opened the prompt.
-        // Connection-loss handling overrides this restoration afterward so the returned main menu cannot inherit a hidden/locked connection cursor.
+        // Intent: Clears only the transient first-contact decision state and invalidates any outstanding native-dialog result.
+        // A best-effort WM_CLOSE also removes a still-open prompt when the protected connection ends first.
         private static void ClearPendingTrustPrompt()
         {
             bool hadPrompt = _trustPromptPending;
