@@ -86,6 +86,9 @@ namespace ValheimAutoModSync
         private static string _trustPromptFingerprint = "";
         private static string _trustPromptManifest = "";
         private static ZRpc _trustPromptRpc;
+        private static bool _trustPromptCursorCaptured;
+        private static bool _trustPromptPreviousCursorVisible;
+        private static CursorLockMode _trustPromptPreviousCursorLockState;
         private static readonly Dictionary<int, string> ManifestParts = new Dictionary<int, string>();
         private static readonly List<ManifestEntry> NeededFiles = new List<ManifestEntry>();
         private static FileStream _bundleStream;
@@ -210,6 +213,25 @@ namespace ValheimAutoModSync
                 }
             }
 
+            if (_trustPromptPending)
+            {
+                // Valheim's connection state hides/locks the pointer for its sword cursor. Reassert an unlocked OS pointer each frame
+                // while the AMS trust dialog owns interaction so the IMGUI buttons remain clickable even if Valheim changes cursor state again.
+                EnsureTrustPromptCursor();
+
+                // Keyboard fallbacks keep the security decision usable if another mod or platform layer still intercepts pointer input.
+                if (Input.GetKeyDown(KeyCode.Escape))
+                {
+                    RejectPendingServerTrust();
+                    return;
+                }
+                if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
+                {
+                    AcceptPendingServerTrust();
+                    return;
+                }
+            }
+
             // Once a server has positively answered AMS, a dead socket is a failed protected session, not a non-AMS fail-open case.
             // This also guarantees that trust/download UI cannot remain stranded on screen after Valheim has already lost the connection.
             if (_waitingForServer && _pendingRpc != null && (_serverAcknowledged || _serverRecognized) && !IsRpcConnected(_pendingRpc))
@@ -245,7 +267,7 @@ namespace ValheimAutoModSync
             if (!_overlayVisible) return;
 
             float width = Mathf.Min(620f, Mathf.Max(320f, Screen.width - 40f));
-            float height = _trustPromptPending ? 300f : (_overlayTotalFiles > 0 ? 190f : 135f);
+            float height = _trustPromptPending ? 320f : (_overlayTotalFiles > 0 ? 190f : 135f);
             float left = (Screen.width - width) * 0.5f;
             float top = (Screen.height - height) * 0.5f;
             Rect panel = new Rect(left, top, width, height);
@@ -282,17 +304,18 @@ namespace ValheimAutoModSync
                 // Non-blocking in-game trust UI keeps Unity/ZRpc updates running while the player verifies the fingerprint.
                 // The old native MessageBox blocked the game thread long enough for Valheim's server-side ZRpc timeout to expire.
                 GUI.Label(new Rect(left + 25f, top + 50f, width - 50f, 34f), "Trust this server?", statusStyle);
-                GUI.Label(new Rect(left + 35f, top + 88f, width - 70f, 52f),
+                GUI.Label(new Rect(left + 35f, top + 88f, width - 70f, 42f),
                     "This server wants permission to install or update executable mod files on this PC.", detailStyle);
-                GUI.Label(new Rect(left + 35f, top + 138f, width - 70f, 44f),
-                    "Server fingerprint:\n" + FormatFingerprint(_trustPromptFingerprint), detailStyle);
-                GUI.Label(new Rect(left + 35f, top + 186f, width - 70f, 38f),
+                GUI.Label(new Rect(left + 35f, top + 134f, width - 70f, 20f), "Server fingerprint:", detailStyle);
+                GUI.Label(new Rect(left + 35f, top + 154f, width - 70f, 46f),
+                    FormatFingerprint(_trustPromptFingerprint), detailStyle);
+                GUI.Label(new Rect(left + 35f, top + 202f, width - 70f, 42f),
                     "Choose Trust only if you intended to join this server. You will only be asked again if its server identity changes.", detailStyle);
 
-                if (GUI.Button(new Rect(left + 45f, top + 242f, 180f, 34f), "Cancel"))
+                if (GUI.Button(new Rect(left + 45f, top + 260f, 180f, 34f), "Cancel"))
                     RejectPendingServerTrust();
 
-                if (GUI.Button(new Rect(left + width - 265f, top + 242f, 220f, 34f), "Trust Server & Continue"))
+                if (GUI.Button(new Rect(left + width - 265f, top + 260f, 220f, 34f), "Trust Server & Continue"))
                     AcceptPendingServerTrust();
 
                 GUI.color = previousColor;
@@ -2123,7 +2146,14 @@ namespace ValheimAutoModSync
             _trustPromptRpc = rpc;
             _trustPromptFingerprint = fingerprint;
             _trustPromptManifest = manifest ?? "";
+
+            // Capture Valheim's pre-prompt cursor mode once, then temporarily take pointer ownership for the interactive AMS dialog.
+            // Update() reasserts this state because Valheim's connection UI can hide/lock the cursor again on later frames.
+            _trustPromptPreviousCursorVisible = Cursor.visible;
+            _trustPromptPreviousCursorLockState = Cursor.lockState;
+            _trustPromptCursorCaptured = true;
             _trustPromptPending = true;
+            EnsureTrustPromptCursor();
             ShowSyncOverlay("", "");
 
             if (_instance != null)
@@ -2174,13 +2204,41 @@ namespace ValheimAutoModSync
             AbortAutoModSyncJoin("AutoModSync server identity was not trusted by the user.");
         }
 
-        // Intent: Clears only the transient first-contact decision state; the signed manifest/session state is managed by the normal preflight lifecycle.
+        // Intent: Gives the interactive trust dialog a real movable pointer even though Valheim's connection state normally hides/locks it.
+        // Calling this repeatedly is deliberate: Valheim may rewrite cursor state while a connection attempt is still in progress.
+        private static void EnsureTrustPromptCursor()
+        {
+            try
+            {
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+            }
+            catch { }
+        }
+
+        // Intent: Clears only the transient first-contact decision state and restores the cursor mode that Valheim owned before AMS opened the prompt.
+        // Connection-loss handling overrides this restoration afterward so the returned main menu cannot inherit a hidden/locked connection cursor.
         private static void ClearPendingTrustPrompt()
         {
+            bool restoreCursor = _trustPromptPending && _trustPromptCursorCaptured;
+            bool previousVisible = _trustPromptPreviousCursorVisible;
+            CursorLockMode previousLockState = _trustPromptPreviousCursorLockState;
+
             _trustPromptPending = false;
             _trustPromptFingerprint = "";
             _trustPromptManifest = "";
             _trustPromptRpc = null;
+            _trustPromptCursorCaptured = false;
+
+            if (restoreCursor)
+            {
+                try
+                {
+                    Cursor.lockState = previousLockState;
+                    Cursor.visible = previousVisible;
+                }
+                catch { }
+            }
         }
 
         // Intent: Produces a readable two-line fingerprint without changing the exact 64-hex value that is pinned and compared.
@@ -2222,6 +2280,14 @@ namespace ValheimAutoModSync
 
             HideSyncOverlay();
             ResetManifestState();
+
+            // A failed connection returns control to menu/UI state, so do not leave behind Valheim's hidden/locked connection cursor.
+            try
+            {
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+            }
+            catch { }
 
             if (_instance != null)
                 _instance.Logger.LogWarning((reason ?? "AutoModSync connection ended.") + " The protected join was discarded; reconnect to try again.");
