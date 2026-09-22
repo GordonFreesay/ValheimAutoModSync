@@ -218,18 +218,6 @@ namespace ValheimAutoModSync
                 // Valheim's connection state hides/locks the pointer for its sword cursor. Reassert an unlocked OS pointer each frame
                 // while the AMS trust dialog owns interaction so the IMGUI buttons remain clickable even if Valheim changes cursor state again.
                 EnsureTrustPromptCursor();
-
-                // Keyboard fallbacks keep the security decision usable if another mod or platform layer still intercepts pointer input.
-                if (Input.GetKeyDown(KeyCode.Escape))
-                {
-                    RejectPendingServerTrust();
-                    return;
-                }
-                if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
-                {
-                    AcceptPendingServerTrust();
-                    return;
-                }
             }
 
             // Once a server has positively answered AMS, a dead socket is a failed protected session, not a non-AMS fail-open case.
@@ -303,6 +291,28 @@ namespace ValheimAutoModSync
             {
                 // Non-blocking in-game trust UI keeps Unity/ZRpc updates running while the player verifies the fingerprint.
                 // The old native MessageBox blocked the game thread long enough for Valheim's server-side ZRpc timeout to expire.
+                // Keyboard fallbacks use the current IMGUI event instead of UnityEngine.Input so this client keeps the existing
+                // Unity reference set and does not require UnityEngine.InputLegacyModule just for Enter/Escape handling.
+                Event guiEvent = Event.current;
+                if (guiEvent != null && guiEvent.type == EventType.KeyDown)
+                {
+                    if (guiEvent.keyCode == KeyCode.Escape)
+                    {
+                        guiEvent.Use();
+                        RejectPendingServerTrust();
+                        GUI.color = previousColor;
+                        return;
+                    }
+
+                    if (guiEvent.keyCode == KeyCode.Return || guiEvent.keyCode == KeyCode.KeypadEnter)
+                    {
+                        guiEvent.Use();
+                        AcceptPendingServerTrust();
+                        GUI.color = previousColor;
+                        return;
+                    }
+                }
+
                 GUI.Label(new Rect(left + 25f, top + 50f, width - 50f, 34f), "Trust this server?", statusStyle);
                 GUI.Label(new Rect(left + 35f, top + 88f, width - 70f, 42f),
                     "This server wants permission to install or update executable mod files on this PC.", detailStyle);
