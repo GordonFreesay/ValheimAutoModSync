@@ -59,7 +59,11 @@ The server plugin registers AMS4 RPCs on incoming Valheim connections and serves
 
 The server never opens a second listener or contacts an external download service.
 
-On `dev/2.6`, recursive manifest scanning does not traverse reparse-point files/directories. Bundle requests also have a pre-compression expanded-size ceiling (`MaxExpandedBundleMiB`) in addition to the existing individual-file and compressed-bundle ceilings. The client independently caps incoming compressed bytes, expanded synchronized bytes, file count, per-file bytes, chunk count, and streaming ZIP extraction.
+On `dev/2.6`, bundle construction is content-addressed. The server sorts the exact requested signed records, hashes kind/path/size/content-hash metadata into a bundle cache key, builds a ZIP privately, hashes the completed ZIP, and only then publishes it as an immutable artifact. Identical clients reuse that artifact for `BundleCacheSeconds` instead of recompressing the same files. If identical requests arrive while the artifact is still being built, they join one single-flight build and consume the same published ZIP afterward. Active transfers reference-count the artifact so cache cleanup cannot delete a ZIP another client is reading; idle artifacts are TTL/LRU-evicted under `BundleCacheMaxMiB`. Cache metadata is process-local and startup deletes orphaned ZIP/temp files rather than trusting artifacts from a previous process.
+
+Bundle-build telemetry distinguishes `MISS`, `HIT`, and `WAIT-HIT` and records ZIP construction, final ZIP SHA-256, total preparation, and any single-flight wait time. While copying source bytes into a new artifact, the server simultaneously re-hashes each source against the signed manifest record so a same-size local change cannot be published under an obsolete cache key.
+
+Recursive manifest scanning does not traverse reparse-point files/directories. Bundle requests also have a pre-compression expanded-size ceiling (`MaxExpandedBundleMiB`) in addition to the existing individual-file and compressed-bundle ceilings. The client independently caps incoming compressed bytes, expanded synchronized bytes, file count, per-file bytes, chunk count, and streaming ZIP extraction.
 
 ### Source/ValheimAutoModSync.Installer.cs
 
