@@ -84,9 +84,10 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 - [ ] `BundleCacheMaxMiB` evicts idle least-recently-used artifacts without deleting an artifact referenced by an active transfer.
 - [ ] Failed ZIP construction leaves no published cache entry and removes its private `bundle-build-*.tmp` file.
 - [ ] Server restart deletes orphaned prior-process bundle ZIP/temp files and rebuilds rather than trusting stale cache metadata.
-- [ ] First-contact trust remains responsive for longer than Valheim's normal ZRpc timeout window: the in-game trust prompt does not block networking, and accepting after an intentional delay continues the same AMS session.
+- [ ] First-contact trust remains responsive for longer than Valheim's normal ZRpc timeout window: the background native Windows Yes/No dialog does not block Unity/ZRpc networking, and accepting after an intentional delay continues the same AMS session.
 - [x] If the recognized AMS socket is lost while first-contact trust or package preparation is visible, the transient trust/progress UI clears automatically and the protected join remains fail-closed.
-- [ ] During first-contact trust, the mouse pointer is visible/unlocked and both `Cancel` and `Trust Server & Continue` are clickable while Valheim remains in its connection state; Enter accepts and Escape cancels as fallbacks.
+- [ ] During first-contact trust, the native Windows dialog owns normal mouse input without AutoModSync changing `Cursor.visible` or `Cursor.lockState`; Yes continues, No aborts, and a stale dialog/result is ignored or dismissed if the protected connection ends first.
+- [ ] Rejecting trust shows the blocked-join status only transiently and removes it from the main menu after approximately four seconds.
 
 ## Runtime evidence — 2026-09-22
 
