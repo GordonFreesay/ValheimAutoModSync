@@ -10,6 +10,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using UnityEngine;
 
 [assembly: AssemblyTitle("Valheim AutoModSync Client")]
@@ -82,13 +83,13 @@ namespace ValheimAutoModSync
         private static string _manifestSignature = "";
         private static string _serverPublicKeyXml = "";
         private static string _serverFingerprint = "";
+        private const string TrustPromptCaption = "Valheim AutoModSync - Trust Server";
         private static bool _trustPromptPending;
         private static string _trustPromptFingerprint = "";
         private static string _trustPromptManifest = "";
         private static ZRpc _trustPromptRpc;
-        private static bool _trustPromptCursorCaptured;
-        private static bool _trustPromptPreviousCursorVisible;
-        private static CursorLockMode _trustPromptPreviousCursorLockState;
+        private static volatile int _trustPromptDecision;
+        private static volatile int _trustPromptGeneration;
         private static readonly Dictionary<int, string> ManifestParts = new Dictionary<int, string>();
         private static readonly List<ManifestEntry> NeededFiles = new List<ManifestEntry>();
         private static FileStream _bundleStream;
@@ -112,6 +113,7 @@ namespace ValheimAutoModSync
         private static bool _overlayBundleMode;
         private static long _overlayBytesReceived;
         private static long _overlayBytesTotal;
+        private static DateTime _overlayHideUtc = DateTime.MinValue;
         private static string _startupReconnectTarget = "";
         private static DateTime _startupReconnectNextUtc = DateTime.MinValue;
         private static int _startupReconnectAttempts;
@@ -213,11 +215,26 @@ namespace ValheimAutoModSync
                 }
             }
 
-            if (_trustPromptPending)
+            if (_overlayVisible && _overlayHideUtc != DateTime.MinValue && DateTime.UtcNow >= _overlayHideUtc)
             {
-                // Valheim's connection state hides/locks the pointer for its sword cursor. Reassert an unlocked OS pointer each frame
-                // while the AMS trust dialog owns interaction so the IMGUI buttons remain clickable even if Valheim changes cursor state again.
-                EnsureTrustPromptCursor();
+                HideSyncOverlay();
+            }
+
+            if (_trustPromptPending && _trustPromptDecision != 0)
+            {
+                int decision = _trustPromptDecision;
+                _trustPromptDecision = 0;
+
+                if (decision == 1)
+                    AcceptPendingServerTrust();
+                else if (decision == 2)
+                    RejectPendingServerTrust();
+                else
+                {
+                    ClearPendingTrustPrompt();
+                    AbortAutoModSyncJoin("AutoModSync could not open the server trust confirmation.");
+                }
+                return;
             }
 
             // Once a server has positively answered AMS, a dead socket is a failed protected session, not a non-AMS fail-open case.
@@ -255,7 +272,7 @@ namespace ValheimAutoModSync
             if (!_overlayVisible) return;
 
             float width = Mathf.Min(620f, Mathf.Max(320f, Screen.width - 40f));
-            float height = _trustPromptPending ? 320f : (_overlayTotalFiles > 0 ? 190f : 135f);
+            float height = _trustPromptPending ? 235f : (_overlayTotalFiles > 0 ? 190f : 135f);
             float left = (Screen.width - width) * 0.5f;
             float top = (Screen.height - height) * 0.5f;
             Rect panel = new Rect(left, top, width, height);
@@ -289,44 +306,14 @@ namespace ValheimAutoModSync
 
             if (_trustPromptPending)
             {
-                // Non-blocking in-game trust UI keeps Unity/ZRpc updates running while the player verifies the fingerprint.
-                // The old native MessageBox blocked the game thread long enough for Valheim's server-side ZRpc timeout to expire.
-                // Keyboard fallbacks use the current IMGUI event instead of UnityEngine.Input so this client keeps the existing
-                // Unity reference set and does not require UnityEngine.InputLegacyModule just for Enter/Escape handling.
-                Event guiEvent = Event.current;
-                if (guiEvent != null && guiEvent.type == EventType.KeyDown)
-                {
-                    if (guiEvent.keyCode == KeyCode.Escape)
-                    {
-                        guiEvent.Use();
-                        RejectPendingServerTrust();
-                        GUI.color = previousColor;
-                        return;
-                    }
-
-                    if (guiEvent.keyCode == KeyCode.Return || guiEvent.keyCode == KeyCode.KeypadEnter)
-                    {
-                        guiEvent.Use();
-                        AcceptPendingServerTrust();
-                        GUI.color = previousColor;
-                        return;
-                    }
-                }
-
+                // Trust is collected in a native Windows dialog running on a background thread.
+                // That leaves Unity/ZRpc processing live and avoids fighting Valheim for cursor ownership.
                 GUI.Label(new Rect(left + 25f, top + 50f, width - 50f, 34f), "Trust this server?", statusStyle);
-                GUI.Label(new Rect(left + 35f, top + 88f, width - 70f, 42f),
-                    "This server wants permission to install or update executable mod files on this PC.", detailStyle);
-                GUI.Label(new Rect(left + 35f, top + 134f, width - 70f, 20f), "Server fingerprint:", detailStyle);
-                GUI.Label(new Rect(left + 35f, top + 154f, width - 70f, 46f),
+                GUI.Label(new Rect(left + 35f, top + 88f, width - 70f, 36f),
+                    "A Windows confirmation dialog is open. Use its Yes/No buttons to continue or cancel.", detailStyle);
+                GUI.Label(new Rect(left + 35f, top + 128f, width - 70f, 20f), "Server fingerprint:", detailStyle);
+                GUI.Label(new Rect(left + 35f, top + 150f, width - 70f, 46f),
                     FormatFingerprint(_trustPromptFingerprint), detailStyle);
-                GUI.Label(new Rect(left + 35f, top + 202f, width - 70f, 42f),
-                    "Choose Trust only if you intended to join this server. You will only be asked again if its server identity changes.", detailStyle);
-
-                if (GUI.Button(new Rect(left + 45f, top + 260f, 180f, 34f), "Cancel"))
-                    RejectPendingServerTrust();
-
-                if (GUI.Button(new Rect(left + width - 265f, top + 260f, 220f, 34f), "Trust Server & Continue"))
-                    AcceptPendingServerTrust();
 
                 GUI.color = previousColor;
                 return;
@@ -373,7 +360,15 @@ namespace ValheimAutoModSync
         {
             _overlayStatus = status ?? "";
             _overlayCurrentFile = currentFile ?? "";
+            _overlayHideUtc = DateTime.MinValue;
             _overlayVisible = true;
+        }
+
+        // Intent: Shows a failure/status banner briefly, then relinquishes the menu UI automatically.
+        private static void ShowTransientSyncOverlay(string status, double seconds)
+        {
+            ShowSyncOverlay(status, "");
+            _overlayHideUtc = DateTime.UtcNow.AddSeconds(Math.Max(0.5, seconds));
         }
 
         // Intent: Clears all overlay/progress state when synchronization is finished or the normal handshake is resumed.
@@ -388,6 +383,7 @@ namespace ValheimAutoModSync
             _overlayBundleMode = false;
             _overlayBytesReceived = 0L;
             _overlayBytesTotal = 0L;
+            _overlayHideUtc = DateTime.MinValue;
         }
 
         [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
@@ -1454,7 +1450,7 @@ namespace ValheimAutoModSync
             _heldServerHandshakeParameters = new object[0];
 
             ResetManifestState();
-            ShowSyncOverlay("AutoModSync blocked this join.\n" + (reason ?? "Synchronization failed."), "");
+            ShowTransientSyncOverlay("AutoModSync blocked this join.\n" + (reason ?? "Synchronization failed."), 4.0);
             if (_instance != null) _instance.Logger.LogError((reason ?? "AutoModSync synchronization failed.") + " The recognized AutoModSync join was aborted.");
 
             if (rpc == null) return;
@@ -2156,18 +2152,65 @@ namespace ValheimAutoModSync
             _trustPromptRpc = rpc;
             _trustPromptFingerprint = fingerprint;
             _trustPromptManifest = manifest ?? "";
-
-            // Capture Valheim's pre-prompt cursor mode once, then temporarily take pointer ownership for the interactive AMS dialog.
-            // Update() reasserts this state because Valheim's connection UI can hide/lock the cursor again on later frames.
-            _trustPromptPreviousCursorVisible = Cursor.visible;
-            _trustPromptPreviousCursorLockState = Cursor.lockState;
-            _trustPromptCursorCaptured = true;
+            _trustPromptDecision = 0;
+            int generation = ++_trustPromptGeneration;
             _trustPromptPending = true;
-            EnsureTrustPromptCursor();
             ShowSyncOverlay("", "");
+
+            StartNativeTrustPrompt(fingerprint, generation);
 
             if (_instance != null)
                 _instance.Logger.LogInfo("AutoModSync is waiting for first-contact trust confirmation for server fingerprint " + fingerprint + ".");
+        }
+
+
+        // Intent: Shows the first-contact trust decision without blocking Unity's main/network thread.
+        // Cursor ownership stays entirely with Valheim; the native dialog receives normal Windows mouse input independently.
+        private static void StartNativeTrustPrompt(string fingerprint, int generation)
+        {
+            string pretty = FormatFingerprint(fingerprint).Replace("\n", "\r\n");
+            string message = "This Valheim server wants AutoModSync permission to install or update executable mod files on this PC.\r\n\r\n" +
+                             "Server fingerprint:\r\n" + pretty + "\r\n\r\n" +
+                             "Choose Yes only if you intended to join this server. You will only be asked again if its server identity changes.";
+
+            Thread thread = new Thread(delegate()
+            {
+                int decision;
+                try
+                {
+                    const uint MB_YESNO = 0x00000004u;
+                    const uint MB_ICONWARNING = 0x00000030u;
+                    const uint MB_DEFBUTTON2 = 0x00000100u;
+                    const uint MB_SETFOREGROUND = 0x00010000u;
+                    const uint MB_TOPMOST = 0x00040000u;
+                    int answer = MessageBox(IntPtr.Zero, message, TrustPromptCaption,
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST);
+                    decision = answer == 6 ? 1 : 2;
+                }
+                catch
+                {
+                    decision = -1;
+                }
+
+                // A stale dialog result must never apply to a later connection.
+                if (generation == _trustPromptGeneration)
+                    _trustPromptDecision = decision;
+            });
+
+            thread.IsBackground = true;
+            try { thread.SetApartmentState(ApartmentState.STA); } catch { }
+            thread.Start();
+        }
+
+        // Intent: Best-effort dismissal when a protected connection dies while the native trust dialog is still open.
+        private static void CloseNativeTrustPromptWindow()
+        {
+            try
+            {
+                IntPtr hwnd = FindWindow(null, TrustPromptCaption);
+                if (hwnd != IntPtr.Zero) PostMessage(hwnd, 0x0010u, IntPtr.Zero, IntPtr.Zero);
+            }
+            catch { }
         }
 
         // Intent: Persists an explicitly accepted fingerprint and resumes only the same still-connected, signature-verified AMS session that opened the prompt.
@@ -2216,39 +2259,22 @@ namespace ValheimAutoModSync
 
         // Intent: Gives the interactive trust dialog a real movable pointer even though Valheim's connection state normally hides/locks it.
         // Calling this repeatedly is deliberate: Valheim may rewrite cursor state while a connection attempt is still in progress.
-        private static void EnsureTrustPromptCursor()
-        {
-            try
-            {
-                Cursor.lockState = CursorLockMode.None;
-                Cursor.visible = true;
-            }
-            catch { }
-        }
+
 
         // Intent: Clears only the transient first-contact decision state and restores the cursor mode that Valheim owned before AMS opened the prompt.
         // Connection-loss handling overrides this restoration afterward so the returned main menu cannot inherit a hidden/locked connection cursor.
         private static void ClearPendingTrustPrompt()
         {
-            bool restoreCursor = _trustPromptPending && _trustPromptCursorCaptured;
-            bool previousVisible = _trustPromptPreviousCursorVisible;
-            CursorLockMode previousLockState = _trustPromptPreviousCursorLockState;
+            bool hadPrompt = _trustPromptPending;
 
             _trustPromptPending = false;
             _trustPromptFingerprint = "";
             _trustPromptManifest = "";
             _trustPromptRpc = null;
-            _trustPromptCursorCaptured = false;
+            _trustPromptDecision = 0;
+            _trustPromptGeneration++;
 
-            if (restoreCursor)
-            {
-                try
-                {
-                    Cursor.lockState = previousLockState;
-                    Cursor.visible = previousVisible;
-                }
-                catch { }
-            }
+            if (hadPrompt) CloseNativeTrustPromptWindow();
         }
 
         // Intent: Produces a readable two-line fingerprint without changing the exact 64-hex value that is pinned and compared.
@@ -2291,14 +2317,6 @@ namespace ValheimAutoModSync
             HideSyncOverlay();
             ResetManifestState();
 
-            // A failed connection returns control to menu/UI state, so do not leave behind Valheim's hidden/locked connection cursor.
-            try
-            {
-                Cursor.lockState = CursorLockMode.None;
-                Cursor.visible = true;
-            }
-            catch { }
-
             if (_instance != null)
                 _instance.Logger.LogWarning((reason ?? "AutoModSync connection ended.") + " The protected join was discarded; reconnect to try again.");
         }
@@ -2329,6 +2347,18 @@ namespace ValheimAutoModSync
         [DllImport("user32.dll")]
         // Intent: Native Windows API import used to hide an already-open BepInEx console window.
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        // Intent: Native trust prompt shown from a background thread so Unity networking continues while the user decides.
+        private static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        // Intent: Locates the transient native trust prompt for best-effort dismissal on connection loss.
+        private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+
+        [DllImport("user32.dll")]
+        // Intent: Posts WM_CLOSE to a stale native trust prompt without blocking the Unity thread.
+        private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
         // Intent: Hides the current BepInEx console and updates BepInEx.cfg so future launches keep the console disabled.
         // This affects presentation only; AutoModSync logging continues through BepInEx log files.
