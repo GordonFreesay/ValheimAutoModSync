@@ -73,7 +73,7 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 ## Phase 3 — cached/single-flight bundle construction
 
 - [ ] Dedicated-server startup with `PrebuildFreshClientBundle=true` constructs the nearly-bare-client baseline before normal joins, logs one prewarm MISS/build timing, and retains it for the first real client even if ordinary `BundleCacheSeconds` elapses.
-- [ ] A nearly-bare client with the current AutoModSync client DLL receives a startup-prewarmed `cache=HIT` with no join-time ZIP rebuild.
+- [x] A nearly-bare client with the current AutoModSync client DLL receives a startup-prewarmed `cache=HIT` with no join-time ZIP rebuild.
 - [ ] First request for a different changed-file set logs `cache=MISS`, publishes one immutable content-addressed ZIP, and reports ZIP-build/SHA-256 preparation timings.
 - [ ] A second fresh client requesting the identical signed file set within `BundleCacheSeconds` logs `cache=HIT`, uses the same cache key/SHA-256/size, and performs no second ZIP build.
 - [ ] Two overlapping identical fresh-client requests produce one build; the follower logs `WAIT` / `WAIT-HIT` and both transfers read the same published artifact.
@@ -84,6 +84,8 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 - [ ] `BundleCacheMaxMiB` evicts idle least-recently-used artifacts without deleting an artifact referenced by an active transfer.
 - [ ] Failed ZIP construction leaves no published cache entry and removes its private `bundle-build-*.tmp` file.
 - [ ] Server restart deletes orphaned prior-process bundle ZIP/temp files and rebuilds rather than trusting stale cache metadata.
+- [ ] First-contact trust remains responsive for longer than Valheim's normal ZRpc timeout window: the in-game trust prompt does not block networking, and accepting after an intentional delay continues the same AMS session.
+- [ ] If the recognized AMS socket is lost while first-contact trust or package preparation is visible, the transient trust/progress UI clears automatically and the protected join remains fail-closed.
 
 ## Runtime evidence — 2026-09-22
 
@@ -99,6 +101,8 @@ Maintainer-provided client/server logs from development commit `37a4125f270a4174
 - A later 2.6 post-reconnect log exposed a duplicate one-shot reconnect edge case: after the first trusted AMS reconnect succeeded and released the held handshake, a later `ShowCharacterSelection` callback scheduled another automatic character start and created a second outgoing connection. Source now suppresses character-selection scheduling once reconnect is finished or already pending, and clears any stale delayed start when the outgoing connection is created.
 - Retest on 2026-09-22 with the patched client showed exactly one character-selection auto-start, one outgoing reconnect, one trusted AMS preflight, and normal downstream Jotunn/ConditionalConfigSync/Epic Loot processing. No second reconnect was dispatched.
 - The same run exercised the 16/64/32 MiB development transfer settings. Server telemetry reported `SendRateMin 153600 -> 16777216`, `SendRateMax 153600 -> 67108864`, `SendBuffer 524288 -> 33554432`, and repeated live send-rate samples of exactly **16,777,216 B/s** before restoring the original Steam transport values. The provided post-reconnect/server logs do not contain the client's end-to-end payload timing, so this proves the Steam rate-floor change took effect but does **not** yet prove a corresponding wall-clock throughput improvement.
+- Phase 3 cache retest on 2026-09-22 showed a real **60-file / 313.4 MiB** nearly-bare-client request returning `cache=HIT` with key `39c58994205f` and `prepare=0.000 s`; no join-time ZIP build occurred. The supplied server excerpt does not include the earlier startup-prewarm MISS/build timing, so startup construction duration remains separately unverified.
+- The same test exposed a first-contact trust UX regression: leaving the old native fingerprint MessageBox open long enough caused the server to log a ZRpc timeout before the user accepted, after which the client could strand the AutoModSync preparation overlay on the failed session. Source now replaces that blocking native modal with an in-game non-blocking trust prompt and explicitly clears recognized-session UI/state if the active ZRpc dies. This fix is **not yet runtime-revalidated**.
 
 ## Evidence to record
 
