@@ -8,7 +8,7 @@ AutoModSync has three distinct trust boundaries:
 
 1. **Server identity** — each server owns an RSA keypair. The server signs the exact manifest text; the client derives and pins the public-key fingerprint on first trust.
 2. **Transferred content** — the client requests only missing/changed manifest entries, verifies the bundle hash/size, then verifies every extracted file against the signed manifest before staging it.
-3. **Filesystem containment** — both manifest paths and ZIP entry paths are normalized and resolved beneath fixed BepInEx/AutoModSync roots. Parent traversal, drive-style paths, control characters, and unsupported target kinds are rejected.
+3. **Filesystem containment** — manifest, ZIP, staging, server-source, and apply-helper paths are normalized beneath fixed BepInEx/AutoModSync roots. Parent/rooted paths, Windows reserved device names, trailing-dot/space aliases, control/invalid characters, and filesystem reparse-point redirection are rejected.
 
 Signing the AutoModSync release itself is separate from the server-manifest signature. Authenticode identifies the publisher of AutoModSync's own binaries; the server RSA identity authenticates what a trusted game server advertised.
 
@@ -18,7 +18,7 @@ Signing the AutoModSync release itself is separate from the server-manifest sign
 
 The in-game client plugin owns connection preflight, server trust, download verification, staging, restart/reconnect state, and the small synchronization UI.
 
-2.5.0 connection sequence:
+Current `dev/2.6` connection sequence:
 
 ```text
 Valheim creates outgoing ZNet connection
@@ -27,10 +27,12 @@ Valheim creates outgoing ZNet connection
   -> vanilla ZRpc.Invoke("ServerHandshake") is held
   -> OnNewConnection postfix sends AMS4_Hello
      -> no AMS response: fail open and replay ServerHandshake
-     -> AMS4_Ack: wait for signed manifest
+     -> AMS4_Ack: recognized AMS session; wait for signed manifest
+     -> verify signed manifest
+     -> establish/check server fingerprint trust even when files already match
      -> manifest matches: replay ServerHandshake
      -> files differ:
-          first-contact fingerprint trust
+          enforce client file/expanded/compressed hard limits
           request exact changed-file bundle
           verify package + every file
           stage files
@@ -56,6 +58,8 @@ The server plugin registers AMS4 RPCs on incoming Valheim connections and serves
 2.5.0 adds an optional `AMS4_Ack` immediately after a valid hello and before manifest hashing. New clients use that acknowledgement to distinguish a slow manifest build from a non-AutoModSync server. Older clients ignore the unknown acknowledgement and continue to understand the existing AMS4 manifest messages.
 
 The server never opens a second listener or contacts an external download service.
+
+On `dev/2.6`, recursive manifest scanning does not traverse reparse-point files/directories. Bundle requests also have a pre-compression expanded-size ceiling (`MaxExpandedBundleMiB`) in addition to the existing individual-file and compressed-bundle ceilings. The client independently caps incoming compressed bytes, expanded synchronized bytes, file count, per-file bytes, chunk count, and streaming ZIP extraction.
 
 ### Source/ValheimAutoModSync.Installer.cs
 
@@ -111,13 +115,13 @@ verified bundle
   -> normal mod handshakes continue
 ```
 
-## Fail-open behavior
+## Fail-open / fail-closed behavior
 
-AutoModSync does not make unrelated servers depend on AutoModSync.
+AutoModSync does not make unrelated servers depend on AutoModSync. If an outgoing server does **not** answer the discovery probe, the client releases the held vanilla `ServerHandshake` after the short discovery timeout.
 
-If an outgoing server does not answer the preflight probe, the client releases the held vanilla `ServerHandshake` after the discovery timeout. If AutoModSync encounters a malformed acknowledgement/manifest or cannot safely process a transfer, it applies no unverified files and returns control to normal Valheim networking where it is safe to do so.
+On `dev/2.6`, once the remote endpoint positively enters the AMS preflight path, AMS owns the outcome for that join. Invalid acknowledgements, manifest/signature/trust failures, unsafe paths, resource-limit violations, server-reported AMS errors, corrupt bundles, or apply/restart preparation failures abort that join and keep the original `ServerHandshake` from being replayed. They do not become a route around synchronization.
 
-A server-side mod validator can still reject the client after that point. AutoModSync does not suppress another mod's compatibility decision.
+After a successful trusted/matching preflight, the original ServerHandshake is replayed unchanged. Jotunn, ServerSync-style mods, Epic Loot, and other compatibility systems still make their normal decisions afterward.
 
 ## Release signing
 

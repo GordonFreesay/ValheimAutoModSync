@@ -6,6 +6,7 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 
 - Integration branch: `dev/2.6`
 - Baseline main commit: `cf73fd97e1a13ac293783d722e112b14d83b2d17`
+- Phase 0 baseline commit: `ac49516c0b2f3898c5fff2ed820e46c2c6d93888`
 - Public release while development is in progress: **2.5.0**
 - Development software version: **2.6.0**
 - Network protocol baseline: **AMS4 / protocol 4**
@@ -54,6 +55,22 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `Thunderstore/CHANGELOG.md` | Adds an explicit 2.6 development section while preserving 2.5 release history. |
 | `IMPLEMENTATION-2.6.md` | New authoritative roadmap/change ledger for 2.6 development. |
 
+### Phase 1 — security/resource foundation
+
+| File | 2.6 reason |
+| --- | --- |
+| `Source/AutoModSync.PathSafety.cs` | New shared, commented Windows path validator for reserved names, aliases, fixed-root containment, and reparse-point defense. |
+| `build-release.bat` | Compiles the shared path-safety source into client, server, and apply-helper assemblies. No release build has been run. |
+| `Source/ValheimAutoModSync.Client.cs` | Separates discovery fail-open from recognized-AMS fail-closed; establishes trust after signed-manifest verification; adds client hard limits, declared-size enforcement, bounded ZIP extraction, and shared path/reparse checks. |
+| `Source/ValheimAutoModSync.Server.cs` | Adds safe non-reparse recursive enumeration, fixed-root source rechecks, pre-compression expanded-size ceiling, and during-build compressed-size enforcement. |
+| `Source/ValheimAutoModSync.Apply.cs` | Independently rechecks shared path/reparse rules immediately before staged/live filesystem writes. |
+| `Server/server-config-example.cfg` | Documents `MaxExpandedBundleMiB` and aligns the example exclusion defaults with the source default. |
+| `SOURCE-WALKTHROUGH.md` | Documents current 2.6 trust, fail-open/fail-closed, resource-limit, and filesystem-containment behavior. |
+| `Thunderstore/CHANGELOG.md` | Records 2.6 Phase 1 development behavior; publication remains deferred. |
+| `TESTING-2.6.md` | New evidence checklist. All Phase 1 functional tests are explicitly NOT RUN until actual verification. |
+| `build-dev.bat` | Development-only compiler for client/server/apply binaries; deliberately creates no installer, release ZIP, store package, tag, or publication artifact. |
+| `IMPLEMENTATION-2.6.md` | Records this Phase 1 change set and validation status. |
+
 ### Later phases
 
 Add each 2.6-modified file here in the same phase that introduces the change, with a concise audit reason.
@@ -61,6 +78,7 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 ## Validation status
 
 - Phase 0 repository setup: **complete**
+- Phase 1 implementation: **complete in source; functional validation pending**
 - Functional 2.6 validation: **not yet performed**
 - Release build validation: **not yet performed**
 - Public release: **not authorized**

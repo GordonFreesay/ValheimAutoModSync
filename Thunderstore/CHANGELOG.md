@@ -5,6 +5,11 @@
 - Development work is isolated on `dev/2.6`; the current public release remains 2.5.0 until the 2.6 validation gates are complete.
 - 2.6 preserves AMS4/protocol 4 as the compatibility baseline and will add new behavior through negotiated capabilities where possible.
 - Release packaging/publication is intentionally deferred until functional validation is completed.
+- Phase 1 separates non-AMS discovery fail-open behavior from recognized-AMS fail-closed behavior: signature, trust, path, resource, transfer, and apply-preparation failures now abort that join instead of replaying the vanilla handshake.
+- Establishes server fingerprint trust after a valid signed manifest even when the client already has matching files.
+- Adds shared Windows path hardening for client/server/apply: reserved device names, trailing dot/space aliases, invalid/control characters, fixed-root containment, and reparse-point rejection.
+- Adds independent client compressed/expanded/per-file/file-count/chunk-count ceilings and streaming ZIP extraction bounds.
+- Adds server `MaxExpandedBundleMiB` and checks compressed output while constructing the bundle instead of waiting only for the finished ZIP.
 
 ## 2.5.0
 

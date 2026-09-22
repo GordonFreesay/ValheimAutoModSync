@@ -54,6 +54,7 @@ namespace ValheimAutoModSync
         private static ConfigEntry<int> _chunkBytes;
         private static ConfigEntry<int> _maxFileMiB;
         private static ConfigEntry<int> _maxBundleMiB;
+        private static ConfigEntry<int> _maxExpandedBundleMiB;
         private static ConfigEntry<int> _transferSendRateMax;
         private static ConfigEntry<int> _transferSendRateMin;
         private static ConfigEntry<int> _transferSendBufferBytes;
@@ -119,6 +120,7 @@ namespace ValheimAutoModSync
             _chunkBytes = Config.Bind("Transfer", "ChunkBytes", 24576, "Raw file bytes per RPC chunk before Base64 encoding. 24576 is conservative for Valheim's RPC transport.");
             _maxFileMiB = Config.Bind("Transfer", "MaxFileMiB", 128, "Refuse to transfer a single file larger than this many MiB.");
             _maxBundleMiB = Config.Bind("Transfer", "MaxBundleMiB", 2048, "Refuse to build a compressed change package larger than this many MiB.");
+            _maxExpandedBundleMiB = Config.Bind("Transfer", "MaxExpandedBundleMiB", 4096, "Refuse a requested change set whose signed source files exceed this many MiB before compression.");
             _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 33554432, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
             _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 8388608, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
             _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 16777216, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
@@ -310,10 +312,11 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Builds a compressed package containing exactly the manifest records requested by this client.
-        // Security: every request is resolved against the current signed file map, duplicates are rejected, configured size limits are enforced, and only plugin-kind records can enter the archive.
+        // Intent: Builds a compressed package containing exactly the current signed manifest records requested by this client.
+        // Security: every request resolves to a fixed P/R/C manifest destination; duplicate/count/expanded/compressed limits are enforced before or during construction.
         private static void RPC_GetBundle(ZRpc rpc, ZPackage pkg)
         {
+            string zipPath = "";
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
@@ -323,6 +326,8 @@ namespace ValheimAutoModSync
                 EnsureManifest(false);
                 List<FileRecord> records = new List<FileRecord>();
                 HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                long maxExpandedBytes = (long)Math.Max(1, _maxExpandedBundleMiB.Value) * 1024L * 1024L;
+                long expandedBytes = 0L;
                 int i;
                 for (i = 0; i < count; i++)
                 {
@@ -330,14 +335,18 @@ namespace ValheimAutoModSync
                     FileRecord record = ResolveBundleRecord(requested);
                     string key = record.Kind + ":" + record.RelativePath;
                     if (!seen.Add(key)) throw new InvalidDataException("Duplicate file in AutoModSync bundle request.");
+                    if (record.Size < 0 || record.Size > maxExpandedBytes - expandedBytes)
+                        throw new InvalidDataException("Requested AutoModSync content exceeds the configured expanded transfer limit.");
+                    expandedBytes += record.Size;
                     records.Add(record);
                 }
 
                 CleanupBundle(rpc);
                 string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
                 if (!Directory.Exists(cacheRoot)) Directory.CreateDirectory(cacheRoot);
-                string zipPath = Path.Combine(cacheRoot, "bundle-" + Guid.NewGuid().ToString("N") + ".zip");
+                zipPath = Path.Combine(cacheRoot, "bundle-" + Guid.NewGuid().ToString("N") + ".zip");
 
+                long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
                 using (FileStream output = new FileStream(zipPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
                 using (ZipArchive archive = new ZipArchive(output, ZipArchiveMode.Create, false))
                 {
@@ -349,18 +358,16 @@ namespace ValheimAutoModSync
                         using (Stream entryStream = entry.Open())
                         using (FileStream input = new FileStream(record.FullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                         {
-                            input.CopyTo(entryStream);
+                            CopyIntoBundleBounded(input, entryStream, output, maxBundleBytes);
                         }
+                        if (output.Length > maxBundleBytes)
+                            throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
                     }
                 }
 
                 FileInfo fi = new FileInfo(zipPath);
-                long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
                 if (fi.Length > maxBundleBytes)
-                {
-                    try { File.Delete(zipPath); } catch { }
                     throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
-                }
 
                 int rawChunk = Math.Max(4096, Math.Min(49152, _chunkBytes.Value));
                 BundleTransfer transfer = new BundleTransfer();
@@ -380,13 +387,34 @@ namespace ValheimAutoModSync
                 begin.Write(transfer.FileCount);
                 rpc.Invoke(RpcBundleBegin, new object[] { begin });
 
-                if (_instance != null) _instance.Logger.LogInfo("Prepared compressed AutoModSync package for " + records.Count + " changed file(s): " + FormatBytes(transfer.Size));
+                if (_instance != null)
+                    _instance.Logger.LogInfo("Prepared compressed AutoModSync package for " + records.Count + " changed file(s): " + FormatBytes(transfer.Size) + " from " + FormatBytes(expandedBytes) + " expanded source bytes.");
+                zipPath = ""; // Ownership transfers to BundleTransfers; CleanupBundle deletes it after success/failure.
             }
             catch (Exception ex)
             {
+                if (!String.IsNullOrEmpty(zipPath))
+                {
+                    try { if (File.Exists(zipPath)) File.Delete(zipPath); } catch { }
+                }
                 if (_instance != null) _instance.Logger.LogWarning("Bundle preparation failed: " + ex);
                 CleanupBundle(rpc);
                 SendError(rpc, "Server failed while preparing the compressed AutoModSync package: " + ex.Message);
+            }
+        }
+
+        // Intent: Copies one source file into the ZIP while observing the compressed-output ceiling during construction.
+        // Resource safety: the final post-ZIP check remains authoritative because central-directory bytes are written when the archive closes.
+        private static void CopyIntoBundleBounded(Stream input, Stream entryStream, FileStream output, long maxBundleBytes)
+        {
+            byte[] buffer = new byte[81920];
+            while (true)
+            {
+                int read = input.Read(buffer, 0, buffer.Length);
+                if (read <= 0) break;
+                entryStream.Write(buffer, 0, read);
+                if (output.Length > maxBundleBytes)
+                    throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
             }
         }
 
@@ -519,26 +547,39 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Resolves a client request string to one current FileRecord from the server's manifest map.
-        // Security: validates kind/path, refreshes the manifest if necessary, checks existence, and enforces the per-file size limit before returning a source path.
+        // Intent: Resolves a client request string to one current FileRecord from the server's signed manifest map.
+        // Security: validates kind/path, existence, fixed BepInEx source containment, reparse points, and the configured per-file size limit before opening a source.
         private static FileRecord ResolveBundleRecord(string requested)
         {
             if (String.IsNullOrEmpty(requested) || requested.Length < 3 || requested[1] != ':')
                 throw new InvalidDataException("Invalid AutoModSync file request.");
+
             char kind = requested[0];
             if (!IsSupportedManifestKind(kind)) throw new InvalidDataException("Invalid AutoModSync file kind.");
             string relative = NormalizeRelative(requested.Substring(2));
             if (relative.Length == 0) throw new InvalidDataException("Invalid AutoModSync relative path.");
+
             string lookup = kind + ":" + relative;
             FileRecord record;
             if (!_files.TryGetValue(lookup, out record) || !File.Exists(record.FullPath))
             {
                 EnsureManifest(true);
                 if (!_files.TryGetValue(lookup, out record) || !File.Exists(record.FullPath))
-                    throw new FileNotFoundException("Requested plugin file is not available: " + relative);
+                    throw new FileNotFoundException("Requested synchronized file is not available: " + relative);
             }
+
+            string sourceRelative = NormalizeRelative(MakeRelative(Paths.BepInExRootPath, record.FullPath));
+            if (sourceRelative.Length == 0) throw new InvalidDataException("Requested source escaped the BepInEx root.");
+            string safeSource = AutoModSyncPathSafety.SafeUnderRoot(Paths.BepInExRootPath, sourceRelative, true);
+            if (!String.Equals(Path.GetFullPath(record.FullPath), safeSource, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Requested source path changed during bundle preparation.");
+
             long maxBytes = (long)Math.Max(1, _maxFileMiB.Value) * 1024L * 1024L;
-            if (record.Size > maxBytes) throw new InvalidDataException("File exceeds server transfer limit: " + relative);
+            FileInfo current = new FileInfo(safeSource);
+            if (current.Length > maxBytes) throw new InvalidDataException("File exceeds server transfer limit: " + relative);
+            if (current.Length != record.Size)
+                throw new InvalidDataException("Server content changed after the signed manifest was created; reconnect to refresh synchronization state.");
+
             return record;
         }
 
@@ -826,6 +867,9 @@ namespace ValheimAutoModSync
                 string releaseClientPlugin = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "ValheimAutoModSync.Client.dll");
                 if (!IsPackageManagedAutoModSync() && File.Exists(releaseClientPlugin))
                 {
+                    // The standalone release payload is outside BepInEx/plugins but still under the fixed BepInEx root.
+                    // Reparse validation prevents a local junction/symlink from turning that special source into an arbitrary read.
+                    AutoModSyncPathSafety.EnsureNoReparsePoints(Paths.BepInExRootPath, releaseClientPlugin, true);
                     records.RemoveAll(delegate(FileRecord x) { return x.Kind == 'P' && String.Equals(x.RelativePath, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase); });
                     FileInfo cfi = new FileInfo(releaseClientPlugin);
                     FileRecord cr = new FileRecord();
@@ -863,17 +907,27 @@ namespace ValheimAutoModSync
 
         // Intent: Adds one permitted BepInEx subtree to the signed manifest while preserving paths relative to that subtree.
         // Policy: plugin/patcher roots honor exclusion, server-only, and optional client-required rules; config files are included only by the explicit SyncConfigPatterns allowlist.
+        // Security: recursion never follows reparse-point directories/files, and every source is rechecked beneath the fixed root before hashing.
         private static void AddManifestRoot(List<FileRecord> records, char kind, string root, bool configAllowlistRequired)
         {
             if (records == null || String.IsNullOrEmpty(root) || !Directory.Exists(root)) return;
-            string[] files = Directory.GetFiles(root, "*", SearchOption.AllDirectories);
+            List<string> files = EnumerateManifestFiles(root);
             int i;
-            for (i = 0; i < files.Length; i++)
+            for (i = 0; i < files.Count; i++)
             {
                 string full = files[i];
                 string rel = NormalizeRelative(MakeRelative(root, full));
                 string name = Path.GetFileName(full);
-                if (rel.Length == 0 || IsExcluded(rel, name)) continue;
+                if (rel.Length == 0)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync skipped an unsafe Windows path while scanning " + root + ": " + full);
+                    continue;
+                }
+                if (IsExcluded(rel, name)) continue;
+
+                // Recheck after enumeration to narrow the window in which a local filesystem entry could be swapped for a junction/symlink.
+                full = AutoModSyncPathSafety.SafeUnderRoot(root, rel, true);
+
                 if (kind == 'C')
                 {
                     if (IsProtectedConfigName(name)) continue;
@@ -895,6 +949,45 @@ namespace ValheimAutoModSync
                 r.Sha256 = Sha256File(full);
                 records.Add(r);
             }
+        }
+
+        // Intent: Recursively enumerates one manifest source tree without following filesystem reparse points.
+        // Security: a junction/symlink inside plugins, patchers, or config must never expand the server's distributable source boundary.
+        private static List<string> EnumerateManifestFiles(string root)
+        {
+            List<string> files = new List<string>();
+            Stack<string> pending = new Stack<string>();
+            string rootFull = Path.GetFullPath(root);
+            pending.Push(rootFull);
+
+            while (pending.Count > 0)
+            {
+                string current = pending.Pop();
+                string[] currentFiles = Directory.GetFiles(current, "*", SearchOption.TopDirectoryOnly);
+                int i;
+                for (i = 0; i < currentFiles.Length; i++)
+                {
+                    if (AutoModSyncPathSafety.IsReparsePoint(currentFiles[i]))
+                    {
+                        if (_instance != null) _instance.Logger.LogWarning("AutoModSync skipped reparse-point source file: " + currentFiles[i]);
+                        continue;
+                    }
+                    files.Add(currentFiles[i]);
+                }
+
+                string[] directories = Directory.GetDirectories(current, "*", SearchOption.TopDirectoryOnly);
+                for (i = 0; i < directories.Length; i++)
+                {
+                    if (AutoModSyncPathSafety.IsReparsePoint(directories[i]))
+                    {
+                        if (_instance != null) _instance.Logger.LogWarning("AutoModSync skipped reparse-point source directory: " + directories[i]);
+                        continue;
+                    }
+                    pending.Push(directories[i]);
+                }
+            }
+
+            return files;
         }
 
         // Intent: Hard-blocks AutoModSync identity files and BepInEx's loader-wide config from remote config synchronization even when an administrator uses a broad allowlist.
@@ -1001,10 +1094,7 @@ namespace ValheimAutoModSync
         // Intent: Canonicalizes manifest relative paths and rejects parent traversal, drive/URI separators, tabs, and newline characters before they enter protocol data.
         private static string NormalizeRelative(string value)
         {
-            if (value == null) return "";
-            value = value.Replace('\\', '/').TrimStart('/');
-            if (value.IndexOf("../", StringComparison.Ordinal) >= 0 || value == ".." || value.IndexOf(':') >= 0) return "";
-            return value;
+            return AutoModSyncPathSafety.NormalizeRelative(value);
         }
 
         // Intent: Converts an absolute plugin path to a normalized relative path rooted at BepInEx/plugins; used only after the scan has already enumerated beneath that root.

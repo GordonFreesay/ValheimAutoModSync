@@ -46,6 +46,14 @@ namespace ValheimAutoModSync
         private const int BundlePipelineChunks = 128;
         private const string RootSyncCapability = "roots1";
 
+        // 2.6 client-side hard ceilings are deliberately independent of server configuration.
+        // A trusted server may choose smaller limits, but it cannot make this client allocate/write unbounded payloads.
+        private const int MaxBundleFiles = 4096;
+        private const int MaxBundleChunks = 524288;
+        private const long MaxIncomingBundleBytes = 2048L * 1024L * 1024L;
+        private const long MaxExpandedSyncBytes = 4096L * 1024L * 1024L;
+        private const long MaxIndividualSyncFileBytes = 512L * 1024L * 1024L;
+
         private static ClientPlugin _instance;
         private static ZRpc _pendingRpc;
         private static string _pendingPassword = "";
@@ -214,7 +222,7 @@ namespace ValheimAutoModSync
                 }
                 else if (_serverAcknowledged && !_serverRecognized && elapsed > 15.0)
                 {
-                    FailOpen("AutoModSync server acknowledged preflight but did not begin a manifest within 15 seconds.");
+                    AbortAutoModSyncJoin("AutoModSync server acknowledged preflight but did not begin a manifest within 15 seconds.");
                 }
             }
         }
@@ -499,7 +507,7 @@ namespace ValheimAutoModSync
         // Intent: Safe placeholder for protocol messages that are outbound-only on the client; receiving one requires no action.
         private static void RPC_NoOp(ZRpc rpc, ZPackage pkg) { }
 
-        // Intent: Handles the optional 2.5.0 preflight acknowledgement sent before server manifest hashing.
+        // Intent: Handles the optional AMS4 preflight acknowledgement sent before server manifest hashing.
         // Workflow: validates protocol version, records that an AutoModSync server responded, and extends the timeout while manifest generation proceeds.
         private static void RPC_Ack(ZRpc rpc, ZPackage pkg)
         {
@@ -526,7 +534,7 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("Invalid AutoModSync preflight acknowledgement: " + ex.Message);
+                AbortAutoModSyncJoin("Invalid AutoModSync preflight acknowledgement: " + ex.Message);
             }
         }
 
@@ -563,7 +571,7 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("Bad AutoModSync manifest header: " + ex.Message);
+                AbortAutoModSyncJoin("Bad AutoModSync manifest header: " + ex.Message);
             }
         }
 
@@ -580,12 +588,12 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("Manifest transfer failed: " + ex.Message);
+                AbortAutoModSyncJoin("Manifest transfer failed: " + ex.Message);
             }
         }
 
-        // Intent: Reassembles and cryptographically verifies the complete server manifest, compares local files, then either resumes Valheim immediately or requests the verified change bundle.
-        // Trust: executable transfer begins only after the server fingerprint is accepted.
+        // Intent: Reassembles and cryptographically verifies the complete server manifest, establishes server trust, compares local files, then either resumes Valheim or requests the verified change bundle.
+        // Trust: once AMS has positively responded, signature/trust/content failures abort this join instead of falling through to an unsynchronized vanilla handshake.
         private static void RPC_ManifestEnd(ZRpc rpc, ZPackage pkg)
         {
             if (!_serverRecognized || rpc != _pendingRpc) return;
@@ -603,24 +611,28 @@ namespace ValheimAutoModSync
                     if (!ManifestParts.TryGetValue(i, out part)) throw new InvalidDataException("Manifest part missing.");
                     sb.Append(part);
                 }
+
                 string manifest = sb.ToString();
                 if (!VerifyManifestSignature(_serverPublicKeyXml, _manifestSignature, Encoding.UTF8.GetBytes(manifest)))
                     throw new CryptographicException("AutoModSync server signature verification failed.");
+
+                // 2.6 establishes TOFU identity even when every required file already happens to match.
+                // This makes trusted server identity independent from whether this particular join needs a download.
+                if (!EnsureServerTrusted(_serverFingerprint))
+                {
+                    AbortAutoModSyncJoin("AutoModSync server identity was not trusted by the user.");
+                    return;
+                }
 
                 BuildNeededList(manifest);
                 if (NeededFiles.Count == 0)
                 {
                     HideSyncOverlay();
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync: client mods already match the server.");
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync: client mods already match the trusted server.");
                     ResumeNormalHandshake();
                 }
                 else
                 {
-                    if (!EnsureServerTrusted(_serverFingerprint))
-                    {
-                        FailOpen("AutoModSync server was not trusted by the user.");
-                        return;
-                    }
                     _overlayTotalFiles = NeededFiles.Count;
                     _overlayCompletedFiles = 0;
                     _overlayFileProgress = 0f;
@@ -634,40 +646,75 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("AutoModSync manifest verification failed: " + ex.Message);
+                AbortAutoModSyncJoin("AutoModSync manifest verification failed: " + ex.Message);
             }
         }
 
-        // Intent: Parses signed manifest rows into the exact set of missing or hash-mismatched plugin files.
-        // Package-manager safeguard: ignores AutoModSync-owned files when the current AutoModSync installation is itself managed by a profile.
+        // Intent: Parses the signed manifest into the exact missing/hash-mismatched set that may be transferred.
+        // Security: malformed/duplicate destinations, invalid hashes, excessive individual files, and excessive expanded bytes are rejected before a bundle request is sent.
         private static void BuildNeededList(string manifest)
         {
             NeededFiles.Clear();
             PendingRelativePaths.Clear();
+
             string[] lines = manifest.Replace("\r", "").Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            long expandedNeededBytes = 0L;
             int i;
             for (i = 0; i < lines.Length; i++)
             {
                 string[] fields = lines[i].Split(new char[] { '\t' }, 4);
-                if (fields.Length != 4 || fields[0].Length != 1) continue;
+                if (fields.Length != 4 || fields[0].Length != 1)
+                    throw new InvalidDataException("Server manifest contained a malformed record.");
+
                 char kind = fields[0][0];
-                if (!IsSupportedManifestKind(kind)) throw new InvalidDataException("Server manifest contained an unsupported AutoModSync file kind.");
+                if (!IsSupportedManifestKind(kind))
+                    throw new InvalidDataException("Server manifest contained an unsupported AutoModSync file kind.");
+
                 long size;
-                if (!long.TryParse(fields[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size < 0) continue;
+                if (!long.TryParse(fields[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size < 0)
+                    throw new InvalidDataException("Server manifest contained an invalid file size.");
+                if (!IsSha256Hex(fields[1]))
+                    throw new InvalidDataException("Server manifest contained an invalid SHA-256 value.");
+
                 string rel = NormalizeRelative(fields[3]);
-                if (rel.Length == 0) continue;
+                if (rel.Length == 0)
+                    throw new InvalidDataException("Server manifest contained an unsafe Windows path.");
+
+                string destinationKey = kind + ":" + rel;
+                if (!seen.Add(destinationKey))
+                    throw new InvalidDataException("Server manifest contained a duplicate destination: " + rel);
+
                 if (kind == 'P' && IsPackageManagedAutoModSync() && IsAutoModSyncOwnedRelativePath(rel))
                 {
                     if (_instance != null) _instance.Logger.LogDebug("Ignoring server-advertised package-managed AutoModSync file: " + rel);
                     continue;
                 }
+
                 ManifestEntry e = new ManifestEntry();
                 e.Kind = kind;
                 e.Sha256 = fields[1];
                 e.Size = size;
                 e.RelativePath = rel;
+
                 string local = SafeTargetPath(kind, rel);
-                if (!File.Exists(local) || !ConstantEquals(Sha256File(local), e.Sha256)) NeededFiles.Add(e);
+                bool needed = !File.Exists(local);
+                if (!needed)
+                {
+                    FileInfo localInfo = new FileInfo(local);
+                    needed = localInfo.Length != e.Size || !ConstantEquals(Sha256File(local), e.Sha256);
+                }
+
+                if (!needed) continue;
+                if (e.Size > MaxIndividualSyncFileBytes)
+                    throw new InvalidDataException("Required file exceeds the AutoModSync client hard limit: " + rel);
+                if (expandedNeededBytes > MaxExpandedSyncBytes - e.Size)
+                    throw new InvalidDataException("Required synchronized content exceeds the AutoModSync client expanded-size limit.");
+
+                expandedNeededBytes += e.Size;
+                NeededFiles.Add(e);
+                if (NeededFiles.Count > MaxBundleFiles)
+                    throw new InvalidDataException("Required synchronized file count exceeds the AutoModSync client hard limit.");
             }
         }
 
@@ -711,10 +758,13 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Requests one compressed bundle containing only the manifest entries the client proved it needs.
+        // Security: the request count is rechecked immediately before serialization so later code cannot accidentally bypass the manifest-time ceiling.
         private static void RequestBundle()
         {
             CloseBundleStream();
             if (_pendingRpc == null || NeededFiles.Count == 0) return;
+            if (NeededFiles.Count > MaxBundleFiles) throw new InvalidDataException("AutoModSync bundle request exceeds the client file-count limit.");
+
             ZPackage request = new ZPackage();
             request.Write(NeededFiles.Count);
             int i;
@@ -722,7 +772,8 @@ namespace ValheimAutoModSync
             _pendingRpc.Invoke(RpcGetBundle, new object[] { request });
         }
 
-        // Intent: Validates the server's bundle header, creates the staging archive file, initializes byte/chunk counters, and requests the first chunk.
+        // Intent: Validates the server's bundle header before allocating/writing the staging archive, then requests the first chunk.
+        // Security: compressed bytes, file count, chunk count, and SHA-256 syntax are bounded independently of server configuration.
         private static void RPC_BundleBegin(ZRpc rpc, ZPackage pkg)
         {
             if (rpc != _pendingRpc || NeededFiles.Count == 0) return;
@@ -733,12 +784,21 @@ namespace ValheimAutoModSync
                 int chunks = pkg.ReadInt();
                 int files = pkg.ReadInt();
                 long size;
-                if (!long.TryParse(sizeText, NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size < 0 || chunks < 0 || files != NeededFiles.Count || String.IsNullOrEmpty(sha))
-                    throw new InvalidDataException("Compressed package header did not match the requested sync.");
+                if (!long.TryParse(sizeText, NumberStyles.Integer, CultureInfo.InvariantCulture, out size)
+                    || size <= 0
+                    || size > MaxIncomingBundleBytes
+                    || chunks < 1
+                    || chunks > MaxBundleChunks
+                    || files < 1
+                    || files > MaxBundleFiles
+                    || files != NeededFiles.Count
+                    || !IsSha256Hex(sha))
+                    throw new InvalidDataException("Compressed package header exceeded AutoModSync client safety limits or did not match the requested sync.");
 
                 string stagingRoot = Path.Combine(GetAutoModSyncRoot(), "staging");
                 if (!Directory.Exists(stagingRoot)) Directory.CreateDirectory(stagingRoot);
                 _bundlePath = Path.Combine(stagingRoot, "bundle.zip.amsnew");
+                AutoModSyncPathSafety.EnsureNoReparsePoints(stagingRoot, _bundlePath, true);
                 _bundleStream = new FileStream(_bundlePath, FileMode.Create, FileAccess.Write, FileShare.None);
                 _bundleSha256 = sha;
                 _bundleSize = size;
@@ -761,7 +821,7 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("Could not prepare compressed mod download: " + ex.Message);
+                AbortAutoModSyncJoin("Could not prepare compressed mod download: " + ex.Message);
             }
         }
 
@@ -775,7 +835,10 @@ namespace ValheimAutoModSync
                 int index = pkg.ReadInt();
                 string encoded = pkg.ReadString();
                 if (index != _bundleNextChunk || _bundleNextChunk >= _bundleTotalChunks) throw new InvalidDataException("Out-of-order compressed package chunk.");
+                if (encoded == null || encoded.Length > 70000) throw new InvalidDataException("Oversized compressed package chunk.");
                 byte[] data = Convert.FromBase64String(encoded);
+                if (_bundleBytesReceived > _bundleSize || (long)data.Length > _bundleSize - _bundleBytesReceived)
+                    throw new InvalidDataException("Compressed package exceeded its declared size.");
                 _bundleStream.Write(data, 0, data.Length);
                 _bundleBytesReceived += data.Length;
                 _bundleNextChunk++;
@@ -786,7 +849,7 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("Compressed mod package download failed: " + ex.Message);
+                AbortAutoModSyncJoin("Compressed mod package download failed: " + ex.Message);
             }
         }
 
@@ -809,6 +872,8 @@ namespace ValheimAutoModSync
                     byte[] data = pkg.ReadByteArray();
                     if (index != _bundleNextChunk || data == null || data.Length < 1 || data.Length > 65536)
                         throw new InvalidDataException("Out-of-order or oversized compressed package batch chunk.");
+                    if (_bundleBytesReceived > _bundleSize || (long)data.Length > _bundleSize - _bundleBytesReceived)
+                        throw new InvalidDataException("Compressed package exceeded its declared size.");
                     _bundleStream.Write(data, 0, data.Length);
                     _bundleBytesReceived += data.Length;
                     _bundleNextChunk++;
@@ -821,7 +886,7 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("Compressed mod package batch download failed: " + ex.Message);
+                AbortAutoModSyncJoin("Compressed mod package batch download failed: " + ex.Message);
             }
         }
 
@@ -870,12 +935,12 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("Compressed mod package verification failed: " + ex.Message);
+                AbortAutoModSyncJoin("Compressed mod package verification failed: " + ex.Message);
             }
         }
 
         // Intent: Extracts only files explicitly present in the signed NeededFiles set into AutoModSync staging.
-        // Security: rejects unsafe, duplicate, unexpected, missing, wrong-size, or wrong-hash archive entries before any live plugin is replaced.
+        // Security: entry names, declared lengths, cumulative expanded bytes, reparse points, final sizes, and SHA-256 values are all checked before any live plugin is replaced.
         private static void ExtractBundleToStaging()
         {
             Dictionary<string, ManifestEntry> expected = new Dictionary<string, ManifestEntry>(StringComparer.OrdinalIgnoreCase);
@@ -883,30 +948,50 @@ namespace ValheimAutoModSync
             for (i = 0; i < NeededFiles.Count; i++)
             {
                 ManifestEntry e = NeededFiles[i];
+                if (e.Size < 0 || e.Size > MaxIndividualSyncFileBytes)
+                    throw new InvalidDataException("Signed manifest entry exceeds the AutoModSync client file limit: " + e.RelativePath);
                 string entryName = ManifestKindDirectory(e.Kind) + "/" + e.RelativePath.Replace('\\', '/');
+                if (expected.ContainsKey(entryName))
+                    throw new InvalidDataException("Signed manifest contains a duplicate archive destination: " + e.RelativePath);
                 expected[entryName] = e;
             }
 
             HashSet<string> extracted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            long expandedBytes = 0L;
             using (FileStream input = new FileStream(_bundlePath, FileMode.Open, FileAccess.Read, FileShare.Read))
             using (ZipArchive archive = new ZipArchive(input, ZipArchiveMode.Read, false))
             {
                 foreach (ZipArchiveEntry entry in archive.Entries)
                 {
                     string name = NormalizeZipEntry(entry.FullName);
-                    if (name.Length == 0) throw new InvalidDataException("Compressed package contained an unsafe path.");
+                    if (name.Length == 0) throw new InvalidDataException("Compressed package contained an unsafe Windows path.");
+
                     ManifestEntry expectedEntry;
-                    if (!expected.TryGetValue(name, out expectedEntry)) throw new InvalidDataException("Compressed package contained an unexpected file: " + name);
-                    if (!extracted.Add(name)) throw new InvalidDataException("Compressed package contained a duplicate file: " + name);
+                    if (!expected.TryGetValue(name, out expectedEntry))
+                        throw new InvalidDataException("Compressed package contained an unexpected file: " + name);
+                    if (!extracted.Add(name))
+                        throw new InvalidDataException("Compressed package contained a duplicate file: " + name);
+                    if (entry.Length != expectedEntry.Size)
+                        throw new InvalidDataException("Compressed package entry length did not match the signed manifest: " + expectedEntry.RelativePath);
 
                     string stagingRoot = Path.Combine(GetAutoModSyncRoot(), "staging", ManifestKindDirectory(expectedEntry.Kind));
                     string output = SafeUnder(stagingRoot, expectedEntry.RelativePath) + ".amsnew";
                     string parent = Path.GetDirectoryName(output);
                     if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
-                    using (Stream source = entry.Open())
-                    using (FileStream destination = new FileStream(output, FileMode.Create, FileAccess.Write, FileShare.None))
+                    AutoModSyncPathSafety.EnsureNoReparsePoints(stagingRoot, output, true);
+
+                    try
                     {
-                        source.CopyTo(destination);
+                        using (Stream source = entry.Open())
+                        using (FileStream destination = new FileStream(output, FileMode.Create, FileAccess.Write, FileShare.None))
+                        {
+                            CopyZipEntryBounded(source, destination, expectedEntry.Size, ref expandedBytes);
+                        }
+                    }
+                    catch
+                    {
+                        try { if (File.Exists(output)) File.Delete(output); } catch { }
+                        throw;
                     }
 
                     FileInfo outInfo = new FileInfo(output);
@@ -916,22 +1001,41 @@ namespace ValheimAutoModSync
                 }
             }
 
-            if (extracted.Count != expected.Count) throw new InvalidDataException("Compressed package did not contain every requested file.");
+            if (extracted.Count != expected.Count)
+                throw new InvalidDataException("Compressed package did not contain every requested file.");
         }
 
-        // Intent: Canonicalizes a ZIP entry to forward-slash relative form and rejects empty, dot, parent, or directory entries.
+        // Intent: Copies one ZIP entry while enforcing the signed size continuously instead of trusting a final length check.
+        // Security: this prevents a malicious compressed stream from expanding until disk exhaustion before AutoModSync notices the mismatch.
+        private static void CopyZipEntryBounded(Stream source, Stream destination, long expectedBytes, ref long cumulativeExpandedBytes)
+        {
+            if (expectedBytes < 0 || expectedBytes > MaxIndividualSyncFileBytes)
+                throw new InvalidDataException("Compressed package entry exceeds the AutoModSync client file limit.");
+
+            byte[] buffer = new byte[81920];
+            long written = 0L;
+            while (true)
+            {
+                int read = source.Read(buffer, 0, buffer.Length);
+                if (read <= 0) break;
+                if ((long)read > expectedBytes - written)
+                    throw new InvalidDataException("Compressed package entry expanded beyond its signed size.");
+                if ((long)read > MaxExpandedSyncBytes - cumulativeExpandedBytes)
+                    throw new InvalidDataException("Compressed package exceeded the AutoModSync client expanded-size limit.");
+
+                destination.Write(buffer, 0, read);
+                written += read;
+                cumulativeExpandedBytes += read;
+            }
+
+            if (written != expectedBytes)
+                throw new InvalidDataException("Compressed package entry ended before its signed size.");
+        }
+
+        // Intent: Applies the same Windows-safe path policy to ZIP entry names used by the signed manifest.
         private static string NormalizeZipEntry(string value)
         {
-            if (String.IsNullOrEmpty(value)) return "";
-            value = value.Replace('\\', '/').TrimStart('/');
-            if (value.EndsWith("/", StringComparison.Ordinal)) return "";
-            string[] parts = value.Split('/');
-            int i;
-            for (i = 0; i < parts.Length; i++)
-            {
-                if (parts[i].Length == 0 || parts[i] == "." || parts[i] == "..") return "";
-            }
-            return String.Join("/", parts);
+            return AutoModSyncPathSafety.NormalizeRelative(value);
         }
 
         // Intent: Formats byte counts into human-readable B/KB/MB/GB strings for logs and the sync overlay.
@@ -950,7 +1054,7 @@ namespace ValheimAutoModSync
             if (rpc != _pendingRpc) return;
             string message = "Server reported an AutoModSync error.";
             try { message = pkg.ReadString(); } catch { }
-            FailOpen(message);
+            AbortAutoModSyncJoin(message);
         }
 
         // Intent: Persists the verified pending-file list and reconnect token, launches the external apply helper, disconnects cleanly, then schedules Valheim to quit.
@@ -1010,7 +1114,7 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 _restartRequested = false;
-                FailOpen("Mods downloaded but automatic apply/restart failed: " + ex.Message);
+                AbortAutoModSyncJoin("Mods downloaded but automatic apply/restart failed: " + ex.Message);
             }
         }
 
@@ -1228,13 +1332,58 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Central fail-open path for discovery/verification/transfer errors.
-        // Safety: closes any bundle stream, applies no unverified files, logs the reason, and releases the normal Valheim handshake.
+        // Intent: Fail open only while discovering whether the remote endpoint supports AutoModSync.
+        // Compatibility: genuine non-AMS servers keep the 2.5 behavior and receive the untouched normal Valheim handshake.
         private static void FailOpen(string reason)
         {
             CloseBundleStream();
-            if (_instance != null) _instance.Logger.LogWarning(reason + " AutoModSync will not modify files for this connection; continuing Valheim normally.");
+            DeleteActiveBundleFile();
+            if (_instance != null) _instance.Logger.LogWarning(reason + " AutoModSync discovery did not establish a protected AMS session; continuing Valheim normally.");
             ResumeNormalHandshake();
+        }
+
+        // Intent: Stops a join after the remote endpoint has positively entered the AutoModSync preflight path.
+        // Security: signature/trust/path/resource/transfer failures must never become a way to bypass required synchronization and reach the vanilla handshake.
+        private static void AbortAutoModSyncJoin(string reason)
+        {
+            ZRpc rpc = _pendingRpc;
+            CloseBundleStream();
+            DeleteActiveBundleFile();
+
+            _waitingForServer = false;
+            _serverRecognized = true;
+            _serverAcknowledged = true;
+            _allowPeerInfo = false;
+            _allowServerHandshake = false;
+
+            // Keep the gate armed for this exact RPC until the socket is closed. If close itself fails,
+            // the original ServerHandshake remains held rather than silently falling through.
+            _preflightGateActive = rpc != null;
+            _serverHandshakeHeld = rpc != null;
+            _heldServerHandshakeParameters = new object[0];
+
+            ResetManifestState();
+            ShowSyncOverlay("AutoModSync blocked this join.\n" + (reason ?? "Synchronization failed."), "");
+            if (_instance != null) _instance.Logger.LogError((reason ?? "AutoModSync synchronization failed.") + " The recognized AutoModSync join was aborted.");
+
+            if (rpc == null) return;
+            try { rpc.Invoke("Disconnect", new object[0]); } catch { }
+            try
+            {
+                if (rpc.GetSocket() != null) rpc.GetSocket().Close();
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync could not close the failed join socket cleanly: " + ex.Message);
+            }
+        }
+
+        // Intent: Removes only the active compressed staging archive after a failed/discarded transfer.
+        // Safety: extracted .amsnew files are not live BepInEx files and remain inert until a later verified apply phase.
+        private static void DeleteActiveBundleFile()
+        {
+            if (String.IsNullOrEmpty(_bundlePath)) return;
+            try { if (File.Exists(_bundlePath)) File.Delete(_bundlePath); } catch { }
         }
 
         // Intent: Clears per-manifest and per-bundle state so stale data from one connection cannot contaminate the next synchronization attempt.
@@ -1777,21 +1926,13 @@ namespace ValheimAutoModSync
         // Intent: General containment helper for staging/state roots; rejects any normalized relative path whose full path escapes the supplied root.
         private static string SafeUnder(string rootPath, string relative)
         {
-            string rel = NormalizeRelative(relative);
-            if (rel.Length == 0) throw new InvalidDataException("Unsafe AutoModSync path.");
-            string root = Path.GetFullPath(rootPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            string full = Path.GetFullPath(Path.Combine(rootPath, rel.Replace('/', Path.DirectorySeparatorChar)));
-            if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("AutoModSync path escaped its staging root.");
-            return full;
+            return AutoModSyncPathSafety.SafeUnderRoot(rootPath, relative, true);
         }
 
-        // Intent: Normalizes synchronized relative paths and rejects parent traversal, drive/URI separators, tabs, and newline characters.
+        // Intent: Applies the shared 2.6 Windows-safe relative-path policy to every signed/staged path.
         private static string NormalizeRelative(string value)
         {
-            if (value == null) return "";
-            value = value.Replace('\\', '/').TrimStart('/');
-            if (value.Length == 0 || value == ".." || value.IndexOf("../", StringComparison.Ordinal) >= 0 || value.IndexOf(':') >= 0 || value.IndexOf('\t') >= 0 || value.IndexOf('\r') >= 0 || value.IndexOf('\n') >= 0) return "";
-            return value;
+            return AutoModSyncPathSafety.NormalizeRelative(value);
         }
 
         // Intent: Computes a file's SHA-256 while allowing other readers, used for local manifest comparison and post-extraction verification.
@@ -1842,12 +1983,14 @@ namespace ValheimAutoModSync
         // Intent: Resolves one relative synchronized path beneath a fixed BepInEx root with full-path containment enforcement.
         private static string SafeBepInExRootPath(string rootPath, string relative, string label)
         {
-            string rel = NormalizeRelative(relative);
-            if (rel.Length == 0) throw new InvalidDataException("Unsafe " + label + " path.");
-            string root = Path.GetFullPath(rootPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            string full = Path.GetFullPath(Path.Combine(rootPath, rel.Replace('/', Path.DirectorySeparatorChar)));
-            if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Path escaped BepInEx\\" + label + ".");
-            return full;
+            try
+            {
+                return AutoModSyncPathSafety.SafeUnderRoot(rootPath, relative, true);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidDataException("Unsafe BepInEx\\" + label + " path: " + ex.Message, ex);
+            }
         }
 
         // Intent: Verifies the server's RSA/SHA-256 manifest signature using only the public key delivered in the manifest header.
@@ -1865,6 +2008,20 @@ namespace ValheimAutoModSync
                 }
             }
             catch { return false; }
+        }
+
+        // Intent: Validates protocol SHA-256 text before it is trusted as a content identifier.
+        private static bool IsSha256Hex(string value)
+        {
+            if (String.IsNullOrEmpty(value) || value.Length != 64) return false;
+            int i;
+            for (i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                if (!hex) return false;
+            }
+            return true;
         }
 
         // Intent: Derives the stable SHA-256 fingerprint shown/pinned for a server's public signing key.

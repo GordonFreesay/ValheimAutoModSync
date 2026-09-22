@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading;
 using Microsoft.Win32;
 using System.Reflection;
+using ValheimAutoModSync;
 
 [assembly: AssemblyTitle("Valheim AutoModSync Apply Helper")]
 [assembly: AssemblyDescription("Applies verified staged AutoModSync BepInEx files after Valheim exits, then relaunches Valheim.")]
@@ -85,6 +86,11 @@ internal static class Program
                     else throw new InvalidDataException("Unsupported AutoModSync pending-file kind.");
                     string src = SafeUnder(srcRoot, rel) + ".amsnew";
                     string dst = SafeUnder(dstRoot, rel);
+
+                    // The client verified these paths before restart, but the helper is a separate process and
+                    // independently rechecks filesystem redirection immediately before touching live files.
+                    AutoModSyncPathSafety.EnsureNoReparsePoints(srcRoot, src, true);
+                    AutoModSyncPathSafety.EnsureNoReparsePoints(dstRoot, dst, true);
 
                     if (!File.Exists(src)) continue;
                     string parent = Path.GetDirectoryName(dst);
@@ -350,23 +356,16 @@ internal static class Program
         return "\"" + (s ?? "").Replace("\"", "") + "\"";
     }
 
-    // Intent: Normalizes a relative AutoModSync path and rejects absolute/parent-traversal/control-character forms before filesystem use.
+    // Intent: Applies the same Windows-safe relative-path rules used by the network-facing client and server.
     private static string NormalizeRelative(string value)
     {
-        if (value == null) return "";
-        value = value.Replace('\\', '/').TrimStart('/');
-        if (value.Length == 0 || value == ".." || value.IndexOf("../", StringComparison.Ordinal) >= 0 || value.IndexOf(':') >= 0 || value.IndexOf('\r') >= 0 || value.IndexOf('\n') >= 0) return "";
-        return value;
+        return AutoModSyncPathSafety.NormalizeRelative(value);
     }
 
-    // Intent: Resolves a normalized relative path underneath an expected root and verifies the resulting full path cannot escape that root.
+    // Intent: Resolves one pending path beneath its fixed live/staging root and rejects reparse-point redirection.
+    // Security: this is intentionally repeated in the helper because process restart creates a new TOCTOU boundary.
     private static string SafeUnder(string root, string rel)
     {
-        rel = NormalizeRelative(rel);
-        if (rel.Length == 0) throw new InvalidDataException("Unsafe AutoModSync path.");
-        string basePath = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        string full = Path.GetFullPath(Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar)));
-        if (!full.StartsWith(basePath, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Path escaped AutoModSync root.");
-        return full;
+        return AutoModSyncPathSafety.SafeUnderRoot(root, rel, true);
     }
 }
