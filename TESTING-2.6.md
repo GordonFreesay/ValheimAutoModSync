@@ -1,6 +1,6 @@
 # AutoModSync 2.6 validation checklist
 
-**Status:** NOT RUN. This file records required evidence; it does not claim that any 2.6 test has passed.
+**Status:** PARTIAL RUNTIME VALIDATION. Only explicitly checked items and the dated runtime evidence below have passed; all other items remain pending.
 
 Release builds/publication remain deferred until the maintainer has functionally validated the implementation.
 
@@ -16,8 +16,8 @@ Release builds/publication remain deferred until the maintainer has functionally
 ### Compatibility / preflight
 
 - [ ] Non-AutoModSync server receives no AMS response and the original `ServerHandshake` is replayed after the discovery timeout.
-- [ ] Valid 2.6 AutoModSync server with matching client files establishes/uses trust, then replays the original `ServerHandshake` unchanged.
-- [ ] Jotunn/Epic Loot/other compatibility checks still run after successful AMS preflight.
+- [x] Valid 2.6 AutoModSync server with matching client files establishes/uses trust, then replays the original `ServerHandshake` unchanged.
+- [x] Jotunn/Epic Loot/other compatibility checks still run after successful AMS preflight.
 - [ ] 2.6 client can still use the existing AMS4 transfer fallbacks with a 2.5 server.
 
 ### Recognized AMS must fail closed
@@ -68,6 +68,18 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 - [ ] Server rejects requested expanded source bytes above `MaxExpandedBundleMiB` before ZIP construction.
 - [ ] Server aborts bundle construction once compressed output crosses `MaxBundleMiB`.
 - [ ] Failed bundle construction removes its unpublished temporary ZIP.
+
+## Runtime evidence — 2026-09-22
+
+Maintainer-provided client/server logs from development commit `37a4125f270a417489e9d620326c4f92e808bc26` establish the following smoke-test evidence:
+
+- Fresh/near-bare client requested a real server mod set and received a **313.4 MiB compressed package**.
+- Client verified and unpacked the package, persisted its reconnect token, closed cleanly for apply, relaunched, and automatically reconnected.
+- Relaunched client loaded **AutoModSync Client 2.6.0**, then reported that its files already matched the trusted server before releasing the original Valheim handshake.
+- Jotunn, ConditionalConfigSync, Warfare/Armory validation, and Epic Loot server-pushed data continued after AutoModSync preflight.
+- Server restored the temporary SteamNetworkingSockets settings after the bundle transfer.
+- With development transfer settings Min=8 MiB/s, Max=32 MiB/s, Buffer=16 MiB, Steam telemetry repeatedly reported exactly **8,388,608 B/s**, while the client measured **313.4 MiB in 46.8 s (6.70 MiB/s payload throughput)**.
+- This evidence motivates the next controlled throughput run at Min=16 MiB/s, Max=64 MiB/s, Buffer=32 MiB. It does **not** qualify the concurrent-client scheduler, interruption/resume, adversarial protocol cases, or resource-limit cases.
 
 ## Evidence to record
 
