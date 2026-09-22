@@ -567,7 +567,8 @@ namespace ValheimAutoModSync
                 zipWatch.Stop();
 
                 FileInfo fi = new FileInfo(tempPath);
-                if (fi.Length > maxBundleBytes)
+                long compressedBytes = fi.Length;
+                if (compressedBytes > maxBundleBytes)
                     throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
 
                 hashWatch.Start();
@@ -580,7 +581,7 @@ namespace ValheimAutoModSync
                 BundleArtifact artifact = new BundleArtifact();
                 artifact.CacheKey = cacheKey;
                 artifact.ZipPath = finalPath;
-                artifact.Size = fi.Length;
+                artifact.Size = compressedBytes;
                 artifact.Sha256 = bundleSha256;
                 artifact.FileCount = records.Count;
                 artifact.ExpandedBytes = expandedBytes;
