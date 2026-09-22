@@ -3,6 +3,7 @@ using BepInEx.Configuration;
 using HarmonyLib;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -10,6 +11,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Steamworks;
 
 [assembly: AssemblyTitle("Valheim AutoModSync Server")]
@@ -55,6 +57,8 @@ namespace ValheimAutoModSync
         private static ConfigEntry<int> _maxFileMiB;
         private static ConfigEntry<int> _maxBundleMiB;
         private static ConfigEntry<int> _maxExpandedBundleMiB;
+        private static ConfigEntry<int> _bundleCacheSeconds;
+        private static ConfigEntry<int> _bundleCacheMaxMiB;
         private static ConfigEntry<int> _transferSendRateMax;
         private static ConfigEntry<int> _transferSendRateMin;
         private static ConfigEntry<int> _transferSendBufferBytes;
@@ -71,6 +75,12 @@ namespace ValheimAutoModSync
         private static readonly Dictionary<ZRpc, string> ClientVersions = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, string> ClientCapabilities = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, BundleTransfer> BundleTransfers = new Dictionary<ZRpc, BundleTransfer>();
+
+        // Phase 3 bundle cache: published ZIPs are immutable and reference-counted while clients read them.
+        // BundleBuilds serializes only identical cache keys so simultaneous fresh clients share one build instead of recompressing the same bytes.
+        private static readonly object BundleCacheLock = new object();
+        private static readonly Dictionary<string, BundleArtifact> BundleArtifactCache = new Dictionary<string, BundleArtifact>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, BundleBuildState> BundleBuilds = new Dictionary<string, BundleBuildState>(StringComparer.Ordinal);
         
         private sealed class FileRecord
         {
@@ -81,8 +91,30 @@ namespace ValheimAutoModSync
             public char Kind;
         }
 
+        private sealed class BundleArtifact
+        {
+            public string CacheKey;
+            public string ZipPath;
+            public long Size;
+            public string Sha256;
+            public int FileCount;
+            public long ExpandedBytes;
+            public DateTime CreatedUtc;
+            public DateTime LastUsedUtc;
+            public int ActiveTransfers;
+            public double ZipBuildSeconds;
+            public double ZipHashSeconds;
+        }
+
+        private sealed class BundleBuildState
+        {
+            public bool Complete;
+            public Exception Error;
+        }
+
         private sealed class BundleTransfer
         {
+            public BundleArtifact Artifact;
             public string ZipPath;
             public long Size;
             public string Sha256;
@@ -121,6 +153,8 @@ namespace ValheimAutoModSync
             _maxFileMiB = Config.Bind("Transfer", "MaxFileMiB", 128, "Refuse to transfer a single file larger than this many MiB.");
             _maxBundleMiB = Config.Bind("Transfer", "MaxBundleMiB", 2048, "Refuse to build a compressed change package larger than this many MiB.");
             _maxExpandedBundleMiB = Config.Bind("Transfer", "MaxExpandedBundleMiB", 4096, "Refuse a requested change set whose signed source files exceed this many MiB before compression.");
+            _bundleCacheSeconds = Config.Bind("Transfer", "BundleCacheSeconds", 600, "How long a completed immutable bundle remains reusable after its last client use. 0 keeps artifacts only while actively referenced.");
+            _bundleCacheMaxMiB = Config.Bind("Transfer", "BundleCacheMaxMiB", 4096, "Maximum total on-disk size of retained completed bundle artifacts. Active transfers are never deleted; idle least-recently-used artifacts are evicted to meet this budget.");
             _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 67108864, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
             _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 16777216, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
             _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 33554432, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
@@ -325,7 +359,6 @@ namespace ValheimAutoModSync
         // Security: every request resolves to a fixed P/R/C manifest destination; duplicate/count/expanded/compressed limits are enforced before or during construction.
         private static void RPC_GetBundle(ZRpc rpc, ZPackage pkg)
         {
-            string zipPath = "";
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
@@ -350,15 +383,173 @@ namespace ValheimAutoModSync
                     records.Add(record);
                 }
 
+                // Canonical order makes the cache key and ZIP bytes independent of client request ordering.
+                records.Sort(delegate(FileRecord a, FileRecord b)
+                {
+                    int byKind = a.Kind.CompareTo(b.Kind);
+                    return byKind != 0 ? byKind : StringComparer.OrdinalIgnoreCase.Compare(a.RelativePath, b.RelativePath);
+                });
+
                 CleanupBundle(rpc);
-                string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
-                if (!Directory.Exists(cacheRoot)) Directory.CreateDirectory(cacheRoot);
-                zipPath = Path.Combine(cacheRoot, "bundle-" + Guid.NewGuid().ToString("N") + ".zip");
 
                 long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
-                using (FileStream output = new FileStream(zipPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+                string cacheStatus;
+                double waitSeconds;
+                Stopwatch prepareWatch = Stopwatch.StartNew();
+                BundleArtifact artifact = AcquireBundleArtifact(records, expandedBytes, maxBundleBytes, out cacheStatus, out waitSeconds);
+                prepareWatch.Stop();
+
+                int rawChunk = Math.Max(4096, Math.Min(49152, _chunkBytes.Value));
+                BundleTransfer transfer = new BundleTransfer();
+                transfer.Artifact = artifact;
+                transfer.ZipPath = artifact.ZipPath;
+                transfer.Size = artifact.Size;
+                transfer.Sha256 = artifact.Sha256;
+                transfer.ChunkBytes = rawChunk;
+                transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
+                transfer.FileCount = artifact.FileCount;
+
+                // Store the transfer before transport tuning/RPC publication so every later failure path releases the artifact reference.
+                BundleTransfers[rpc] = transfer;
+                TryTuneTransferTransport(rpc, transfer);
+
+                ZPackage begin = new ZPackage();
+                begin.Write(transfer.Size.ToString(CultureInfo.InvariantCulture));
+                begin.Write(transfer.Sha256);
+                begin.Write(transfer.TotalChunks);
+                begin.Write(transfer.FileCount);
+                rpc.Invoke(RpcBundleBegin, new object[] { begin });
+
+                if (_instance != null)
+                {
+                    _instance.Logger.LogInfo("AutoModSync bundle ready: cache=" + cacheStatus +
+                        ", key=" + ShortCacheKey(artifact.CacheKey) +
+                        ", files=" + artifact.FileCount.ToString(CultureInfo.InvariantCulture) +
+                        ", compressed=" + FormatBytes(artifact.Size) +
+                        ", expanded=" + FormatBytes(artifact.ExpandedBytes) +
+                        ", prepare=" + prepareWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                        (waitSeconds > 0.0005 ? ", singleFlightWait=" + waitSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" : "") + ".");
+                }
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Bundle preparation failed: " + ex);
+                CleanupBundle(rpc);
+                SendError(rpc, "Server failed while preparing the compressed AutoModSync package: " + ex.Message);
+            }
+        }
+
+        // Intent: Returns a retained immutable bundle for this exact signed content set, or performs the one allowed build for that cache key.
+        // Concurrency: waiters for an identical key block on BundleBuildState and then acquire the published artifact; different keys are free to build independently.
+        private static BundleArtifact AcquireBundleArtifact(List<FileRecord> records, long expandedBytes, long maxBundleBytes, out string cacheStatus, out double waitSeconds)
+        {
+            string cacheKey = BuildBundleCacheKey(records);
+            DateTime waitStartedUtc = DateTime.MinValue;
+            bool waited = false;
+            BundleBuildState state = null;
+
+            while (true)
+            {
+                lock (BundleCacheLock)
+                {
+                    DateTime now = DateTime.UtcNow;
+                    PruneBundleCacheLocked(now);
+
+                    BundleArtifact cached;
+                    if (BundleArtifactCache.TryGetValue(cacheKey, out cached))
+                    {
+                        if (!File.Exists(cached.ZipPath))
+                        {
+                            BundleArtifactCache.Remove(cacheKey);
+                        }
+                        else
+                        {
+                            if (cached.Size > maxBundleBytes)
+                                throw new InvalidDataException("Cached AutoModSync package exceeds the current configured server transfer limit.");
+
+                            cached.ActiveTransfers++;
+                            cached.LastUsedUtc = now;
+                            cacheStatus = waited ? "WAIT-HIT" : "HIT";
+                            waitSeconds = waited ? (now - waitStartedUtc).TotalSeconds : 0.0;
+                            return cached;
+                        }
+                    }
+
+                    if (BundleBuilds.TryGetValue(cacheKey, out state))
+                    {
+                        if (!waited)
+                        {
+                            waited = true;
+                            waitStartedUtc = now;
+                            if (_instance != null)
+                                _instance.Logger.LogInfo("AutoModSync bundle cache WAIT key=" + ShortCacheKey(cacheKey) + "; another client is building the identical artifact.");
+                        }
+
+                        while (!state.Complete) Monitor.Wait(BundleCacheLock);
+                        if (state.Error != null)
+                            throw new InvalidOperationException("The shared AutoModSync bundle build failed.", state.Error);
+
+                        continue;
+                    }
+
+                    state = new BundleBuildState();
+                    BundleBuilds.Add(cacheKey, state);
+                    break;
+                }
+            }
+
+            try
+            {
+                BundleArtifact built = BuildBundleArtifact(cacheKey, records, expandedBytes, maxBundleBytes);
+                lock (BundleCacheLock)
+                {
+                    built.ActiveTransfers = 1;
+                    built.LastUsedUtc = DateTime.UtcNow;
+                    BundleArtifactCache[cacheKey] = built;
+                    state.Complete = true;
+                    BundleBuilds.Remove(cacheKey);
+                    Monitor.PulseAll(BundleCacheLock);
+                }
+
+                cacheStatus = "MISS";
+                waitSeconds = 0.0;
+                return built;
+            }
+            catch (Exception ex)
+            {
+                lock (BundleCacheLock)
+                {
+                    state.Error = ex;
+                    state.Complete = true;
+                    BundleBuilds.Remove(cacheKey);
+                    Monitor.PulseAll(BundleCacheLock);
+                }
+                throw;
+            }
+        }
+
+        // Intent: Builds one ZIP to a private temporary path, hashes it, then atomically publishes the completed file under its deterministic content key.
+        // Safety: incomplete builds are never inserted into BundleArtifactCache and temporary files are removed on every failure path.
+        private static BundleArtifact BuildBundleArtifact(string cacheKey, List<FileRecord> records, long expandedBytes, long maxBundleBytes)
+        {
+            string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
+            if (!Directory.Exists(cacheRoot)) Directory.CreateDirectory(cacheRoot);
+
+            string tempPath = Path.Combine(cacheRoot, "bundle-build-" + Guid.NewGuid().ToString("N") + ".tmp");
+            string finalPath = Path.Combine(cacheRoot, "bundle-cache-" + cacheKey + ".zip");
+            Stopwatch totalWatch = Stopwatch.StartNew();
+            Stopwatch zipWatch = new Stopwatch();
+            Stopwatch hashWatch = new Stopwatch();
+
+            try
+            {
+                if (File.Exists(finalPath)) File.Delete(finalPath);
+
+                zipWatch.Start();
+                using (FileStream output = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
                 using (ZipArchive archive = new ZipArchive(output, ZipArchiveMode.Create, false))
                 {
+                    int i;
                     for (i = 0; i < records.Count; i++)
                     {
                         FileRecord record = records[i];
@@ -373,42 +564,145 @@ namespace ValheimAutoModSync
                             throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
                     }
                 }
+                zipWatch.Stop();
 
-                FileInfo fi = new FileInfo(zipPath);
+                FileInfo fi = new FileInfo(tempPath);
                 if (fi.Length > maxBundleBytes)
                     throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
 
-                int rawChunk = Math.Max(4096, Math.Min(49152, _chunkBytes.Value));
-                BundleTransfer transfer = new BundleTransfer();
-                transfer.ZipPath = zipPath;
-                transfer.Size = fi.Length;
-                transfer.Sha256 = Sha256File(zipPath);
-                transfer.ChunkBytes = rawChunk;
-                transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
-                transfer.FileCount = records.Count;
-                TryTuneTransferTransport(rpc, transfer);
-                BundleTransfers[rpc] = transfer;
+                hashWatch.Start();
+                string bundleSha256 = Sha256File(tempPath);
+                hashWatch.Stop();
 
-                ZPackage begin = new ZPackage();
-                begin.Write(transfer.Size.ToString(CultureInfo.InvariantCulture));
-                begin.Write(transfer.Sha256);
-                begin.Write(transfer.TotalChunks);
-                begin.Write(transfer.FileCount);
-                rpc.Invoke(RpcBundleBegin, new object[] { begin });
+                File.Move(tempPath, finalPath);
+                totalWatch.Stop();
+
+                BundleArtifact artifact = new BundleArtifact();
+                artifact.CacheKey = cacheKey;
+                artifact.ZipPath = finalPath;
+                artifact.Size = fi.Length;
+                artifact.Sha256 = bundleSha256;
+                artifact.FileCount = records.Count;
+                artifact.ExpandedBytes = expandedBytes;
+                artifact.CreatedUtc = DateTime.UtcNow;
+                artifact.LastUsedUtc = artifact.CreatedUtc;
+                artifact.ZipBuildSeconds = zipWatch.Elapsed.TotalSeconds;
+                artifact.ZipHashSeconds = hashWatch.Elapsed.TotalSeconds;
 
                 if (_instance != null)
-                    _instance.Logger.LogInfo("Prepared compressed AutoModSync package for " + records.Count + " changed file(s): " + FormatBytes(transfer.Size) + " from " + FormatBytes(expandedBytes) + " expanded source bytes.");
-                zipPath = ""; // Ownership transfers to BundleTransfers; CleanupBundle deletes it after success/failure.
+                    _instance.Logger.LogInfo("AutoModSync bundle cache MISS key=" + ShortCacheKey(cacheKey) +
+                        ": ZIP build=" + artifact.ZipBuildSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                        ", ZIP SHA-256=" + artifact.ZipHashSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                        ", total=" + totalWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                        ", " + FormatBytes(artifact.Size) + " from " + FormatBytes(expandedBytes) + " expanded source bytes.");
+
+                return artifact;
             }
-            catch (Exception ex)
+            catch
             {
-                if (!String.IsNullOrEmpty(zipPath))
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                throw;
+            }
+        }
+
+        // Intent: Creates a deterministic identity for the exact requested signed records, independent of client request ordering.
+        // The key includes archive format generation plus kind/path/size/content hash, so any synchronized content change necessarily selects a different artifact.
+        private static string BuildBundleCacheKey(List<FileRecord> records)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append("ams4-zip-fastest-v1\n");
+            int i;
+            for (i = 0; i < records.Count; i++)
+            {
+                FileRecord record = records[i];
+                sb.Append(record.Kind).Append('\t')
+                  .Append(record.RelativePath).Append('\t')
+                  .Append(record.Size.ToString(CultureInfo.InvariantCulture)).Append('\t')
+                  .Append(record.Sha256).Append('\n');
+            }
+
+            using (SHA256 sha = SHA256.Create())
+                return ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString())));
+        }
+
+        // Intent: Releases one client's reference to a shared immutable artifact and performs bounded TTL/LRU cleanup only after it is no longer active.
+        private static void ReleaseBundleArtifact(BundleArtifact artifact)
+        {
+            if (artifact == null) return;
+            lock (BundleCacheLock)
+            {
+                if (artifact.ActiveTransfers > 0) artifact.ActiveTransfers--;
+                artifact.LastUsedUtc = DateTime.UtcNow;
+                PruneBundleCacheLocked(artifact.LastUsedUtc);
+            }
+        }
+
+        // Intent: Enforces the configured completed-artifact lifetime and total cache budget without deleting files still referenced by live transfers.
+        // Budget eviction is least-recently-used among idle artifacts; active artifacts may temporarily exceed the configured retained-cache budget.
+        private static void PruneBundleCacheLocked(DateTime now)
+        {
+            int cacheSeconds = _bundleCacheSeconds == null ? 600 : Math.Max(0, _bundleCacheSeconds.Value);
+            long maxCacheBytes = (long)(_bundleCacheMaxMiB == null ? 4096 : Math.Max(0, _bundleCacheMaxMiB.Value)) * 1024L * 1024L;
+            List<string> removeKeys = new List<string>();
+
+            foreach (KeyValuePair<string, BundleArtifact> pair in BundleArtifactCache)
+            {
+                BundleArtifact artifact = pair.Value;
+                if (artifact == null)
                 {
-                    try { if (File.Exists(zipPath)) File.Delete(zipPath); } catch { }
+                    removeKeys.Add(pair.Key);
+                    continue;
                 }
-                if (_instance != null) _instance.Logger.LogWarning("Bundle preparation failed: " + ex);
-                CleanupBundle(rpc);
-                SendError(rpc, "Server failed while preparing the compressed AutoModSync package: " + ex.Message);
+
+                if (artifact.ActiveTransfers > 0) continue;
+                bool missing = String.IsNullOrEmpty(artifact.ZipPath) || !File.Exists(artifact.ZipPath);
+                bool expired = cacheSeconds == 0 || (now - artifact.LastUsedUtc).TotalSeconds > cacheSeconds;
+                if (missing || expired) removeKeys.Add(pair.Key);
+            }
+
+            int i;
+            for (i = 0; i < removeKeys.Count; i++) RemoveCachedArtifactLocked(removeKeys[i]);
+
+            long totalBytes = 0L;
+            List<BundleArtifact> idle = new List<BundleArtifact>();
+            foreach (KeyValuePair<string, BundleArtifact> pair in BundleArtifactCache)
+            {
+                BundleArtifact artifact = pair.Value;
+                if (artifact == null || String.IsNullOrEmpty(artifact.ZipPath) || !File.Exists(artifact.ZipPath)) continue;
+                totalBytes += Math.Max(0L, artifact.Size);
+                if (artifact.ActiveTransfers <= 0) idle.Add(artifact);
+            }
+
+            if (totalBytes <= maxCacheBytes) return;
+
+            idle.Sort(delegate(BundleArtifact a, BundleArtifact b)
+            {
+                return a.LastUsedUtc.CompareTo(b.LastUsedUtc);
+            });
+
+            for (i = 0; i < idle.Count && totalBytes > maxCacheBytes; i++)
+            {
+                BundleArtifact artifact = idle[i];
+                if (artifact.ActiveTransfers > 0) continue;
+                long bytes = Math.Max(0L, artifact.Size);
+                RemoveCachedArtifactLocked(artifact.CacheKey);
+                totalBytes -= bytes;
+            }
+        }
+
+        // Intent: Removes one idle artifact from the in-memory index and best-effort deletes its immutable ZIP.
+        // Caller must hold BundleCacheLock and must never pass an artifact that is actively referenced.
+        private static void RemoveCachedArtifactLocked(string cacheKey)
+        {
+            if (String.IsNullOrEmpty(cacheKey)) return;
+            BundleArtifact artifact;
+            if (!BundleArtifactCache.TryGetValue(cacheKey, out artifact)) return;
+            if (artifact != null && artifact.ActiveTransfers > 0) return;
+
+            BundleArtifactCache.Remove(cacheKey);
+            if (artifact != null && !String.IsNullOrEmpty(artifact.ZipPath))
+            {
+                try { if (File.Exists(artifact.ZipPath)) File.Delete(artifact.ZipPath); } catch { }
             }
         }
 
@@ -425,6 +719,13 @@ namespace ValheimAutoModSync
                 if (output.Length > maxBundleBytes)
                     throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
             }
+        }
+
+        // Intent: Formats a full bundle cache key into a compact log identifier while preserving enough entropy to correlate build/hit/wait events.
+        private static string ShortCacheKey(string cacheKey)
+        {
+            if (String.IsNullOrEmpty(cacheKey)) return "(none)";
+            return cacheKey.Length <= 12 ? cacheKey : cacheKey.Substring(0, 12);
         }
 
         // Intent: Serves one legacy chunk or a bounded 2.5 transfer window beginning at the requested chunk index, then emits the unchanged AMS4 completion message when the client requests TotalChunks.
@@ -796,36 +1097,45 @@ namespace ValheimAutoModSync
             finally { Marshal.FreeHGlobal(buffer); }
         }
 
-        // Intent: Removes per-client bundle-transfer state and deletes the temporary ZIP; safe to call after success or any failure.
+        // Intent: Removes one client's transfer state, restores its temporary Steam tuning, and releases its reference to the shared immutable bundle artifact.
+        // Cache lifetime/eviction is handled separately so a completed client cannot delete a ZIP still being read by another client.
         private static void CleanupBundle(ZRpc rpc)
         {
             BundleTransfer transfer;
             if (!BundleTransfers.TryGetValue(rpc, out transfer)) return;
             BundleTransfers.Remove(rpc);
             RestoreTransferTransport(transfer);
-            if (transfer != null && !String.IsNullOrEmpty(transfer.ZipPath))
+
+            if (transfer != null && transfer.Artifact != null)
             {
+                ReleaseBundleArtifact(transfer.Artifact);
+            }
+            else if (transfer != null && !String.IsNullOrEmpty(transfer.ZipPath))
+            {
+                // Compatibility fallback for any pre-cache transfer object created before a development hot reload.
                 try { if (File.Exists(transfer.ZipPath)) File.Delete(transfer.ZipPath); } catch { }
             }
         }
 
-        // Intent: Deletes abandoned AutoModSync bundle ZIPs older than six hours so interrupted transfers do not accumulate indefinitely.
+        // Intent: Removes orphaned bundle files from a previous server process.
+        // Published-cache metadata is intentionally in-memory only, so no ZIP from an earlier process is trusted/reused after restart.
         private static void CleanupOldBundleCache()
         {
             try
             {
                 string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
                 if (!Directory.Exists(cacheRoot)) return;
-                string[] files = Directory.GetFiles(cacheRoot, "bundle-*.zip", SearchOption.TopDirectoryOnly);
+
+                string[] zipFiles = Directory.GetFiles(cacheRoot, "bundle-*.zip", SearchOption.TopDirectoryOnly);
+                string[] tempFiles = Directory.GetFiles(cacheRoot, "bundle-build-*.tmp", SearchOption.TopDirectoryOnly);
                 int i;
-                for (i = 0; i < files.Length; i++)
+                for (i = 0; i < zipFiles.Length; i++)
                 {
-                    try
-                    {
-                        FileInfo fi = new FileInfo(files[i]);
-                        if ((DateTime.UtcNow - fi.LastWriteTimeUtc).TotalHours > 6.0) fi.Delete();
-                    }
-                    catch { }
+                    try { File.Delete(zipFiles[i]); } catch { }
+                }
+                for (i = 0; i < tempFiles.Length; i++)
+                {
+                    try { File.Delete(tempFiles[i]); } catch { }
                 }
             }
             catch { }
