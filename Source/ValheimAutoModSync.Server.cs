@@ -410,7 +410,7 @@ namespace ValheimAutoModSync
                 ZPackage ack = new ZPackage();
                 ack.Write(ProtocolVersion);
                 ack.Write(PluginVersion);
-                ack.Write("bundle-window1;bundle-batch1;bundle-pipeline1");
+                ack.Write("bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1");
                 rpc.Invoke(RpcAck, new object[] { ack });
 
                 EnsureManifest(false);
@@ -483,6 +483,36 @@ namespace ValheimAutoModSync
                     records.Add(record);
                 }
 
+                AutoModSyncResumeCandidate resumeCandidate = null;
+                bool resumeNegotiated = ClientSupportsCapability(rpc, "bundle-resume1");
+                if (resumeNegotiated)
+                {
+                    int hasResume = 0;
+                    try { hasResume = pkg.ReadInt(); } catch { hasResume = 0; }
+                    if (hasResume != 0)
+                    {
+                        AutoModSyncResumeCandidate candidate = new AutoModSyncResumeCandidate();
+                        candidate.BundleSha256 = pkg.ReadString();
+                        string resumeSizeText = pkg.ReadString();
+                        if (!Int64.TryParse(resumeSizeText, NumberStyles.Integer, CultureInfo.InvariantCulture, out candidate.BundleSize))
+                            throw new InvalidDataException("Invalid AutoModSync resume bundle size.");
+                        candidate.ChunkBytes = pkg.ReadInt();
+                        candidate.TotalChunks = pkg.ReadInt();
+                        candidate.FileCount = pkg.ReadInt();
+                        candidate.NextChunk = pkg.ReadInt();
+                        candidate.PrefixSha256 = pkg.ReadString();
+                        if (candidate.BundleSha256 == null || candidate.BundleSha256.Length > 128
+                            || candidate.PrefixSha256 == null || candidate.PrefixSha256.Length > 128
+                            || candidate.BundleSize <= 0
+                            || candidate.ChunkBytes < 1 || candidate.ChunkBytes > 65536
+                            || candidate.TotalChunks < 1 || candidate.TotalChunks > 524288
+                            || candidate.FileCount < 1 || candidate.FileCount > 4096
+                            || candidate.NextChunk < 1 || candidate.NextChunk > candidate.TotalChunks)
+                            throw new InvalidDataException("Invalid AutoModSync resume candidate.");
+                        resumeCandidate = candidate;
+                    }
+                }
+
                 // Canonical order makes the cache key and ZIP bytes independent of client request ordering.
                 records.Sort(delegate(FileRecord a, FileRecord b)
                 {
@@ -509,6 +539,29 @@ namespace ValheimAutoModSync
                 transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
                 transfer.FileCount = artifact.FileCount;
 
+                int resumeStartChunk = 0;
+                long resumeBytes = 0L;
+                string resumeReason = "";
+                Stopwatch resumeWatch = new Stopwatch();
+                if (resumeNegotiated && resumeCandidate != null)
+                {
+                    resumeWatch.Start();
+                    if (AutoModSyncResumeState.TryAcceptServerCandidate(
+                        transfer.ZipPath,
+                        transfer.Sha256,
+                        transfer.Size,
+                        transfer.ChunkBytes,
+                        transfer.TotalChunks,
+                        transfer.FileCount,
+                        resumeCandidate,
+                        out resumeBytes,
+                        out resumeReason))
+                    {
+                        resumeStartChunk = resumeCandidate.NextChunk;
+                    }
+                    resumeWatch.Stop();
+                }
+
                 // Store the transfer before transport tuning/RPC publication so every later failure path releases the artifact reference.
                 BundleTransfers[rpc] = transfer;
                 TryTuneTransferTransport(rpc, transfer);
@@ -518,7 +571,20 @@ namespace ValheimAutoModSync
                 begin.Write(transfer.Sha256);
                 begin.Write(transfer.TotalChunks);
                 begin.Write(transfer.FileCount);
+                if (resumeNegotiated)
+                {
+                    begin.Write(transfer.ChunkBytes);
+                    begin.Write(resumeStartChunk);
+                }
                 rpc.Invoke(RpcBundleBegin, new object[] { begin });
+
+                if (_instance != null && resumeCandidate != null)
+                {
+                    if (resumeStartChunk > 0)
+                        _instance.Logger.LogInfo("AutoModSync exact-artifact resume accepted at chunk " + resumeStartChunk.ToString(CultureInfo.InvariantCulture) + "/" + transfer.TotalChunks.ToString(CultureInfo.InvariantCulture) + " (" + FormatBytes(resumeBytes) + " retained, prefixVerify=" + resumeWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s).");
+                    else
+                        _instance.Logger.LogInfo("AutoModSync resume candidate rejected; restarting bundle at chunk 0: " + (resumeReason ?? "artifact mismatch") + ".");
+                }
 
                 if (_instance != null)
                 {
@@ -970,6 +1036,21 @@ namespace ValheimAutoModSync
                 CleanupBundle(rpc);
                 SendError(rpc, "Server failed while transferring the compressed AutoModSync package batch: " + ex.Message);
             }
+        }
+
+        // Intent: Reads a negotiated feature token from the capability string captured during AMS4_Hello.
+        // Compatibility: capability additions are optional AMS4 extensions, so clients that do not advertise bundle-resume1 retain the original wire shape.
+        private static bool ClientSupportsCapability(ZRpc rpc, string capability)
+        {
+            if (rpc == null || String.IsNullOrEmpty(capability)) return false;
+            string value;
+            if (!ClientCapabilities.TryGetValue(rpc, out value) || String.IsNullOrEmpty(value)) return false;
+
+            string[] parts = value.Split(';');
+            int i;
+            for (i = 0; i < parts.Length; i++)
+                if (String.Equals(parts[i], capability, StringComparison.Ordinal)) return true;
+            return false;
         }
 
         // Intent: Resolves a client request string to one current FileRecord from the server's signed manifest map.
