@@ -333,30 +333,46 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Deletes only AutoModSync's bounded resume slot. It never touches extracted staging or live BepInEx files.
+        // Security: an existing resume directory is reparse-checked before any deletion so a local junction/symlink cannot redirect cleanup outside AutoModSync.
         internal static void Discard(string amsRoot)
         {
             string resumeRoot = GetResumeRoot(amsRoot);
+            if (!Directory.Exists(resumeRoot)) return;
+
+            try
+            {
+                AutoModSyncPathSafety.EnsureNoReparsePoints(amsRoot, resumeRoot, true);
+            }
+            catch
+            {
+                // Fail closed on cleanup: leaving an unsafe local object behind is preferable to deleting through it.
+                return;
+            }
+
             try
             {
                 string partial = GetPartialPath(amsRoot);
+                AutoModSyncPathSafety.EnsureNoReparsePoints(resumeRoot, partial, true);
                 if (File.Exists(partial)) File.Delete(partial);
             }
             catch { }
             try
             {
                 string metadata = GetMetadataPath(amsRoot);
+                AutoModSyncPathSafety.EnsureNoReparsePoints(resumeRoot, metadata, true);
                 if (File.Exists(metadata)) File.Delete(metadata);
             }
             catch { }
             try
             {
                 string temp = GetMetadataPath(amsRoot) + ".tmp";
+                AutoModSyncPathSafety.EnsureNoReparsePoints(resumeRoot, temp, true);
                 if (File.Exists(temp)) File.Delete(temp);
             }
             catch { }
             try
             {
-                if (Directory.Exists(resumeRoot) && Directory.GetFileSystemEntries(resumeRoot).Length == 0)
+                if (Directory.GetFileSystemEntries(resumeRoot).Length == 0)
                     Directory.Delete(resumeRoot);
             }
             catch { }
@@ -453,6 +469,7 @@ namespace ValheimAutoModSync
         {
             string resumeRoot = GetResumeRoot(amsRoot);
             Directory.CreateDirectory(resumeRoot);
+            AutoModSyncPathSafety.EnsureNoReparsePoints(amsRoot, resumeRoot, true);
             string path = GetMetadataPath(amsRoot);
             string temp = path + ".tmp";
             try { if (File.Exists(temp)) File.Delete(temp); } catch { }
