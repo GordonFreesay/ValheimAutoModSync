@@ -76,6 +76,9 @@ namespace ValheimAutoModSync
         private static readonly Dictionary<ZRpc, string> ClientVersions = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, string> ClientCapabilities = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, BundleTransfer> BundleTransfers = new Dictionary<ZRpc, BundleTransfer>();
+#if AMS_DEV_TESTS
+        private static readonly HashSet<ZRpc> DevelopmentLegacyServerPeers = new HashSet<ZRpc>();
+#endif
         private static DateTime _nextTransferCleanupUtc = DateTime.MinValue;
 
         // Phase 3 bundle cache: published ZIPs are immutable and reference-counted while clients read them.
@@ -205,6 +208,9 @@ namespace ValheimAutoModSync
                 Registered.Remove(rpc);
                 ClientVersions.Remove(rpc);
                 ClientCapabilities.Remove(rpc);
+#if AMS_DEV_TESTS
+                DevelopmentLegacyServerPeers.Remove(rpc);
+#endif
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync released an interrupted bundle transfer after peer disconnect.");
             }
         }
@@ -431,6 +437,11 @@ namespace ValheimAutoModSync
                 try { clientCapabilities = pkg.ReadString(); } catch { clientCapabilities = ""; }
                 ClientVersions[rpc] = clientVersion ?? "";
                 ClientCapabilities[rpc] = clientCapabilities ?? "";
+#if AMS_DEV_TESTS
+                bool emulateLegacyServer = ArmDevelopmentLegacyServerPeer(rpc);
+#else
+                bool emulateLegacyServer = false;
+#endif
                 if (protocol != ProtocolVersion)
                 {
                     SendError(rpc, "AutoModSync protocol mismatch. Server=" + ProtocolVersion + " Client=" + protocol);
@@ -440,7 +451,9 @@ namespace ValheimAutoModSync
                 ZPackage ack = new ZPackage();
                 ack.Write(ProtocolVersion);
                 ack.Write(PluginVersion);
-                ack.Write("bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1");
+                ack.Write(emulateLegacyServer
+                    ? "bundle-window1;bundle-batch1;bundle-pipeline1"
+                    : "bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1");
                 rpc.Invoke(RpcAck, new object[] { ack });
 
                 EnsureManifest(false);
@@ -515,6 +528,9 @@ namespace ValheimAutoModSync
 
                 AutoModSyncResumeCandidate resumeCandidate = null;
                 bool resumeNegotiated = ClientSupportsCapability(rpc, "bundle-resume1");
+#if AMS_DEV_TESTS
+                if (DevelopmentLegacyServerPeers.Contains(rpc)) resumeNegotiated = false;
+#endif
                 if (resumeNegotiated)
                 {
                     int hasResume = 0;
@@ -1067,6 +1083,31 @@ namespace ValheimAutoModSync
                 SendError(rpc, "Server failed while transferring the compressed AutoModSync package batch: " + ex.Message);
             }
         }
+
+#if AMS_DEV_TESTS
+        // Intent: Consumes a one-shot server marker during AMS4_Hello and pins that peer to the pre-resume AMS4 wire shape for the life of the connection.
+        // Scope: the emulated server still supports roots1/batch/pipeline exactly as 2.5 did; only bundle-resume1 is withheld and no resume fields are parsed or emitted.
+        private static bool ArmDevelopmentLegacyServerPeer(ZRpc rpc)
+        {
+            if (rpc == null) return false;
+            if (DevelopmentLegacyServerPeers.Contains(rpc)) return true;
+
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "resume-test-emulate-legacy-server.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                DevelopmentLegacyServerPeers.Add(rpc);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST emulating a pre-resume AMS4 server for this peer.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV legacy-server marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+#endif
 
         // Intent: Reads a negotiated feature token from the capability string captured during AMS4_Hello.
         // Compatibility: capability additions are optional AMS4 extensions, so clients that do not advertise bundle-resume1 retain the original wire shape.
