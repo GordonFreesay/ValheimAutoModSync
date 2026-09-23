@@ -529,7 +529,11 @@ namespace ValheimAutoModSync
                 AutoModSyncResumeCandidate resumeCandidate = null;
                 bool resumeNegotiated = ClientSupportsCapability(rpc, "bundle-resume1");
 #if AMS_DEV_TESTS
-                if (DevelopmentLegacyServerPeers.Contains(rpc)) resumeNegotiated = false;
+                if (DevelopmentLegacyServerPeers.Contains(rpc))
+                {
+                    resumeNegotiated = false;
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: original AMS4 bundle request/header shape active.");
+                }
 #endif
                 if (resumeNegotiated)
                 {
