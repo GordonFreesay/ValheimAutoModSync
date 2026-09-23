@@ -362,16 +362,19 @@ namespace ValheimAutoModSync
             catch { }
         }
 
+        // Intent: Returns the fixed client partial-bundle path inside AutoModSync's private resume directory.
         internal static string GetPartialPath(string amsRoot)
         {
             return Path.Combine(GetResumeRoot(amsRoot), "bundle.partial");
         }
 
+        // Intent: Returns the fixed client resume-metadata path inside AutoModSync's private resume directory.
         internal static string GetMetadataPath(string amsRoot)
         {
             return Path.Combine(GetResumeRoot(amsRoot), "bundle.meta");
         }
 
+        // Intent: Resolves the helper-owned resume directory directly beneath the supplied AutoModSync root without accepting a caller-selected relative destination.
         private static string GetResumeRoot(string amsRoot)
         {
             if (String.IsNullOrEmpty(amsRoot)) throw new ArgumentException("AutoModSync root is required.");
@@ -395,6 +398,7 @@ namespace ValheimAutoModSync
             internal long UpdatedUtcTicks;
         }
 
+        // Intent: Strictly parses the versioned resume metadata and rejects inconsistent SHA identities, sizes, timestamps, or chunk geometry.
         private static bool TryReadMetadata(string amsRoot, out ResumeMetadata metadata, out string reason)
         {
             metadata = null;
@@ -444,6 +448,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Publishes resume metadata through a write-through temporary file so a crash cannot create a trusted half-written record.
         private static void WriteMetadataDurable(string amsRoot, ResumeMetadata metadata)
         {
             string resumeRoot = GetResumeRoot(amsRoot);
@@ -486,6 +491,7 @@ namespace ValheimAutoModSync
             File.Move(temp, path);
         }
 
+        // Intent: Validates the complete immutable-bundle identity and chunk geometry before resume state can be created or reopened.
         private static void ValidateIdentity(string serverFingerprint, string requestKey, string bundleSha256, long bundleSize, int chunkBytes, int totalChunks, int fileCount)
         {
             if (!IsSha256(serverFingerprint) || !IsSha256(requestKey) || !IsSha256(bundleSha256))
@@ -496,6 +502,7 @@ namespace ValheimAutoModSync
                 throw new InvalidDataException("AutoModSync resume bundle chunk geometry is inconsistent.");
         }
 
+        // Intent: Hashes exactly the requested prefix bytes and fails if the saved/artifact file ends before that resume boundary.
         private static string Sha256Prefix(string path, long bytes)
         {
             if (bytes <= 0) throw new InvalidDataException("AutoModSync resume prefix must contain bytes.");
@@ -517,11 +524,13 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Produces a deterministic SHA-256 identity for canonical resume request metadata.
         private static string Sha256Bytes(byte[] data)
         {
             using (SHA256 sha = SHA256.Create()) return ToHex(sha.ComputeHash(data ?? new byte[0]));
         }
 
+        // Intent: Accepts only fixed-length hexadecimal SHA-256 text before any resume identity comparison.
         private static bool IsSha256(string value)
         {
             if (String.IsNullOrEmpty(value) || value.Length != 64) return false;
@@ -537,6 +546,7 @@ namespace ValheimAutoModSync
             return true;
         }
 
+        // Intent: Compares fixed-length hexadecimal identities without early exit and without case sensitivity.
         private static bool ConstantEquals(string a, string b)
         {
             if (a == null || b == null || a.Length != b.Length) return false;
@@ -546,6 +556,7 @@ namespace ValheimAutoModSync
             return diff == 0;
         }
 
+        // Intent: Converts digest bytes to canonical lowercase hexadecimal for persisted/wire resume identities.
         private static string ToHex(byte[] bytes)
         {
             StringBuilder sb = new StringBuilder(bytes.Length * 2);
