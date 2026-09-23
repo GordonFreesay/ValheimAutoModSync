@@ -109,13 +109,13 @@ Additional development-only markers support the remaining adversarial gates: `ap
 
 ## Phase 4 — exact-artifact resumable transfer
 
-- [ ] `test-phase4-resume.ps1` compiles the production resume/path-safety sources and passes deterministic interruption emulation without touching the real Valheim/BepInEx install.
-- [ ] A partial whose last write ends inside a chunk is truncated to the prior complete chunk boundary before it is offered for resume.
-- [ ] The client offers resume only for the same trusted server fingerprint and exact signed requested file set; a different server/change set discards the bounded saved slot.
-- [ ] The server accepts a nonzero resume offset only when bundle SHA-256, size, chunk size/count, file count, and SHA-256 of the exact retained prefix all match the current immutable artifact.
-- [ ] A corrupt retained prefix is rejected and the transfer restarts from chunk zero; corrupt bytes are never appended into an accepted bundle.
-- [ ] If the server rebuilds/changes the ZIP or transfer chunk geometry, the old partial is rejected and transfer restarts safely from zero.
-- [ ] A fully received bundle whose completion RPC was lost can resume at `TotalChunks`, receive only bundle completion, and still pass the full bundle SHA-256 before extraction.
+- [x] `test-phase4-resume.ps1` compiles the production resume/path-safety sources and passes deterministic interruption emulation without touching the real Valheim/BepInEx install.
+- [x] A partial whose last write ends inside a chunk is truncated to the prior complete chunk boundary before it is offered for resume.
+- [ ] The client offers resume only for the same trusted server fingerprint and exact signed requested file set; the deterministic harness has passed wrong-change-set rejection, while a distinct-server-fingerprint fixture remains unobserved.
+- [x] The server accepts a nonzero resume offset only when bundle SHA-256, size, chunk size/count, file count, and SHA-256 of the exact retained prefix all match the current immutable artifact.
+- [x] A corrupt retained prefix is rejected and the transfer restarts from chunk zero; corrupt bytes are never appended into an accepted bundle.
+- [x] If the server rebuilds/changes the ZIP or transfer chunk geometry, the old partial is rejected and transfer restarts safely from zero.
+- [x] A fully received bundle whose completion RPC was lost can resume at `TotalChunks`, receive only bundle completion, and still pass the full bundle SHA-256 before extraction.
 - [ ] Recognized connection loss after at least one complete chunk closes/flushed the stream but preserves the single bounded resume slot instead of deleting it.
 - [ ] Server-side dead-peer cleanup restores temporary Steam transport settings and releases the old cache artifact reference after an interrupted transfer.
 - [ ] Development one-client interruption marker `BepInEx/AutoModSync/resume-test-disconnect-after-chunks.once` forces a real mid-download socket close; manual reconnect offers the retained prefix, the server logs exact-prefix verification/acceptance, and the client continues from a nonzero chunk.
@@ -123,6 +123,8 @@ Additional development-only markers support the remaining adversarial gates: `ap
 - [ ] Older AMS4 peers remain compatible: resume fields are sent/read only when both sides negotiate `bundle-resume1`; protocol stays AMS4 / 4.
 
 ## Runtime evidence — 2026-09-23
+
+- Phase 4 deterministic resume-state harness passed all 7/7 checks: non-boundary interrupted-write truncation to a complete chunk plus exact-byte resume; corrupt-prefix rejection; wrong-change-set rejection; changed-artifact and changed-chunk-geometry rejection; fully-downloaded/lost-completion resume at TotalChunks with exact full SHA-256; expired-state discard; and malformed/orphaned metadata rejection/cleanup. The harness compiled the production resume/path-safety sources and reported that no real Valheim installation or server files were modified. Distinct-server-fingerprint rejection and live ZRpc/Steam interruption/reconnect behavior remain separate runtime gates.
 
 - Phase 2 normal transaction retest on 2026-09-23 applied a real 60-file server payload. The helper logged `Transaction PREPARED` before the first `Applied 1/60` line, verified all 60 destinations, then logged `Transaction COMMITTED; complete new state verified.`, `Committed transaction cleanup complete.`, and `Apply state is clean; relaunching Valheim.`. PREPARED occurred about 0.20 s after helper start; COMMITTED followed about 1.32 s later and cleanup completed about 0.03 s after COMMIT. This passes the normal transactional apply path but does not yet prove rollback/recovery under forced interruption.
 - Because the real 60-file apply completes in roughly 1.5 seconds, manual process-kill timing is not reliable. `build-dev.bat` now compiles development-only one-shot fault-injection pauses so PREPARED partial-apply and post-COMMITTED cleanup interruption can be tested deterministically without shipping those hooks in release binaries.
