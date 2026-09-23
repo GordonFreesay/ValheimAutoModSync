@@ -80,6 +80,7 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `SOURCE-WALKTHROUGH.md` | Documents the transaction journal, PREPARED/COMMITTED recovery boundary, backup/staging lifetime, and restart behavior. |
 | `TESTING-2.6.md` | Adds normal, pre-commit interruption, post-commit cleanup interruption, rollback, journal-validation, and path-safety tests for Phase 2. |
 | `Thunderstore/CHANGELOG.md` | Records the 2.6 transactional apply/recovery behavior in the development changelog. |
+| `build-dev.bat` | Defines `AMS_DEV_TESTS` only for the development Apply helper, enabling one-shot PREPARED/COMMITTED interruption pauses used by the Phase 2 gate. Release builds do not define the symbol and therefore do not contain these fault-injection pauses. |
 | `IMPLEMENTATION-2.6.md` | Records the Phase 2 source/docs change set and keeps implementation status separate from runtime validation. |
 
 ### Phase 3 — cached/single-flight bundle construction
@@ -101,7 +102,7 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 
 - Phase 0 repository setup: **complete**
 - Phase 1 implementation: **complete in source; partial functional validation recorded**
-- Phase 2 implementation: **complete in source; runtime validation pending** — durable PREPARED/COMMITTED apply journaling, verified old-state backups, rollback/retry recovery, and client handoff of unfinished transactions are implemented but have not yet been exercised in a maintainer interruption test.
+- Phase 2 implementation: **complete in source; partial runtime validation** — a real 60-file normal transaction reached PREPARED before live writes, verified all 60 destinations, reached COMMITTED, cleaned up, and relaunched successfully. Deterministic development-only fault hooks are now available for the remaining pre-COMMIT rollback/retry and post-COMMIT cleanup-interruption tests.
 - Functional 2.6 validation: **partial** — a real 313.4 MiB fresh-client sync/apply/restart/reconnect and matching second preflight passed on commit `37a4125f270a417489e9d620326c4f92e808bc26`; adversarial, resource-limit, fallback, and concurrency cases remain pending.
 - Transfer performance validation: **in progress** — the 16/64/32 MiB follow-up successfully moved Steam's live send-rate telemetry from the prior 8 MiB/s floor to exactly 16 MiB/s and restored the original connection settings afterward. End-to-end client payload timing for this run is still needed before treating the higher settings as a proven wall-clock improvement.
 - Restart reconnect validation: **passed for the observed regression** — the patched client completed exactly one automatic character-start/reconnect sequence, then completed trusted AMS preflight and downstream mod synchronization without dispatching a second reconnect.
