@@ -489,6 +489,8 @@ internal static class Program
             try { rel = NormalizeRelative(Encoding.UTF8.GetString(Convert.FromBase64String(parts[6]))); }
             catch { throw new InvalidDataException("Invalid AutoModSync transaction path encoding."); }
             if (rel.Length == 0) throw new InvalidDataException("Unsafe AutoModSync transaction path.");
+            if (kind == 'C' && IsProtectedConfigName(Path.GetFileName(rel)))
+                throw new InvalidDataException("Refusing a protected BepInEx/AutoModSync config path in the transaction journal.");
 
             string key = kind + ":" + rel;
             if (!seen.Add(key)) throw new InvalidDataException("Duplicate AutoModSync transaction destination.");
