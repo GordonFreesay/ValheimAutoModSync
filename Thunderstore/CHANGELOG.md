@@ -10,6 +10,8 @@
 - Adds shared Windows path hardening for client/server/apply: reserved device names, trailing dot/space aliases, invalid/control characters, fixed-root containment, and reparse-point rejection.
 - Adds independent client compressed/expanded/per-file/file-count/chunk-count ceilings and streaming ZIP extraction bounds.
 - Adds server `MaxExpandedBundleMiB` and checks compressed output while constructing the bundle instead of waiting only for the finished ZIP.
+- Replaces destructive per-file apply with a durable transactional helper: old destinations are backed up before a `PREPARED` marker, the complete new set is verified before `COMMITTED`, pre-commit interruption rolls back/retries from retained staging, and post-commit interruption preserves the new set and only finishes cleanup.
+- Client startup no longer copies leftover staging into live plugin/config roots; unfinished pending/journal state is handed back to the out-of-process helper before AMS can attempt a server join.
 
 ## 2.5.0
 
