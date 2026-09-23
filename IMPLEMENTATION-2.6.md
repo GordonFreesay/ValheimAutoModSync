@@ -71,6 +71,17 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `build-dev.bat` | Development-only compiler for client/server/apply binaries; deliberately creates no installer, release ZIP, store package, tag, or publication artifact. |
 | `IMPLEMENTATION-2.6.md` | Records this Phase 1 change set and validation status. |
 
+### Phase 2 — transactional apply/recovery
+
+| File | 2.6 reason |
+| --- | --- |
+| `Source/ValheimAutoModSync.Apply.cs` | Replaces per-file destructive apply with a durable PREPARED/COMMITTED transaction journal. Before any live write it verifies staging, snapshots every existing destination, records originally-absent destinations, and flushes rollback metadata. New files are copied from staging without consuming staging, promoted through same-directory temporary files, and verified before COMMIT. Interrupted PREPARED transactions roll back the complete old set; interrupted COMMITTED transactions preserve the complete new set and finish cleanup. |
+| `Source/ValheimAutoModSync.Client.cs` | Publishes `pending.txt` through a write-through temporary file + same-volume rename and no longer copies leftover staging into live roots from inside a running Valheim process. Pending/journaled state is handed back to the helper and forces a recovery restart before AMS can join a server. |
+| `SOURCE-WALKTHROUGH.md` | Documents the transaction journal, PREPARED/COMMITTED recovery boundary, backup/staging lifetime, and restart behavior. |
+| `TESTING-2.6.md` | Adds normal, pre-commit interruption, post-commit cleanup interruption, rollback, journal-validation, and path-safety tests for Phase 2. |
+| `Thunderstore/CHANGELOG.md` | Records the 2.6 transactional apply/recovery behavior in the development changelog. |
+| `IMPLEMENTATION-2.6.md` | Records the Phase 2 source/docs change set and keeps implementation status separate from runtime validation. |
+
 ### Phase 3 — cached/single-flight bundle construction
 
 | File | 2.6 reason |
@@ -90,6 +101,7 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 
 - Phase 0 repository setup: **complete**
 - Phase 1 implementation: **complete in source; partial functional validation recorded**
+- Phase 2 implementation: **complete in source; runtime validation pending** — durable PREPARED/COMMITTED apply journaling, verified old-state backups, rollback/retry recovery, and client handoff of unfinished transactions are implemented but have not yet been exercised in a maintainer interruption test.
 - Functional 2.6 validation: **partial** — a real 313.4 MiB fresh-client sync/apply/restart/reconnect and matching second preflight passed on commit `37a4125f270a417489e9d620326c4f92e808bc26`; adversarial, resource-limit, fallback, and concurrency cases remain pending.
 - Transfer performance validation: **in progress** — the 16/64/32 MiB follow-up successfully moved Steam's live send-rate telemetry from the prior 8 MiB/s floor to exactly 16 MiB/s and restored the original connection settings afterward. End-to-end client payload timing for this run is still needed before treating the higher settings as a proven wall-clock improvement.
 - Restart reconnect validation: **passed for the observed regression** — the patched client completed exactly one automatic character-start/reconnect sequence, then completed trusted AMS preflight and downstream mod synchronization without dispatching a second reconnect.
