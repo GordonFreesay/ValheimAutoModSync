@@ -179,16 +179,32 @@ internal static class Program
             WriteMarkerDurable(Path.Combine(txRoot, PreparedMarkerName), "PREPARED");
             AppendApplyLog(amsRoot, "Transaction PREPARED; all old-state backups are durable.");
 
+#if AMS_DEV_TESTS
+            int devPauseAfterItems = ReadDevelopmentPauseAfterItems(amsRoot, items.Count);
+#else
+            int devPauseAfterItems = 0;
+#endif
+
             int i;
             for (i = 0; i < items.Count; i++)
             {
                 ApplyItem item = items[i];
                 ApplyOneItem(item, pluginRoot, patcherRoot, configRoot, stagingRoot);
                 AppendApplyLog(amsRoot, "Applied " + (i + 1).ToString() + "/" + items.Count.ToString() + ": " + item.Kind + ":" + item.RelativePath);
+
+#if AMS_DEV_TESTS
+                if (devPauseAfterItems > 0 && (i + 1) == devPauseAfterItems)
+                    DevelopmentFaultPause(amsRoot, "after " + devPauseAfterItems.ToString() + " applied file(s), before COMMITTED");
+#endif
             }
 
             WriteMarkerDurable(Path.Combine(txRoot, CommittedMarkerName), "COMMITTED");
             AppendApplyLog(amsRoot, "Transaction COMMITTED; complete new state verified.");
+
+#if AMS_DEV_TESTS
+            if (ConsumeDevelopmentMarker(amsRoot, "apply-test-pause-after-committed.once"))
+                DevelopmentFaultPause(amsRoot, "after COMMITTED, before cleanup");
+#endif
 
             FinalizeCommittedTransaction(txRoot, items, pluginRoot, patcherRoot, configRoot, stagingRoot, pending);
             AppendApplyLog(amsRoot, "Committed transaction cleanup complete.");
@@ -649,6 +665,50 @@ internal static class Program
         AutoModSyncPathSafety.EnsureNoReparsePoints(amsRoot, txRoot, true);
         if (Directory.Exists(txRoot)) Directory.Delete(txRoot, true);
     }
+
+#if AMS_DEV_TESTS
+    // Intent: Development-only deterministic fault injection for Phase 2 interruption testing.
+    // Usage: create apply-test-pause-after-items.once containing an integer item count. The marker is consumed once after PREPARED,
+    // then the helper pauses for two minutes immediately after that many live files have been verified. Killing the helper during
+    // this pause leaves an authentic PREPARED partial-apply state; the next helper run will not pause again because the marker was consumed.
+    private static int ReadDevelopmentPauseAfterItems(string amsRoot, int itemCount)
+    {
+        string marker = Path.Combine(amsRoot, "apply-test-pause-after-items.once");
+        if (!File.Exists(marker)) return 0;
+
+        string raw = "";
+        try { raw = File.ReadAllText(marker).Trim(); }
+        finally
+        {
+            try { File.Delete(marker); } catch { }
+        }
+
+        int count;
+        if (!Int32.TryParse(raw, out count) || count < 1 || count >= itemCount)
+            throw new InvalidDataException("Development apply pause count must be between 1 and one less than the pending item count.");
+
+        AppendApplyLog(amsRoot, "DEV TEST armed: pause after " + count.ToString() + " applied file(s) before COMMITTED.");
+        return count;
+    }
+
+    // Intent: Consumes a one-shot development marker before pausing so automatic recovery cannot accidentally re-enter the same fault point.
+    private static bool ConsumeDevelopmentMarker(string amsRoot, string name)
+    {
+        string marker = Path.Combine(amsRoot, name);
+        if (!File.Exists(marker)) return false;
+        try { File.Delete(marker); } catch { }
+        return true;
+    }
+
+    // Intent: Gives the maintainer a deterministic window to terminate the helper at an exact journal boundary.
+    // Safety: compiled only by build-dev.bat with AMS_DEV_TESTS; release builds do not contain this fault-injection path.
+    private static void DevelopmentFaultPause(string amsRoot, string milestone)
+    {
+        AppendApplyLog(amsRoot, "DEV TEST PAUSE " + milestone + ". Terminate ValheimAutoModSync.Apply.exe now; auto-resume in 120 seconds if left running.");
+        Thread.Sleep(120000);
+        AppendApplyLog(amsRoot, "DEV TEST PAUSE expired without termination; continuing.");
+    }
+#endif
 
     // Intent: Appends human-readable transaction milestones for interruption testing and postmortem support without changing the authoritative journal.
     private static void AppendApplyLog(string amsRoot, string message)
