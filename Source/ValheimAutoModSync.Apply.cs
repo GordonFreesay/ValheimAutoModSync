@@ -252,6 +252,11 @@ internal static class Program
 
         DeleteTransactionDirectory(amsRoot, txRoot);
         AppendApplyLog(amsRoot, "Rollback complete; staged new files remain available for a clean retry.");
+
+#if AMS_DEV_TESTS
+        if (ConsumeDevelopmentMarker(amsRoot, "apply-test-pause-after-rollback.once"))
+            DevelopmentFaultPause(amsRoot, "after rollback, before retry");
+#endif
     }
 
     // Intent: Builds durable old-state backups and a self-contained manifest before any destination is changed.
@@ -692,6 +697,7 @@ internal static class Program
     }
 
     // Intent: Consumes a one-shot development marker before pausing so automatic recovery cannot accidentally re-enter the same fault point.
+    // Supported markers include apply-test-pause-after-rollback.once and apply-test-pause-after-committed.once.
     private static bool ConsumeDevelopmentMarker(string amsRoot, string name)
     {
         string marker = Path.Combine(amsRoot, name);
