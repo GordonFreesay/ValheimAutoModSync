@@ -159,10 +159,19 @@ namespace ValheimAutoModSync
                 Assert(reason.IndexOf("prefix SHA-256", StringComparison.OrdinalIgnoreCase) >= 0, "corrupt prefix rejection reason was unexpected: " + reason);
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[3/7] Different server/change-set metadata cannot reuse the saved partial...");
+                Console.WriteLine("[3/7] Different trusted server or change-set metadata cannot reuse the saved partial...");
                 string otherRequest = ShaText("different-change-set");
                 Assert(!AutoModSyncResumeState.TryPrepareClientCandidate(amsRoot, fingerprint, otherRequest, 86400, out candidate, out reason), "different request key reused the saved partial");
-                Assert(!File.Exists(AutoModSyncResumeState.GetPartialPath(amsRoot)), "mismatched candidate was not discarded");
+                Assert(!File.Exists(AutoModSyncResumeState.GetPartialPath(amsRoot)), "wrong-change-set candidate was not discarded");
+
+                using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
+                {
+                    CopyPrefix(artifact, output, (long)8 * chunkBytes, false);
+                    output.Flush(true);
+                }
+                string otherFingerprint = ShaText("different-trusted-server");
+                Assert(!AutoModSyncResumeState.TryPrepareClientCandidate(amsRoot, otherFingerprint, requestKey, 86400, out candidate, out reason), "different trusted server fingerprint reused the saved partial");
+                Assert(!File.Exists(AutoModSyncResumeState.GetPartialPath(amsRoot)), "wrong-server candidate was not discarded");
                 Console.WriteLine("  PASS");
 
                 Console.WriteLine("[4/7] Changed artifact or chunk geometry cannot reuse the old prefix...");
