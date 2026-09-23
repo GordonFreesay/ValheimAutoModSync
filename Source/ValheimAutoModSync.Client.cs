@@ -989,7 +989,7 @@ namespace ValheimAutoModSync
                     accepted.NextChunk = resumeStartChunk;
                     accepted.PrefixSha256 = _resumeOfferedCandidate.PrefixSha256;
 
-                    string resumeReason;
+                    string resumeReason = "";
                     if (_resumeOfferedCandidate.NextChunk == resumeStartChunk
                         && AutoModSyncResumeState.TryOpenAcceptedClientPartial(
                             amsRoot,
@@ -1506,6 +1506,7 @@ namespace ValheimAutoModSync
             _serverSupportsBundleWindow = false;
             _serverSupportsBundleBatch = false;
             _serverSupportsBundlePipeline = false;
+            _serverSupportsBundleResume = false;
             _preflightGateActive = true;
             _serverHandshakeHeld = false;
             _heldServerHandshakeParameters = new object[0];
@@ -1619,6 +1620,8 @@ namespace ValheimAutoModSync
             _serverAcknowledged = false;
             _serverSupportsBundleWindow = false;
             _serverSupportsBundleBatch = false;
+            _serverSupportsBundlePipeline = false;
+            _serverSupportsBundleResume = false;
             _pendingRpc = null;
             if (!_restartRequested) HideSyncOverlay();
             ResetManifestState();
