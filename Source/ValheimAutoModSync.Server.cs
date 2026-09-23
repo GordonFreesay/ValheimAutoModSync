@@ -76,6 +76,7 @@ namespace ValheimAutoModSync
         private static readonly Dictionary<ZRpc, string> ClientVersions = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, string> ClientCapabilities = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, BundleTransfer> BundleTransfers = new Dictionary<ZRpc, BundleTransfer>();
+        private static DateTime _nextTransferCleanupUtc = DateTime.MinValue;
 
         // Phase 3 bundle cache: published ZIPs are immutable and reference-counted while clients read them.
         // BundleBuilds serializes only identical cache keys so simultaneous fresh clients share one build instead of recompressing the same bytes.
@@ -176,6 +177,35 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 Logger.LogError("AutoModSync startup failed: " + ex);
+            }
+        }
+
+        // Intent: Releases bundle/cache/Steam-transport state for peers whose socket disappeared mid-transfer.
+        // Resume safety: the client owns its partial bytes; the server retains only immutable cache artifacts, so dropping a dead transfer reference cannot invalidate a later exact-artifact resume attempt.
+        private void Update()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (_nextTransferCleanupUtc != DateTime.MinValue && now < _nextTransferCleanupUtc) return;
+            _nextTransferCleanupUtc = now.AddSeconds(1.0);
+
+            if (BundleTransfers.Count == 0) return;
+            List<ZRpc> dead = new List<ZRpc>();
+            foreach (KeyValuePair<ZRpc, BundleTransfer> pair in BundleTransfers)
+            {
+                bool connected = false;
+                try { connected = pair.Key != null && pair.Key.IsConnected(); } catch { connected = false; }
+                if (!connected) dead.Add(pair.Key);
+            }
+
+            int i;
+            for (i = 0; i < dead.Count; i++)
+            {
+                ZRpc rpc = dead[i];
+                CleanupBundle(rpc);
+                Registered.Remove(rpc);
+                ClientVersions.Remove(rpc);
+                ClientCapabilities.Remove(rpc);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync released an interrupted bundle transfer after peer disconnect.");
             }
         }
 
