@@ -70,6 +70,19 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 - [ ] Server aborts bundle construction once compressed output crosses `MaxBundleMiB`.
 - [ ] Failed bundle construction removes its unpublished temporary ZIP.
 
+## Phase 2 — transactional apply/recovery
+
+- [ ] Normal verified apply creates a transaction journal, reaches `PREPARED` before the first live write, reaches `COMMITTED` only after every destination verifies, removes `pending.txt`/staging/journal during cleanup, then relaunches/reconnects normally.
+- [ ] Existing destination files are durably backed up under `BepInEx/AutoModSync/apply-transaction/backup` before any synchronized live file changes.
+- [ ] Files that did not exist before the transaction are represented as originally absent and are deleted during rollback if a partial apply created them.
+- [ ] Killing the apply helper after `PREPARED` but before `COMMITTED` leaves the journal/backups/pending staging intact; the next launch does not join a server, hands recovery back to the helper, rolls back the complete old set, then retries the complete new set.
+- [ ] Killing the apply helper after `COMMITTED` but before cleanup never rolls back to old content; the next helper invocation preserves the complete new set and finishes cleanup.
+- [ ] A caught per-file apply failure after `PREPARED` rolls every previously touched destination back to its verified old backup before the helper exits with failure.
+- [ ] Transaction recovery rejects a malformed/version-mismatched journal rather than guessing destinations.
+- [ ] Transaction recovery rechecks fixed-root/reparse protections and still refuses protected config names (`BepInEx.cfg`, `ValheimAutoModSync.private.xml`, `ValheimAutoModSync.public.xml`).
+- [ ] `apply.log` records PREPARED/COMMITTED/rollback milestones sufficient to establish which recovery side won in an interruption test.
+- [ ] An interrupted transaction is never treated as a successful AMS state: the client detects `pending.txt` or `apply-transaction`, starts the external helper, and exits/restarts before attempting a server join.
+
 ## Phase 3 — cached/single-flight bundle construction
 
 - [ ] Dedicated-server startup with `PrebuildFreshClientBundle=true` constructs the nearly-bare-client baseline before normal joins, logs one prewarm MISS/build timing, and retains it for the first real client even if ordinary `BundleCacheSeconds` elapses.
