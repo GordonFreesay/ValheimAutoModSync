@@ -180,9 +180,13 @@ internal static class Program
             AppendApplyLog(amsRoot, "Transaction PREPARED; all old-state backups are durable.");
 
 #if AMS_DEV_TESTS
-            int devPauseAfterItems = ReadDevelopmentPauseAfterItems(amsRoot, items.Count);
+            int devPauseAfterItems = ReadDevelopmentItemCountMarker(amsRoot, "apply-test-pause-after-items.once", items.Count, "pause");
+            int devFailAfterItems = ReadDevelopmentItemCountMarker(amsRoot, "apply-test-fail-after-items.once", items.Count, "failure");
+            if (ConsumeDevelopmentMarker(amsRoot, "apply-test-pause-after-prepared.once"))
+                DevelopmentFaultPause(amsRoot, "after PREPARED, before first live write");
 #else
             int devPauseAfterItems = 0;
+            int devFailAfterItems = 0;
 #endif
 
             int i;
@@ -193,6 +197,12 @@ internal static class Program
                 AppendApplyLog(amsRoot, "Applied " + (i + 1).ToString() + "/" + items.Count.ToString() + ": " + item.Kind + ":" + item.RelativePath);
 
 #if AMS_DEV_TESTS
+                if (devFailAfterItems > 0 && (i + 1) == devFailAfterItems)
+                {
+                    AppendApplyLog(amsRoot, "DEV TEST injected caught apply failure after " + devFailAfterItems.ToString() + " applied file(s).");
+                    throw new IOException("DEV TEST injected caught apply failure after " + devFailAfterItems.ToString() + " applied file(s).");
+                }
+
                 if (devPauseAfterItems > 0 && (i + 1) == devPauseAfterItems)
                     DevelopmentFaultPause(amsRoot, "after " + devPauseAfterItems.ToString() + " applied file(s), before COMMITTED");
 #endif
@@ -672,13 +682,11 @@ internal static class Program
     }
 
 #if AMS_DEV_TESTS
-    // Intent: Development-only deterministic fault injection for Phase 2 interruption testing.
-    // Usage: create apply-test-pause-after-items.once containing an integer item count. The marker is consumed once after PREPARED,
-    // then the helper pauses for two minutes immediately after that many live files have been verified. Killing the helper during
-    // this pause leaves an authentic PREPARED partial-apply state; the next helper run will not pause again because the marker was consumed.
-    private static int ReadDevelopmentPauseAfterItems(string amsRoot, int itemCount)
+    // Intent: Development-only deterministic fault injection for Phase 2 interruption and caught-failure testing.
+    // Safety: marker files are consumed before the fault point so a recovery run cannot accidentally repeat the same injected condition.
+    private static int ReadDevelopmentItemCountMarker(string amsRoot, string name, int itemCount, string purpose)
     {
-        string marker = Path.Combine(amsRoot, "apply-test-pause-after-items.once");
+        string marker = Path.Combine(amsRoot, name);
         if (!File.Exists(marker)) return 0;
 
         string raw = "";
@@ -689,15 +697,16 @@ internal static class Program
         }
 
         int count;
-        if (!Int32.TryParse(raw, out count) || count < 1 || count >= itemCount)
-            throw new InvalidDataException("Development apply pause count must be between 1 and one less than the pending item count.");
+        if (!Int32.TryParse(raw, out count) || count < 1 || count > itemCount)
+            throw new InvalidDataException("Development apply " + purpose + " count must be between 1 and the pending item count.");
 
-        AppendApplyLog(amsRoot, "DEV TEST armed: pause after " + count.ToString() + " applied file(s) before COMMITTED.");
+        AppendApplyLog(amsRoot, "DEV TEST armed: " + purpose + " after " + count.ToString() + " applied file(s).");
         return count;
     }
 
     // Intent: Consumes a one-shot development marker before pausing so automatic recovery cannot accidentally re-enter the same fault point.
-    // Supported markers include apply-test-pause-after-rollback.once and apply-test-pause-after-committed.once.
+    // Supported markers include apply-test-pause-after-prepared.once, apply-test-pause-after-rollback.once,
+    // and apply-test-pause-after-committed.once.
     private static bool ConsumeDevelopmentMarker(string amsRoot, string name)
     {
         string marker = Path.Combine(amsRoot, name);
