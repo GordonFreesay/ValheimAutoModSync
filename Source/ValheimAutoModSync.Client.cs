@@ -534,6 +534,9 @@ namespace ValheimAutoModSync
                 _serverSupportsBundlePipeline = false;
                 _serverSupportsBundleResume = false;
                 _preflightGateActive = false;
+#if AMS_DEV_TESTS
+                _devEmulateLegacyClient = ConsumeDevelopmentLegacyClientMarker();
+#endif
                 _helloSentUtc = DateTime.UtcNow;
                 ResetManifestState();
 
