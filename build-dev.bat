@@ -98,7 +98,8 @@ if exist "%ASSEMBLY_UTILS%" >>"%REFS%" echo /reference:"%ASSEMBLY_UTILS%"
 
 echo.
 echo Compiling AutoModSync 2.6 development runtime only...
-rem AMS_DEV_TESTS enables only local development fault injection: client transfer interruption plus Apply transaction boundary tests.
+rem AMS_DEV_TESTS enables only local development validation hooks: client transfer interruption,
+rem client/server pre-resume AMS4 compatibility emulation, and Apply transaction boundary tests.
 rem The release builder never defines this symbol, so public binaries do not contain these test-only paths.
 "%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Client.dll" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs"
 if errorlevel 1 exit /b 1
