@@ -1012,6 +1012,9 @@ namespace ValheimAutoModSync
 
                 if (!resumed)
                 {
+                    if (_serverSupportsBundleResume && _resumeOfferedCandidate != null && resumeStartChunk == 0 && _instance != null)
+                        _instance.Logger.LogInfo("AutoModSync server declined the saved resume candidate; restarting this bundle from chunk 0.");
+
                     if (_serverSupportsBundleResume)
                     {
                         stream = AutoModSyncResumeState.CreateFreshClientPartial(
