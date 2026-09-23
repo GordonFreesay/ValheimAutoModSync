@@ -111,7 +111,7 @@ Additional development-only markers support the remaining adversarial gates: `ap
 
 - [x] `test-phase4-resume.ps1` compiles the production resume/path-safety sources and passes deterministic interruption emulation without touching the real Valheim/BepInEx install.
 - [x] A partial whose last write ends inside a chunk is truncated to the prior complete chunk boundary before it is offered for resume.
-- [ ] The client offers resume only for the same trusted server fingerprint and exact signed requested file set; the deterministic harness has passed wrong-change-set rejection, while a distinct-server-fingerprint fixture remains unobserved.
+- [ ] The client offers resume only for the same trusted server fingerprint and exact signed requested file set; the deterministic harness now includes both wrong-change-set and distinct-server-fingerprint rejection and must be rerun before this gate is marked passed.
 - [x] The server accepts a nonzero resume offset only when bundle SHA-256, size, chunk size/count, file count, and SHA-256 of the exact retained prefix all match the current immutable artifact.
 - [x] A corrupt retained prefix is rejected and the transfer restarts from chunk zero; corrupt bytes are never appended into an accepted bundle.
 - [x] If the server rebuilds/changes the ZIP or transfer chunk geometry, the old partial is rejected and transfer restarts safely from zero.
@@ -121,6 +121,8 @@ Additional development-only markers support the remaining adversarial gates: `ap
 - [x] Development one-client interruption marker `BepInEx/AutoModSync/resume-test-disconnect-after-chunks.once` forces a real mid-download socket close; manual reconnect offers the retained prefix, the server logs exact-prefix verification/acceptance, and the client continues from a nonzero chunk.
 - [x] After resumed completion the full ZIP SHA-256, ZIP extraction checks, transactional apply, restart, and normal reconnect still pass exactly as for a fresh transfer.
 - [ ] Older AMS4 peers remain compatible: resume fields are sent/read only when both sides negotiate `bundle-resume1`; protocol stays AMS4 / 4.
+
+Development-only compatibility emulation is available without a second tester. Create client marker `BepInEx/AutoModSync/resume-test-emulate-legacy-client.once` before a one-file delta join to make that connection behave like a pre-resume AMS4/2.5 client: it advertises `roots1` but not `bundle-resume1` and ignores a server resume advertisement. Create server marker `BepInEx/AutoModSync/resume-test-emulate-legacy-server.once` before a separate one-file delta join to make that peer behave like a pre-resume AMS4 server: the acknowledgement omits `bundle-resume1` and the server neither reads nor writes resume extension fields. Both markers are compiled only under `AMS_DEV_TESTS`; release binaries do not contain these emulators.
 
 ## Runtime evidence — 2026-09-23
 
