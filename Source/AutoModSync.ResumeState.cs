@@ -64,7 +64,18 @@ namespace ValheimAutoModSync
             try
             {
                 ResumeMetadata metadata;
-                if (!TryReadMetadata(amsRoot, out metadata, out reason)) return false;
+                if (!TryReadMetadata(amsRoot, out metadata, out reason))
+                {
+                    // Invalid/orphaned resume state is never useful on a later attempt. Discard is reparse-safe and
+                    // deliberately leaves an unsafe local junction/symlink untouched rather than following it.
+                    try
+                    {
+                        if (File.Exists(GetMetadataPath(amsRoot)) || File.Exists(GetPartialPath(amsRoot)))
+                            Discard(amsRoot);
+                    }
+                    catch { }
+                    return false;
+                }
                 if (!ConstantEquals(metadata.ServerFingerprint, serverFingerprint) || !ConstantEquals(metadata.RequestKey, requestKey))
                 {
                     reason = "saved partial belongs to a different trusted server or signed change set";
