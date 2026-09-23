@@ -98,10 +98,10 @@ if exist "%ASSEMBLY_UTILS%" >>"%REFS%" echo /reference:"%ASSEMBLY_UTILS%"
 
 echo.
 echo Compiling AutoModSync 2.6 development runtime only...
-"%CSC%" @"%REFS%" /target:library /out:"%OUT%\ValheimAutoModSync.Client.dll" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.PathSafety.cs"
+"%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Client.dll" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs"
 if errorlevel 1 exit /b 1
 
-"%CSC%" @"%REFS%" /target:library /out:"%OUT%\ValheimAutoModSync.Server.dll" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.PathSafety.cs"
+"%CSC%" @"%REFS%" /target:library /out:"%OUT%\ValheimAutoModSync.Server.dll" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs"
 if errorlevel 1 exit /b 1
 
 rem AMS_DEV_TESTS enables local-only deterministic apply interruption markers used by TESTING-2.6.md.
