@@ -95,6 +95,21 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `TESTING-2.6.md` | Adds the Phase 3 runtime gate for cache hit/miss, overlapping identical clients, invalidation, TTL/budget eviction, failed-build cleanup, and restart orphan handling. |
 | `IMPLEMENTATION-2.6.md` | Records this Phase 3 implementation and keeps its validation status distinct from implementation status. |
 
+### Phase 4 — exact-artifact resumable transfer
+
+| File | 2.6 reason |
+| --- | --- |
+| `Source/AutoModSync.ResumeState.cs` | Adds shared versioned resume-state and exact-prefix verification. The client keeps one bounded partial ZIP slot tied to trusted server fingerprint, exact signed request key, bundle SHA/size, chunk geometry, and file count; the server independently hashes the claimed retained prefix before accepting any nonzero offset. |
+| `Source/ValheimAutoModSync.Client.cs` | Advertises optional `bundle-resume1`, persists only complete-chunk bundle prefixes across recognized connection loss, offers prefix metadata on reconnect, reopens only a server-verified exact prefix, and otherwise restarts from zero. Development builds add a one-shot deterministic socket-close marker for single-client runtime interruption testing. |
+| `Source/ValheimAutoModSync.Server.cs` | Advertises `bundle-resume1`, parses resume offers only for clients that negotiated it, verifies exact artifact identity plus prefix SHA-256 before returning a nonzero start chunk, and releases cache/Steam transport state for dead mid-transfer peers. |
+| `build-dev.bat` | Compiles the shared resume source into client/server and defines `AMS_DEV_TESTS` for the client so the one-shot transfer-interruption emulator is development-only. |
+| `build-release.bat` | Compiles the shared resume source into production client/server without any development fault-injection symbol. No release build has been authorized or run. |
+| `test-phase4-resume.ps1` | Compiles the production resume/path-safety sources into an isolated temporary harness and emulates interrupted, truncated, corrupt, mismatched, and complete bundle-prefix cases without touching the real Valheim installation. |
+| `SOURCE-WALKTHROUGH.md` | Documents the optional AMS4 resume capability, exact-prefix trust boundary, bounded client state, and safe fallback-to-zero behavior. |
+| `TESTING-2.6.md` | Adds deterministic helper and one-client real-socket interruption gates for Phase 4. |
+| `Thunderstore/CHANGELOG.md` | Records Phase 4 development behavior without publishing a release. |
+| `IMPLEMENTATION-2.6.md` | Records the Phase 4 source/docs change set and keeps implementation separate from observed validation. |
+
 ### Later phases
 
 Add each 2.6-modified file here in the same phase that introduces the change, with a concise audit reason.
@@ -104,6 +119,7 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Phase 0 repository setup: **complete**
 - Phase 1 implementation: **complete in source; partial functional validation recorded**
 - Phase 2 implementation and validation: **complete** — normal transactional apply, PREPARED interruption rollback/retry for originally-absent and pre-existing destinations, COMMITTED cleanup recovery, caught per-file failure rollback, malformed/version-mismatched journal rejection, fixed-root/protected-config rejection, and recovery reparse-point rejection have all passed observed validation. The isolated adversarial harness reported all four remaining error-path groups PASS without touching the real Valheim installation or server.
+- Phase 4 implementation: **complete in source; validation pending** — resume is an optional AMS4 capability extension rather than a protocol-version break. Client state is bound to trusted fingerprint + exact signed request + immutable bundle identity; the server verifies the exact retained prefix hash before accepting a nonzero chunk; corrupt/mismatched state restarts from zero; and dead server transfer references are cleaned up. Deterministic helper and one-client real-socket interruption tests remain to be run.
 - Functional 2.6 validation: **partial** — a real 313.4 MiB fresh-client sync/apply/restart/reconnect and matching second preflight passed on commit `37a4125f270a417489e9d620326c4f92e808bc26`; adversarial, resource-limit, fallback, and concurrency cases remain pending.
 - Transfer performance validation: **in progress** — the 16/64/32 MiB follow-up successfully moved Steam's live send-rate telemetry from the prior 8 MiB/s floor to exactly 16 MiB/s and restored the original connection settings afterward. End-to-end client payload timing for this run is still needed before treating the higher settings as a proven wall-clock improvement.
 - Restart reconnect validation: **passed for the observed regression** — the patched client completed exactly one automatic character-start/reconnect sequence, then completed trusted AMS preflight and downstream mod synchronization without dispatching a second reconnect.
