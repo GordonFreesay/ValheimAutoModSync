@@ -534,6 +534,10 @@ namespace ValheimAutoModSync
                     resumeNegotiated = false;
                     if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: original AMS4 bundle request/header shape active.");
                 }
+                else if (!resumeNegotiated && _instance != null)
+                {
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-client compatibility observed: peer omitted bundle-resume1; original AMS4 bundle request/header shape active.");
+                }
 #endif
                 if (resumeNegotiated)
                 {
