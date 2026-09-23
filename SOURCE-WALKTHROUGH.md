@@ -100,7 +100,7 @@ The transaction lives under `BepInEx/AutoModSync/apply-transaction`. Its version
 
 The client no longer performs leftover staging copies from inside a running Valheim process. If startup sees `pending.txt` or `apply-transaction`, it starts the external helper and exits/restarts before attempting any AMS server join.
 
-For maintainer validation, `build-dev.bat` alone defines `AMS_DEV_TESTS` for the Apply helper. That development binary recognizes one-shot local pause markers after a chosen number of applied files, after rollback, or after COMMITTED, allowing deterministic process termination and old-state inspection at the exact recovery boundaries. The public/release build path does not define this symbol, so those pause hooks are not part of release binaries.
+For maintainer validation, `build-dev.bat` alone defines `AMS_DEV_TESTS` for the Apply helper. That development binary recognizes one-shot local pause markers after PREPARED/before the first live write, after a chosen number of applied files, after rollback, or after COMMITTED, plus a caught-failure marker after a chosen number of applied files. This allows deterministic process termination, rollback inspection, and synchronous error-path testing at exact transaction boundaries. `test-phase2-adversarial.ps1` drives the remaining journal/path-safety cases against an isolated temporary BepInEx tree. The public/release build path does not define this symbol, so none of these fault-injection hooks are part of release binaries.
 
 This helper does not discover mods, fetch network content, decide server trust, or bypass validation.
 
