@@ -80,7 +80,7 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `SOURCE-WALKTHROUGH.md` | Documents the transaction journal, PREPARED/COMMITTED recovery boundary, backup/staging lifetime, and restart behavior. |
 | `TESTING-2.6.md` | Adds normal, pre-commit interruption, post-commit cleanup interruption, rollback, journal-validation, and path-safety tests for Phase 2. |
 | `Thunderstore/CHANGELOG.md` | Records the 2.6 transactional apply/recovery behavior in the development changelog. |
-| `build-dev.bat` | Defines `AMS_DEV_TESTS` only for the development Apply helper, enabling one-shot PREPARED/COMMITTED interruption pauses used by the Phase 2 gate. Release builds do not define the symbol and therefore do not contain these fault-injection pauses. |
+| `build-dev.bat` | Defines `AMS_DEV_TESTS` only for the development Apply helper, enabling one-shot pre-COMMIT, post-rollback inspection, and post-COMMIT interruption pauses used by the Phase 2 gate. Release builds do not define the symbol and therefore do not contain these fault-injection pauses. |
 | `IMPLEMENTATION-2.6.md` | Records the Phase 2 source/docs change set and keeps implementation status separate from runtime validation. |
 
 ### Phase 3 — cached/single-flight bundle construction
