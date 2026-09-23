@@ -123,7 +123,7 @@ namespace ValheimAutoModSync
 
             try
             {
-                Console.WriteLine("[1/4] Interrupted non-boundary write truncates to a complete chunk and resumes exact bytes...");
+                Console.WriteLine("[1/6] Interrupted non-boundary write truncates to a complete chunk and resumes exact bytes...");
                 string partial;
                 using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
                 {
@@ -147,7 +147,7 @@ namespace ValheimAutoModSync
                 Assert(ShaFile(reopened) == bundleSha, "resumed file did not equal the exact artifact SHA-256");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[2/4] Corrupt saved prefix is rejected by server-side prefix verification...");
+                Console.WriteLine("[2/6] Corrupt saved prefix is rejected by server-side prefix verification...");
                 AutoModSyncResumeState.Discard(amsRoot);
                 using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
                 {
@@ -159,13 +159,34 @@ namespace ValheimAutoModSync
                 Assert(reason.IndexOf("prefix SHA-256", StringComparison.OrdinalIgnoreCase) >= 0, "corrupt prefix rejection reason was unexpected: " + reason);
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[3/4] Different server/change-set metadata cannot reuse the saved partial...");
+                Console.WriteLine("[3/6] Different server/change-set metadata cannot reuse the saved partial...");
                 string otherRequest = ShaText("different-change-set");
                 Assert(!AutoModSyncResumeState.TryPrepareClientCandidate(amsRoot, fingerprint, otherRequest, 86400, out candidate, out reason), "different request key reused the saved partial");
                 Assert(!File.Exists(AutoModSyncResumeState.GetPartialPath(amsRoot)), "mismatched candidate was not discarded");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[4/4] Fully downloaded artifact can resume at TotalChunks and still requires exact full SHA...");
+                Console.WriteLine("[4/6] Changed artifact or chunk geometry cannot reuse the old prefix...");
+                AutoModSyncResumeState.Discard(amsRoot);
+                using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
+                {
+                    CopyPrefix(artifact, output, (long)20 * chunkBytes, false);
+                    output.Flush(true);
+                }
+                Assert(AutoModSyncResumeState.TryPrepareClientCandidate(amsRoot, fingerprint, requestKey, 86400, out candidate, out reason), "candidate for artifact mismatch test was not prepared: " + reason);
+
+                string changedArtifact = Path.Combine(sandbox, "artifact-changed.bin");
+                byte[] changed = (byte[])data.Clone();
+                changed[changed.Length / 2] ^= 0x7F;
+                File.WriteAllBytes(changedArtifact, changed);
+                string changedSha = ShaFile(changedArtifact);
+                Assert(!AutoModSyncResumeState.TryAcceptServerCandidate(changedArtifact, changedSha, changed.LongLength, chunkBytes, totalChunks, fileCount, candidate, out resumeBytes, out reason), "changed immutable artifact accepted an old resume candidate");
+
+                int differentChunkBytes = chunkBytes + 1024;
+                int differentTotalChunks = (int)((data.LongLength + differentChunkBytes - 1L) / differentChunkBytes);
+                Assert(!AutoModSyncResumeState.TryAcceptServerCandidate(artifact, bundleSha, data.LongLength, differentChunkBytes, differentTotalChunks, fileCount, candidate, out resumeBytes, out reason), "changed chunk geometry accepted an old resume candidate");
+                Console.WriteLine("  PASS");
+
+                Console.WriteLine("[5/6] Fully downloaded artifact can resume at TotalChunks and still requires exact full SHA...");
                 using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
                 {
                     CopyPrefix(artifact, output, data.LongLength, false);
@@ -176,6 +197,18 @@ namespace ValheimAutoModSync
                 Assert(AutoModSyncResumeState.TryAcceptServerCandidate(artifact, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, candidate, out resumeBytes, out reason), "server rejected complete exact artifact: " + reason);
                 Assert(resumeBytes == data.LongLength, "complete resume byte count mismatch");
                 Assert(ShaFile(partial) == bundleSha, "complete saved artifact failed full SHA-256");
+                Console.WriteLine("  PASS");
+
+                Console.WriteLine("[6/6] Expired saved resume state is discarded instead of reused...");
+                AutoModSyncResumeState.Discard(amsRoot);
+                using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
+                {
+                    CopyPrefix(artifact, output, (long)3 * chunkBytes, false);
+                    output.Flush(true);
+                }
+                System.Threading.Thread.Sleep(1100);
+                Assert(!AutoModSyncResumeState.TryPrepareClientCandidate(amsRoot, fingerprint, requestKey, 0, out candidate, out reason), "expired candidate was reused");
+                Assert(!File.Exists(AutoModSyncResumeState.GetPartialPath(amsRoot)), "expired partial was not discarded");
                 Console.WriteLine("  PASS");
 
                 AutoModSyncResumeState.Discard(amsRoot);
