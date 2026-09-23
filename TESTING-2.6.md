@@ -72,7 +72,7 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 
 ## Phase 2 — transactional apply/recovery
 
-- [ ] Normal verified apply creates a transaction journal, reaches `PREPARED` before the first live write, reaches `COMMITTED` only after every destination verifies, removes `pending.txt`/staging/journal during cleanup, then relaunches/reconnects normally.
+- [x] Normal verified apply creates a transaction journal, reaches `PREPARED` before the first live write, reaches `COMMITTED` only after every destination verifies, removes `pending.txt`/staging/journal during cleanup, then relaunches/reconnects normally.
 - [ ] Existing destination files are durably backed up under `BepInEx/AutoModSync/apply-transaction/backup` before any synchronized live file changes.
 - [ ] Files that did not exist before the transaction are represented as originally absent and are deleted during rollback if a partial apply created them.
 - [ ] Killing the apply helper after `PREPARED` but before `COMMITTED` leaves the journal/backups/pending staging intact; the next launch does not join a server, hands recovery back to the helper, rolls back the complete old set, then retries the complete new set.
@@ -80,8 +80,10 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 - [ ] A caught per-file apply failure after `PREPARED` rolls every previously touched destination back to its verified old backup before the helper exits with failure.
 - [ ] Transaction recovery rejects a malformed/version-mismatched journal rather than guessing destinations.
 - [ ] Transaction recovery rechecks fixed-root/reparse protections and still refuses protected config names (`BepInEx.cfg`, `ValheimAutoModSync.private.xml`, `ValheimAutoModSync.public.xml`).
-- [ ] `apply.log` records PREPARED/COMMITTED/rollback milestones sufficient to establish which recovery side won in an interruption test.
+- [x] `apply.log` records PREPARED/COMMITTED milestones sufficient to establish the winning side for a normal transaction; rollback milestones remain to be exercised by interruption testing.
 - [ ] An interrupted transaction is never treated as a successful AMS state: the client detects `pending.txt` or `apply-transaction`, starts the external helper, and exits/restarts before attempting a server join.
+
+Development-only deterministic interruption hooks are compiled into `ValheimAutoModSync.Apply.exe` only by `build-dev.bat` (symbol `AMS_DEV_TESTS`). They are absent from release builds. To pause after a real partial apply, create `BepInEx/AutoModSync/apply-test-pause-after-items.once` containing an integer from 1 to one less than the pending file count. The helper consumes the marker after PREPARED, applies that many files, logs `DEV TEST PAUSE ... before COMMITTED`, and sleeps for 120 seconds so the process can be terminated. To pause after COMMITTED but before cleanup, create `apply-test-pause-after-committed.once`.
 
 ## Phase 3 — cached/single-flight bundle construction
 
@@ -102,6 +104,11 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 - [x] During first-contact trust, the native Windows dialog owns normal mouse input without AutoModSync changing `Cursor.visible` or `Cursor.lockState`; Yes continues synchronization and No aborts the protected join.
 - [ ] If the protected connection ends while the background native trust dialog itself is still open, the stale dialog/result is dismissed or ignored and cannot apply to a later connection.
 - [x] Rejecting trust shows the blocked-join status only transiently and removes it from the main menu after approximately four seconds.
+
+## Runtime evidence — 2026-09-23
+
+- Phase 2 normal transaction retest on 2026-09-23 applied a real 60-file server payload. The helper logged `Transaction PREPARED` before the first `Applied 1/60` line, verified all 60 destinations, then logged `Transaction COMMITTED; complete new state verified.`, `Committed transaction cleanup complete.`, and `Apply state is clean; relaunching Valheim.`. PREPARED occurred about 0.20 s after helper start; COMMITTED followed about 1.32 s later and cleanup completed about 0.03 s after COMMIT. This passes the normal transactional apply path but does not yet prove rollback/recovery under forced interruption.
+- Because the real 60-file apply completes in roughly 1.5 seconds, manual process-kill timing is not reliable. `build-dev.bat` now compiles development-only one-shot fault-injection pauses so PREPARED partial-apply and post-COMMITTED cleanup interruption can be tested deterministically without shipping those hooks in release binaries.
 
 ## Runtime evidence — 2026-09-22
 
