@@ -109,6 +109,7 @@ namespace ValheimAutoModSync
         private static bool _bundleResumeSlotActive;
 #if AMS_DEV_TESTS
         private static int _devDisconnectAfterChunk;
+        private static bool _devEmulateLegacyClient;
 #endif
         private static bool _restartRequested;
         private static DateTime _quitAfterUtc = DateTime.MinValue;
@@ -541,7 +542,7 @@ namespace ValheimAutoModSync
                     ZPackage hello = new ZPackage();
                     hello.Write(ProtocolVersion);
                     hello.Write(PluginVersion);
-                    hello.Write(ClientCapabilities);
+                    hello.Write(GetCurrentClientCapabilities());
                     rpc.Invoke(RpcHello, new object[] { hello });
                     if (_instance != null) _instance.Logger.LogDebug("AutoModSync probe sent before PeerInfo.");
                 }
@@ -602,6 +603,13 @@ namespace ValheimAutoModSync
                 _serverSupportsBundleBatch = capabilities.IndexOf("bundle-batch1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundlePipeline = capabilities.IndexOf("bundle-pipeline1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleResume = capabilities.IndexOf("bundle-resume1", StringComparison.Ordinal) >= 0;
+#if AMS_DEV_TESTS
+                if (_devEmulateLegacyClient)
+                {
+                    _serverSupportsBundleResume = false;
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST emulating a pre-resume AMS4 client; bundle-resume1 is ignored for this connection.");
+                }
+#endif
                 if (_instance != null)
                 {
                     _instance.Logger.LogDebug("AutoModSync preflight acknowledged by server " + serverVersion + ".");
@@ -1518,6 +1526,9 @@ namespace ValheimAutoModSync
             _preflightGateActive = true;
             _serverHandshakeHeld = false;
             _heldServerHandshakeParameters = new object[0];
+#if AMS_DEV_TESTS
+            _devEmulateLegacyClient = ConsumeDevelopmentLegacyClientMarker();
+#endif
             _helloSentUtc = DateTime.MinValue;
             _lastHelloAttemptUtc = DateTime.MinValue;
             _helloAttemptCount = 0;
@@ -1547,7 +1558,7 @@ namespace ValheimAutoModSync
                 ZPackage hello = new ZPackage();
                 hello.Write(ProtocolVersion);
                 hello.Write(PluginVersion);
-                hello.Write(ClientCapabilities);
+                hello.Write(GetCurrentClientCapabilities());
                 rpc.Invoke(RpcHello, new object[] { hello });
                 _lastHelloAttemptUtc = DateTime.UtcNow;
                 _helloAttemptCount++;
@@ -2573,6 +2584,36 @@ namespace ValheimAutoModSync
                     _instance.Logger.LogWarning((reason ?? "AutoModSync connection ended.") + " The protected join was discarded; reconnect to try again.");
             }
         }
+
+        // Intent: Returns the capability string this connection should advertise; development legacy-client emulation deliberately omits only the 2.6 resume token.
+        private static string GetCurrentClientCapabilities()
+        {
+#if AMS_DEV_TESTS
+            if (_devEmulateLegacyClient) return "roots1";
+#endif
+            return ClientCapabilities;
+        }
+
+#if AMS_DEV_TESTS
+        // Intent: Consumes a one-shot marker that makes the current connection behave like a pre-resume AMS4/2.5 client.
+        // Scope: it keeps roots1 and the existing AMS4 protocol, omits bundle-resume1 from Hello, and ignores the server's resume advertisement.
+        private static bool ConsumeDevelopmentLegacyClientMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "resume-test-emulate-legacy-client.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST armed: emulate pre-resume AMS4 client for this connection.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV legacy-client marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+#endif
 
 #if AMS_DEV_TESTS
         // Intent: One-shot single-client interruption emulator for Phase 4. The marker contains the completed chunk count at which the active socket is forcibly closed.
