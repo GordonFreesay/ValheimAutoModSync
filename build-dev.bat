@@ -104,7 +104,9 @@ if errorlevel 1 exit /b 1
 "%CSC%" @"%REFS%" /target:library /out:"%OUT%\ValheimAutoModSync.Server.dll" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.PathSafety.cs"
 if errorlevel 1 exit /b 1
 
-"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /out:"%OUT%\ValheimAutoModSync.Apply.exe" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs"
+rem AMS_DEV_TESTS enables local-only deterministic apply interruption markers used by TESTING-2.6.md.
+rem The release builder does not define this symbol, so public binaries do not contain the fault-injection pauses.
+"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Apply.exe" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs"
 if errorlevel 1 exit /b 1
 
 del /q "%REFS%" >nul 2>&1
