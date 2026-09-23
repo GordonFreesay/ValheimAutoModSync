@@ -100,6 +100,8 @@ The transaction lives under `BepInEx/AutoModSync/apply-transaction`. Its version
 
 The client no longer performs leftover staging copies from inside a running Valheim process. If startup sees `pending.txt` or `apply-transaction`, it starts the external helper and exits/restarts before attempting any AMS server join.
 
+For maintainer validation, `build-dev.bat` alone defines `AMS_DEV_TESTS` for the Apply helper. That development binary recognizes one-shot local pause markers after a chosen number of applied files or after COMMITTED, allowing deterministic process termination at the exact recovery boundaries. The public/release build path does not define this symbol, so those pause hooks are not part of release binaries.
+
 This helper does not discover mods, fetch network content, decide server trust, or bypass validation.
 
 ### Source/AutoModSync.BuildTool.cs
