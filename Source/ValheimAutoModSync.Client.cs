@@ -133,8 +133,8 @@ namespace ValheimAutoModSync
             public string RelativePath;
         }
 
-        // Intent: BepInEx client entry point; initializes only on the playable Valheim process, applies any safe leftover staging, restores reconnect state, and installs the Harmony hooks that drive synchronization.
-        // Workflow: the network hooks are installed before joining servers so AutoModSync can preflight before third-party compatibility checks.
+        // Intent: BepInEx client entry point; initializes only on the playable Valheim process, hands any interrupted apply back to the out-of-process transaction helper, restores reconnect state, and installs synchronization hooks.
+        // Recovery safety: the running game never mutates live synchronized DLL/config destinations itself. A pending/journaled transaction causes an immediate helper-owned recovery restart before AMS can join a server.
         private void Awake()
         {
             _instance = this;
@@ -146,7 +146,7 @@ namespace ValheimAutoModSync
             try
             {
                 HideBepInExConsoleAndDisableFutureConsole();
-                if (ApplyPreviouslyStagedFilesIfPossible())
+                if (HasPendingApplyRecovery())
                 {
                     ScheduleRecoveredStagingRestart();
                     return;
@@ -1155,7 +1155,7 @@ namespace ValheimAutoModSync
                 string amsRoot = GetAutoModSyncRoot();
                 if (!Directory.Exists(amsRoot)) Directory.CreateDirectory(amsRoot);
                 string pending = Path.Combine(amsRoot, "pending.txt");
-                File.WriteAllLines(pending, PendingRelativePaths.ToArray(), new UTF8Encoding(false));
+                WritePendingFileDurable(pending, PendingRelativePaths);
                 string reconnect = Path.Combine(amsRoot, "reconnect.txt");
                 bool reconnectAvailable = !String.IsNullOrEmpty(_reconnectHost);
                 if (reconnectAvailable)
@@ -1203,6 +1203,30 @@ namespace ValheimAutoModSync
                 _restartRequested = false;
                 AbortAutoModSyncJoin("Mods downloaded but automatic apply/restart failed: " + ex.Message);
             }
+        }
+
+        // Intent: Publishes the verified pending-file list atomically and durably before launching the helper.
+        // Safety: a temporary file is flushed with write-through semantics, then renamed on the same volume; an existing pending request is treated as recovery state instead of being overwritten.
+        private static void WritePendingFileDurable(string pendingPath, IList<string> entries)
+        {
+            if (File.Exists(pendingPath))
+                throw new InvalidOperationException("An earlier AutoModSync pending apply still exists.");
+
+            string temp = pendingPath + ".tmp";
+            try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+
+            using (FileStream stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using (StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false), 4096, true))
+            {
+                int i;
+                for (i = 0; i < entries.Count; i++)
+                    writer.WriteLine(entries[i] ?? "");
+
+                writer.Flush();
+                stream.Flush(true);
+            }
+
+            File.Move(temp, pendingPath);
         }
 
         // Intent: Saves the exact executable, working directory, and command-line arguments used by a package-managed Valheim launch.
@@ -2461,58 +2485,18 @@ namespace ValheimAutoModSync
             File.Delete(tempPath);
         }
 
-        // Intent: Recovers already-verified staged plugin/patcher/config replacements if the external apply helper was interrupted on the prior restart.
-        // Safety: every destination is remapped from its signed kind to a fixed BepInEx root; any failed replacement remains pending for the helper to retry after this recovery process exits.
-        private static bool ApplyPreviouslyStagedFilesIfPossible()
+        // Intent: Detects unfinished helper-owned apply state without touching any live synchronized destination from the running game.
+        // Transaction safety: pending.txt means verified staging still needs an apply; apply-transaction means a helper journal may require rollback or committed cleanup.
+        private static bool HasPendingApplyRecovery()
         {
             string amsRoot = GetAutoModSyncRoot();
             string pending = Path.Combine(amsRoot, "pending.txt");
-            if (!File.Exists(pending)) return false;
-
-            bool appliedAny = false;
-            List<string> remaining = new List<string>();
-            try
-            {
-                string[] paths = File.ReadAllLines(pending);
-                int i;
-                for (i = 0; i < paths.Length; i++)
-                {
-                    string item = paths[i] ?? "";
-                    if (item.Length < 3 || item[1] != ':') continue;
-                    char kind = item[0];
-                    string rel = NormalizeRelative(item.Substring(2));
-                    if (rel.Length == 0 || !IsSupportedManifestKind(kind)) continue;
-
-                    try
-                    {
-                        string src = Path.Combine(amsRoot, "staging", ManifestKindDirectory(kind), rel.Replace('/', Path.DirectorySeparatorChar)) + ".amsnew";
-                        if (!File.Exists(src)) continue;
-                        string dst = SafeTargetPath(kind, rel);
-                        string parent = Path.GetDirectoryName(dst);
-                        if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
-                        File.Copy(src, dst, true);
-                        File.Delete(src);
-                        appliedAny = true;
-                    }
-                    catch
-                    {
-                        remaining.Add(item);
-                    }
-                }
-
-                if (remaining.Count == 0) File.Delete(pending);
-                else File.WriteAllLines(pending, remaining.ToArray(), new UTF8Encoding(false));
-            }
-            catch
-            {
-                return true;
-            }
-
-            return appliedAny || remaining.Count > 0;
+            string transaction = Path.Combine(amsRoot, "apply-transaction");
+            return File.Exists(pending) || Directory.Exists(transaction);
         }
 
-        // Intent: Performs one extra clean restart after startup recovered staged files so newly installed plugins/patchers/config are loaded from process start.
-        // Workflow: reuses the normal apply helper only as the relaunch owner, preserves reconnect.txt, and lets Update quit this recovery process after the helper is waiting on its PID.
+        // Intent: Immediately hands interrupted transaction recovery back to the external helper, then exits this mixed/uncertain process without joining any server.
+        // Workflow: the helper waits for this PID to exit, resolves PREPARED as rollback/retry or COMMITTED as cleanup, preserves reconnect state when safe, and owns the next relaunch.
         private static void ScheduleRecoveredStagingRestart()
         {
             string amsRoot = GetAutoModSyncRoot();
@@ -2529,7 +2513,7 @@ namespace ValheimAutoModSync
 
             _restartRequested = true;
             _quitAfterUtc = DateTime.UtcNow.AddMilliseconds(900.0);
-            if (_instance != null) _instance.Logger.LogWarning("AutoModSync recovered staged files from an interrupted apply and will restart once more so every synchronized root loads from process start.");
+            if (_instance != null) _instance.Logger.LogWarning("AutoModSync detected unfinished transactional apply state; handing recovery to the external helper and restarting before any server join.");
         }
 
     }
