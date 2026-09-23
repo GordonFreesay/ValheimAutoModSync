@@ -45,7 +45,7 @@ namespace ValheimAutoModSync
         private const string RpcError = "AMS4_Error";
         private const int BundleBatchChunks = 16;
         private const int BundlePipelineChunks = 128;
-        private const string RootSyncCapability = "roots1";
+        private const string ClientCapabilities = "roots1;bundle-resume1";
 
         // 2.6 client-side hard ceilings are deliberately independent of server configuration.
         // A trusted server may choose smaller limits, but it cannot make this client allocate/write unbounded payloads.
@@ -68,6 +68,7 @@ namespace ValheimAutoModSync
         private static bool _serverSupportsBundleWindow;
         private static bool _serverSupportsBundleBatch;
         private static bool _serverSupportsBundlePipeline;
+        private static bool _serverSupportsBundleResume;
         private static bool _allowPeerInfo;
         private static bool _preflightGateActive;
         private static bool _allowServerHandshake;
@@ -101,6 +102,13 @@ namespace ValheimAutoModSync
         private static int _bundleNextChunk;
         private static int _bundleTotalChunks;
         private static int _bundleWindowEndExclusive;
+        private static int _bundleChunkBytes;
+        private static string _bundleRequestKey = "";
+        private static AutoModSyncResumeCandidate _resumeOfferedCandidate;
+        private static bool _bundleResumeSlotActive;
+#if AMS_DEV_TESTS
+        private static int _devDisconnectAfterChunk;
+#endif
         private static bool _restartRequested;
         private static DateTime _quitAfterUtc = DateTime.MinValue;
         private static bool _quitIssued;
@@ -522,6 +530,7 @@ namespace ValheimAutoModSync
                 _serverSupportsBundleWindow = false;
                 _serverSupportsBundleBatch = false;
                 _serverSupportsBundlePipeline = false;
+                _serverSupportsBundleResume = false;
                 _preflightGateActive = false;
                 _helloSentUtc = DateTime.UtcNow;
                 ResetManifestState();
@@ -531,7 +540,7 @@ namespace ValheimAutoModSync
                     ZPackage hello = new ZPackage();
                     hello.Write(ProtocolVersion);
                     hello.Write(PluginVersion);
-                    hello.Write(RootSyncCapability);
+                    hello.Write(ClientCapabilities);
                     rpc.Invoke(RpcHello, new object[] { hello });
                     if (_instance != null) _instance.Logger.LogDebug("AutoModSync probe sent before PeerInfo.");
                 }
@@ -591,9 +600,11 @@ namespace ValheimAutoModSync
                 _serverSupportsBundleWindow = capabilities.IndexOf("bundle-window1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleBatch = capabilities.IndexOf("bundle-batch1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundlePipeline = capabilities.IndexOf("bundle-pipeline1", StringComparison.Ordinal) >= 0;
+                _serverSupportsBundleResume = capabilities.IndexOf("bundle-resume1", StringComparison.Ordinal) >= 0;
                 if (_instance != null)
                 {
                     _instance.Logger.LogDebug("AutoModSync preflight acknowledged by server " + serverVersion + ".");
+                    if (_serverSupportsBundleResume) _instance.Logger.LogDebug("AutoModSync server supports exact-artifact bundle resume.");
                     if (_serverSupportsBundlePipeline) _instance.Logger.LogDebug("AutoModSync server supports pipelined binary bundle transfer.");
                     else if (_serverSupportsBundleBatch) _instance.Logger.LogDebug("AutoModSync server supports binary batched bundle transfer.");
                     else if (_serverSupportsBundleWindow) _instance.Logger.LogDebug("AutoModSync server supports windowed bundle transfer.");
@@ -852,11 +863,68 @@ namespace ValheimAutoModSync
             if (_pendingRpc == null || NeededFiles.Count == 0) return;
             if (NeededFiles.Count > MaxBundleFiles) throw new InvalidDataException("AutoModSync bundle request exceeds the client file-count limit.");
 
+            _bundleRequestKey = BuildBundleRequestKey();
+            _resumeOfferedCandidate = null;
+
+            if (_serverSupportsBundleResume)
+            {
+                string resumeReason;
+                AutoModSyncResumeCandidate candidate;
+                if (AutoModSyncResumeState.TryPrepareClientCandidate(
+                    GetAutoModSyncRoot(),
+                    _serverFingerprint,
+                    _bundleRequestKey,
+                    AutoModSyncResumeState.DefaultMaxAgeSeconds,
+                    out candidate,
+                    out resumeReason))
+                {
+                    _resumeOfferedCandidate = candidate;
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync found resumable bundle prefix: " +
+                            FormatBytes(candidate.NextChunk == candidate.TotalChunks ? candidate.BundleSize : (long)candidate.NextChunk * candidate.ChunkBytes) +
+                            " already present; asking the server to verify the exact artifact prefix.");
+                }
+                else if (_instance != null && !String.IsNullOrEmpty(resumeReason) && resumeReason != "no saved resume metadata")
+                {
+                    _instance.Logger.LogDebug("AutoModSync did not offer saved bundle resume: " + resumeReason + ".");
+                }
+            }
+
             ZPackage request = new ZPackage();
             request.Write(NeededFiles.Count);
             int i;
             for (i = 0; i < NeededFiles.Count; i++) request.Write(NeededFiles[i].Kind + ":" + NeededFiles[i].RelativePath);
+
+            // Optional AMS4 capability extension. Older servers never advertise bundle-resume1, so they receive the original request shape.
+            if (_serverSupportsBundleResume)
+            {
+                request.Write(_resumeOfferedCandidate == null ? 0 : 1);
+                if (_resumeOfferedCandidate != null)
+                {
+                    request.Write(_resumeOfferedCandidate.BundleSha256);
+                    request.Write(_resumeOfferedCandidate.BundleSize.ToString(CultureInfo.InvariantCulture));
+                    request.Write(_resumeOfferedCandidate.ChunkBytes);
+                    request.Write(_resumeOfferedCandidate.TotalChunks);
+                    request.Write(_resumeOfferedCandidate.FileCount);
+                    request.Write(_resumeOfferedCandidate.NextChunk);
+                    request.Write(_resumeOfferedCandidate.PrefixSha256);
+                }
+            }
+
             _pendingRpc.Invoke(RpcGetBundle, new object[] { request });
+        }
+
+        // Intent: Identifies the exact signed file set expected in the compressed bundle for safe cross-connection resume.
+        private static string BuildBundleRequestKey()
+        {
+            List<string> rows = new List<string>();
+            int i;
+            for (i = 0; i < NeededFiles.Count; i++)
+            {
+                ManifestEntry e = NeededFiles[i];
+                rows.Add(e.Kind + "\t" + e.RelativePath + "\t" + e.Size.ToString(CultureInfo.InvariantCulture) + "\t" + e.Sha256);
+            }
+            return AutoModSyncResumeState.ComputeRequestKey(_serverFingerprint, rows);
         }
 
         // Intent: Validates the server's bundle header before allocating/writing the staging archive, then requests the first chunk.
@@ -870,6 +938,14 @@ namespace ValheimAutoModSync
                 string sha = pkg.ReadString();
                 int chunks = pkg.ReadInt();
                 int files = pkg.ReadInt();
+                int chunkBytes = 0;
+                int resumeStartChunk = 0;
+                if (_serverSupportsBundleResume)
+                {
+                    chunkBytes = pkg.ReadInt();
+                    resumeStartChunk = pkg.ReadInt();
+                }
+
                 long size;
                 if (!long.TryParse(sizeText, NumberStyles.Integer, CultureInfo.InvariantCulture, out size)
                     || size <= 0
@@ -882,22 +958,112 @@ namespace ValheimAutoModSync
                     || !IsSha256Hex(sha))
                     throw new InvalidDataException("Compressed package header exceeded AutoModSync client safety limits or did not match the requested sync.");
 
-                string stagingRoot = Path.Combine(GetAutoModSyncRoot(), "staging");
-                if (!Directory.Exists(stagingRoot)) Directory.CreateDirectory(stagingRoot);
-                _bundlePath = Path.Combine(stagingRoot, "bundle.zip.amsnew");
-                AutoModSyncPathSafety.EnsureNoReparsePoints(stagingRoot, _bundlePath, true);
-                _bundleStream = new FileStream(_bundlePath, FileMode.Create, FileAccess.Write, FileShare.None);
+                if (_serverSupportsBundleResume)
+                {
+                    if (chunkBytes < 4096 || chunkBytes > 65536
+                        || (size + chunkBytes - 1L) / chunkBytes != chunks
+                        || resumeStartChunk < 0 || resumeStartChunk > chunks)
+                        throw new InvalidDataException("Compressed package resume header contained invalid chunk geometry.");
+                }
+                else
+                {
+                    // Legacy AMS4 servers do not publish chunk geometry; resume is disabled for that transfer.
+                    chunkBytes = (int)Math.Max(1L, (size + chunks - 1L) / chunks);
+                    resumeStartChunk = 0;
+                }
+
+                string amsRoot = GetAutoModSyncRoot();
+                FileStream stream = null;
+                string bundlePath = "";
+                long resumeBytes = 0L;
+                bool resumed = false;
+
+                if (_serverSupportsBundleResume && resumeStartChunk > 0 && _resumeOfferedCandidate != null)
+                {
+                    AutoModSyncResumeCandidate accepted = new AutoModSyncResumeCandidate();
+                    accepted.BundleSha256 = sha;
+                    accepted.BundleSize = size;
+                    accepted.ChunkBytes = chunkBytes;
+                    accepted.TotalChunks = chunks;
+                    accepted.FileCount = files;
+                    accepted.NextChunk = resumeStartChunk;
+                    accepted.PrefixSha256 = _resumeOfferedCandidate.PrefixSha256;
+
+                    string resumeReason;
+                    if (_resumeOfferedCandidate.NextChunk == resumeStartChunk
+                        && AutoModSyncResumeState.TryOpenAcceptedClientPartial(
+                            amsRoot,
+                            _serverFingerprint,
+                            _bundleRequestKey,
+                            accepted,
+                            out stream,
+                            out bundlePath,
+                            out resumeBytes,
+                            out resumeReason))
+                    {
+                        resumed = true;
+                    }
+                    else if (_instance != null)
+                    {
+                        _instance.Logger.LogWarning("AutoModSync server accepted a resume prefix that could not be safely reopened locally; restarting this bundle from zero. " + (resumeReason ?? ""));
+                    }
+                }
+
+                if (!resumed)
+                {
+                    if (_serverSupportsBundleResume)
+                    {
+                        stream = AutoModSyncResumeState.CreateFreshClientPartial(
+                            amsRoot,
+                            _serverFingerprint,
+                            _bundleRequestKey,
+                            sha,
+                            size,
+                            chunkBytes,
+                            chunks,
+                            files,
+                            out bundlePath);
+                        _bundleResumeSlotActive = true;
+                    }
+                    else
+                    {
+                        string stagingRoot = Path.Combine(amsRoot, "staging");
+                        if (!Directory.Exists(stagingRoot)) Directory.CreateDirectory(stagingRoot);
+                        bundlePath = Path.Combine(stagingRoot, "bundle.zip.amsnew");
+                        AutoModSyncPathSafety.EnsureNoReparsePoints(stagingRoot, bundlePath, true);
+                        stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write, FileShare.None);
+                        _bundleResumeSlotActive = false;
+                    }
+                    resumeStartChunk = 0;
+                    resumeBytes = 0L;
+                }
+                else
+                {
+                    _bundleResumeSlotActive = true;
+                }
+
+                _bundlePath = bundlePath;
+                _bundleStream = stream;
                 _bundleSha256 = sha;
                 _bundleSize = size;
-                _bundleBytesReceived = 0L;
+                _bundleBytesReceived = resumeBytes;
                 _bundleStartedUtc = DateTime.UtcNow;
-                _bundleNextChunk = 0;
+                _bundleNextChunk = resumeStartChunk;
                 _bundleTotalChunks = chunks;
-                _bundleWindowEndExclusive = 0;
+                _bundleChunkBytes = chunkBytes;
+                _bundleWindowEndExclusive = resumeStartChunk;
                 _overlayBundleMode = true;
-                _overlayBytesReceived = 0L;
+                _overlayBytesReceived = resumeBytes;
                 _overlayBytesTotal = size;
-                ShowSyncOverlay("Downloading compressed mod package...", "");
+
+#if AMS_DEV_TESTS
+                _devDisconnectAfterChunk = ReadDevelopmentResumeDisconnectMarker(chunks);
+#endif
+
+                ShowSyncOverlay(resumed ? "Resuming compressed mod package..." : "Downloading compressed mod package...", "");
+                if (resumed && _instance != null)
+                    _instance.Logger.LogInfo("AutoModSync exact-artifact resume accepted at chunk " + resumeStartChunk.ToString(CultureInfo.InvariantCulture) + "/" + chunks.ToString(CultureInfo.InvariantCulture) + " (" + FormatBytes(resumeBytes) + " retained).");
+
                 if (_instance != null && _serverSupportsBundlePipeline)
                     _instance.Logger.LogInfo("AutoModSync using pipelined binary bundle transfer (up to " + BundlePipelineChunks.ToString(CultureInfo.InvariantCulture) + " chunks requested per window; " + BundleBatchChunks.ToString(CultureInfo.InvariantCulture) + " chunks per Steam message).");
                 else if (_instance != null && _serverSupportsBundleBatch)
@@ -1342,7 +1508,7 @@ namespace ValheimAutoModSync
                 ZPackage hello = new ZPackage();
                 hello.Write(ProtocolVersion);
                 hello.Write(PluginVersion);
-                hello.Write(RootSyncCapability);
+                hello.Write(ClientCapabilities);
                 rpc.Invoke(RpcHello, new object[] { hello });
                 _lastHelloAttemptUtc = DateTime.UtcNow;
                 _helloAttemptCount++;
@@ -1379,6 +1545,7 @@ namespace ValheimAutoModSync
                 _serverSupportsBundleWindow = false;
                 _serverSupportsBundleBatch = false;
                 _serverSupportsBundlePipeline = false;
+                _serverSupportsBundleResume = false;
                 _preflightGateActive = false;
                 _serverHandshakeHeld = false;
                 _heldServerHandshakeParameters = new object[0];
