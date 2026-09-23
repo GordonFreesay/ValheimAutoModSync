@@ -88,9 +88,17 @@ It preserves existing BepInEx installations, preserves existing server config/si
 The apply helper runs outside Valheim after a verified download. Its job is intentionally narrow:
 
 - wait for the old Valheim process to exit;
-- move/replace only files listed in AutoModSync's pending staging file, mapping each signed kind to the fixed plugins/patchers/config root;
-- preserve the reconnect token for the new client process;
+- recover any prior interrupted apply transaction before starting another one;
+- map only pending signed kinds to the fixed plugins/patchers/config roots;
+- verify every staged source and create durable old-state backups before the first live write;
+- write a durable `PREPARED` marker, apply/verify every destination while retaining staging, then write `COMMITTED`;
+- on PREPARED interruption, restore the complete old set before retrying; on COMMITTED interruption, keep the complete new set and finish cleanup;
+- preserve the reconnect token for the successfully applied/relaunched client process;
 - relaunch through the captured package-manager/Steam context when available.
+
+The transaction lives under `BepInEx/AutoModSync/apply-transaction`. Its versioned manifest records each fixed-root destination, whether the old file existed, and SHA-256/size metadata for both new staging and any old backup. `pending.txt` and verified `.amsnew` staging remain present until COMMITTED cleanup, so a pre-commit crash has enough information to roll back and retry rather than accepting a partially updated install. The helper records transaction milestones in `apply.log`.
+
+The client no longer performs leftover staging copies from inside a running Valheim process. If startup sees `pending.txt` or `apply-transaction`, it starts the external helper and exits/restarts before attempting any AMS server join.
 
 This helper does not discover mods, fetch network content, decide server trust, or bypass validation.
 
@@ -110,16 +118,21 @@ Current transparent releases do not use the old packed `version.dll` bootstrap.
 ```text
 verified bundle
   -> staging/{plugins|patchers|config}/*.amsnew
-  -> pending.txt
+  -> durable pending.txt
   -> reconnect.txt
   -> optional launch-context.txt
   -> ValheimAutoModSync.Apply.exe
   -> old Valheim exits
-  -> helper replaces files
+  -> recover prior journal if present
+  -> snapshot old destinations + transaction manifest
+  -> durable PREPARED
+  -> apply + verify every live destination (staging retained)
+  -> durable COMMITTED
+  -> remove staging/pending/transaction backups
   -> helper relaunches Valheim
   -> client consumes reconnect.txt
   -> FejdStartup reconnect
-  -> 2.5.0 preflight runs again
+  -> 2.6 preflight runs again
   -> normal mod handshakes continue
 ```
 
