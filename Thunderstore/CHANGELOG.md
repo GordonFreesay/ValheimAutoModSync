@@ -2,6 +2,9 @@
 
 ## 2.6.0 (development)
 
+- Added exact-artifact resumable bundle downloads as an optional AMS4 `bundle-resume1` capability. Interrupted clients retain one bounded partial ZIP, and the server independently verifies the exact retained prefix against the current immutable artifact before allowing a nonzero resume offset; mismatches safely restart from zero.
+- Added development-only single-client transfer interruption emulation and an isolated deterministic Phase 4 resume harness. These validation hooks are not compiled into release client binaries.
+
 - Development work is isolated on `dev/2.6`; the current public release remains 2.5.0 until the 2.6 validation gates are complete.
 - 2.6 preserves AMS4/protocol 4 as the compatibility baseline and will add new behavior through negotiated capabilities where possible.
 - Release packaging/publication is intentionally deferred until functional validation is completed.
