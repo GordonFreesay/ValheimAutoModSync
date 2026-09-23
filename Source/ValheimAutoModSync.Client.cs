@@ -1090,6 +1090,7 @@ namespace ValheimAutoModSync
                 if (index != _bundleNextChunk || _bundleNextChunk >= _bundleTotalChunks) throw new InvalidDataException("Out-of-order compressed package chunk.");
                 if (encoded == null || encoded.Length > 70000) throw new InvalidDataException("Oversized compressed package chunk.");
                 byte[] data = Convert.FromBase64String(encoded);
+                ValidateBundleChunkLength(index, data == null ? 0 : data.Length);
                 if (_bundleBytesReceived > _bundleSize || (long)data.Length > _bundleSize - _bundleBytesReceived)
                     throw new InvalidDataException("Compressed package exceeded its declared size.");
                 _bundleStream.Write(data, 0, data.Length);
@@ -1097,6 +1098,9 @@ namespace ValheimAutoModSync
                 _bundleNextChunk++;
                 _overlayBytesReceived = _bundleBytesReceived;
                 _overlayFileProgress = _bundleTotalChunks <= 0 ? 1f : Mathf.Clamp01(_bundleNextChunk / (float)_bundleTotalChunks);
+#if AMS_DEV_TESTS
+                if (DevelopmentDisconnectForResumeIfArmed(rpc)) return;
+#endif
                 if (_bundleNextChunk >= _bundleTotalChunks || _bundleNextChunk >= _bundleWindowEndExclusive)
                     RequestBundleChunk();
             }
@@ -1125,11 +1129,15 @@ namespace ValheimAutoModSync
                     byte[] data = pkg.ReadByteArray();
                     if (index != _bundleNextChunk || data == null || data.Length < 1 || data.Length > 65536)
                         throw new InvalidDataException("Out-of-order or oversized compressed package batch chunk.");
+                    ValidateBundleChunkLength(index, data.Length);
                     if (_bundleBytesReceived > _bundleSize || (long)data.Length > _bundleSize - _bundleBytesReceived)
                         throw new InvalidDataException("Compressed package exceeded its declared size.");
                     _bundleStream.Write(data, 0, data.Length);
                     _bundleBytesReceived += data.Length;
                     _bundleNextChunk++;
+#if AMS_DEV_TESTS
+                    if (DevelopmentDisconnectForResumeIfArmed(rpc)) return;
+#endif
                 }
 
                 _overlayBytesReceived = _bundleBytesReceived;
@@ -1141,6 +1149,20 @@ namespace ValheimAutoModSync
             {
                 AbortAutoModSyncJoin("Compressed mod package batch download failed: " + ex.Message);
             }
+        }
+
+        // Intent: Enforces the exact chunk geometry published by resume-capable servers so every persisted offset is a complete immutable-artifact boundary.
+        private static void ValidateBundleChunkLength(int index, int length)
+        {
+            if (length < 1 || length > 65536) throw new InvalidDataException("Invalid compressed package chunk length.");
+            if (!_serverSupportsBundleResume) return;
+            if (_bundleChunkBytes < 1 || index < 0 || index >= _bundleTotalChunks)
+                throw new InvalidDataException("Compressed package chunk geometry is not initialized.");
+
+            long offset = (long)index * _bundleChunkBytes;
+            int expected = (int)Math.Min((long)_bundleChunkBytes, _bundleSize - offset);
+            if (expected <= 0 || length != expected)
+                throw new InvalidDataException("Compressed package chunk length did not match the resumable bundle geometry.");
         }
 
         // Intent: Requests the next verified binary batch when supported, otherwise a bounded transfer window or one legacy AMS4 chunk.
@@ -1174,7 +1196,15 @@ namespace ValheimAutoModSync
                 _overlayBytesReceived = _bundleSize;
                 ShowSyncOverlay("Verifying and unpacking required mods...", "");
                 ExtractBundleToStaging();
-                try { File.Delete(_bundlePath); } catch { }
+                if (_bundleResumeSlotActive)
+                {
+                    AutoModSyncResumeState.Discard(GetAutoModSyncRoot());
+                    _bundleResumeSlotActive = false;
+                }
+                else
+                {
+                    try { File.Delete(_bundlePath); } catch { }
+                }
                 _overlayCompletedFiles = _overlayTotalFiles;
                 _overlayFileProgress = 1f;
                 _overlayBundleMode = false;
@@ -1660,8 +1690,15 @@ namespace ValheimAutoModSync
         // Safety: extracted .amsnew files are not live BepInEx files and remain inert until a later verified apply phase.
         private static void DeleteActiveBundleFile()
         {
-            if (String.IsNullOrEmpty(_bundlePath)) return;
-            try { if (File.Exists(_bundlePath)) File.Delete(_bundlePath); } catch { }
+            if (_bundleResumeSlotActive)
+            {
+                AutoModSyncResumeState.Discard(GetAutoModSyncRoot());
+                _bundleResumeSlotActive = false;
+            }
+            else if (!String.IsNullOrEmpty(_bundlePath))
+            {
+                try { if (File.Exists(_bundlePath)) File.Delete(_bundlePath); } catch { }
+            }
         }
 
         // Intent: Clears per-manifest and per-bundle state so stale data from one connection cannot contaminate the next synchronization attempt.
@@ -1679,8 +1716,16 @@ namespace ValheimAutoModSync
             _bundleNextChunk = 0;
             _bundleTotalChunks = 0;
             _bundleWindowEndExclusive = 0;
+            _bundleChunkBytes = 0;
             _bundleBytesReceived = 0L;
             _bundleStartedUtc = DateTime.MinValue;
+            _bundlePath = "";
+            _bundleRequestKey = "";
+            _resumeOfferedCandidate = null;
+            _bundleResumeSlotActive = false;
+#if AMS_DEV_TESTS
+            _devDisconnectAfterChunk = 0;
+#endif
             CloseBundleStream();
         }
 
@@ -2484,7 +2529,10 @@ namespace ValheimAutoModSync
         private static void HandleRecognizedConnectionLoss(string reason)
         {
             CloseBundleStream();
-            DeleteActiveBundleFile();
+
+            bool preservedResume = _serverSupportsBundleResume && _bundleResumeSlotActive && _bundleNextChunk > 0;
+            long preservedBytes = preservedResume ? _bundleBytesReceived : 0L;
+            if (!preservedResume) DeleteActiveBundleFile();
             ClearPendingTrustPrompt();
 
             _waitingForServer = false;
@@ -2493,6 +2541,7 @@ namespace ValheimAutoModSync
             _serverSupportsBundleWindow = false;
             _serverSupportsBundleBatch = false;
             _serverSupportsBundlePipeline = false;
+            _serverSupportsBundleResume = false;
             _preflightGateActive = false;
             _serverHandshakeHeld = false;
             _heldServerHandshakeParameters = new object[0];
@@ -2505,8 +2554,63 @@ namespace ValheimAutoModSync
             ResetManifestState();
 
             if (_instance != null)
-                _instance.Logger.LogWarning((reason ?? "AutoModSync connection ended.") + " The protected join was discarded; reconnect to try again.");
+            {
+                if (preservedResume)
+                    _instance.Logger.LogWarning((reason ?? "AutoModSync connection ended.") + " Preserved " + FormatBytes(preservedBytes) + " of the verified bundle prefix; reconnect to resume after server prefix verification.");
+                else
+                    _instance.Logger.LogWarning((reason ?? "AutoModSync connection ended.") + " The protected join was discarded; reconnect to try again.");
+            }
         }
+
+#if AMS_DEV_TESTS
+        // Intent: One-shot single-client interruption emulator for Phase 4. The marker contains the completed chunk count at which the active socket is forcibly closed.
+        // Safety: development builds consume the marker before transfer; release builds do not compile this code.
+        private static int ReadDevelopmentResumeDisconnectMarker(int totalChunks)
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "resume-test-disconnect-after-chunks.once");
+                if (!File.Exists(marker)) return 0;
+                string raw = "";
+                try { raw = File.ReadAllText(marker).Trim(); }
+                finally { try { File.Delete(marker); } catch { } }
+
+                int count;
+                if (!Int32.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out count) || count < 1 || count >= totalChunks)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV resume interruption marker must be between 1 and one less than the bundle chunk count.");
+                    return 0;
+                }
+
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV resume interruption armed after chunk " + count.ToString(CultureInfo.InvariantCulture) + ".");
+                return count;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV resume interruption marker could not be read: " + ex.Message);
+                return 0;
+            }
+        }
+
+        // Intent: Forces a real transport interruption after a deterministic complete-chunk boundary so one client can validate reconnect/resume without a second tester.
+        private static bool DevelopmentDisconnectForResumeIfArmed(ZRpc rpc)
+        {
+            if (_devDisconnectAfterChunk <= 0 || _bundleNextChunk < _devDisconnectAfterChunk) return false;
+            int boundary = _devDisconnectAfterChunk;
+            _devDisconnectAfterChunk = 0;
+            try { if (_bundleStream != null) _bundleStream.Flush(); } catch { }
+            if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV TEST closing the transfer socket after chunk " + boundary.ToString(CultureInfo.InvariantCulture) + " to emulate an interrupted download.");
+            try
+            {
+                if (rpc != null && rpc.GetSocket() != null) rpc.GetSocket().Close();
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV TEST could not close the transfer socket: " + ex.Message);
+            }
+            return true;
+        }
+#endif
 
         // Intent: Converts hash/fingerprint bytes into deterministic lowercase hexadecimal.
         private static string ToHex(byte[] bytes)
