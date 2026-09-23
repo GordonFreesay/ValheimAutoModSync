@@ -98,6 +98,7 @@ namespace ValheimAutoModSync
         private static string _bundleSha256 = "";
         private static long _bundleSize;
         private static long _bundleBytesReceived;
+        private static long _bundleSessionStartBytes;
         private static DateTime _bundleStartedUtc = DateTime.MinValue;
         private static int _bundleNextChunk;
         private static int _bundleTotalChunks;
@@ -1047,6 +1048,7 @@ namespace ValheimAutoModSync
                 _bundleSha256 = sha;
                 _bundleSize = size;
                 _bundleBytesReceived = resumeBytes;
+                _bundleSessionStartBytes = resumeBytes;
                 _bundleStartedUtc = DateTime.UtcNow;
                 _bundleNextChunk = resumeStartChunk;
                 _bundleTotalChunks = chunks;
@@ -1211,8 +1213,11 @@ namespace ValheimAutoModSync
                 if (_instance != null)
                 {
                     double elapsedSeconds = _bundleStartedUtc == DateTime.MinValue ? 0.0 : Math.Max(0.001, (DateTime.UtcNow - _bundleStartedUtc).TotalSeconds);
-                    double mibPerSecond = (_bundleSize / (1024.0 * 1024.0)) / elapsedSeconds;
-                    _instance.Logger.LogInfo("AutoModSync compressed package verified and unpacked: " + NeededFiles.Count + " changed file(s). Transfer " + FormatBytes(_bundleSize) + " in " + elapsedSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "s (" + mibPerSecond.ToString("0.00", CultureInfo.InvariantCulture) + " MiB/s).");
+                    long sessionBytes = Math.Max(0L, _bundleSize - _bundleSessionStartBytes);
+                    double mibPerSecond = (sessionBytes / (1024.0 * 1024.0)) / elapsedSeconds;
+                    _instance.Logger.LogInfo("AutoModSync compressed package verified and unpacked: " + NeededFiles.Count + " changed file(s). Transfer " + FormatBytes(sessionBytes) +
+                        (_bundleSessionStartBytes > 0 ? " after retaining " + FormatBytes(_bundleSessionStartBytes) : "") +
+                        " in " + elapsedSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "s (" + mibPerSecond.ToString("0.00", CultureInfo.InvariantCulture) + " MiB/s).");
                 }
                 BeginApplyAndRestart();
             }
@@ -1721,6 +1726,7 @@ namespace ValheimAutoModSync
             _bundleWindowEndExclusive = 0;
             _bundleChunkBytes = 0;
             _bundleBytesReceived = 0L;
+            _bundleSessionStartBytes = 0L;
             _bundleStartedUtc = DateTime.MinValue;
             _bundlePath = "";
             _bundleRequestKey = "";
