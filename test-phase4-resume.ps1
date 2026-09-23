@@ -123,7 +123,7 @@ namespace ValheimAutoModSync
 
             try
             {
-                Console.WriteLine("[1/6] Interrupted non-boundary write truncates to a complete chunk and resumes exact bytes...");
+                Console.WriteLine("[1/7] Interrupted non-boundary write truncates to a complete chunk and resumes exact bytes...");
                 string partial;
                 using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
                 {
@@ -147,7 +147,7 @@ namespace ValheimAutoModSync
                 Assert(ShaFile(reopened) == bundleSha, "resumed file did not equal the exact artifact SHA-256");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[2/6] Corrupt saved prefix is rejected by server-side prefix verification...");
+                Console.WriteLine("[2/7] Corrupt saved prefix is rejected by server-side prefix verification...");
                 AutoModSyncResumeState.Discard(amsRoot);
                 using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
                 {
@@ -159,13 +159,13 @@ namespace ValheimAutoModSync
                 Assert(reason.IndexOf("prefix SHA-256", StringComparison.OrdinalIgnoreCase) >= 0, "corrupt prefix rejection reason was unexpected: " + reason);
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[3/6] Different server/change-set metadata cannot reuse the saved partial...");
+                Console.WriteLine("[3/7] Different server/change-set metadata cannot reuse the saved partial...");
                 string otherRequest = ShaText("different-change-set");
                 Assert(!AutoModSyncResumeState.TryPrepareClientCandidate(amsRoot, fingerprint, otherRequest, 86400, out candidate, out reason), "different request key reused the saved partial");
                 Assert(!File.Exists(AutoModSyncResumeState.GetPartialPath(amsRoot)), "mismatched candidate was not discarded");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[4/6] Changed artifact or chunk geometry cannot reuse the old prefix...");
+                Console.WriteLine("[4/7] Changed artifact or chunk geometry cannot reuse the old prefix...");
                 AutoModSyncResumeState.Discard(amsRoot);
                 using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
                 {
@@ -186,7 +186,7 @@ namespace ValheimAutoModSync
                 Assert(!AutoModSyncResumeState.TryAcceptServerCandidate(artifact, bundleSha, data.LongLength, differentChunkBytes, differentTotalChunks, fileCount, candidate, out resumeBytes, out reason), "changed chunk geometry accepted an old resume candidate");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[5/6] Fully downloaded artifact can resume at TotalChunks and still requires exact full SHA...");
+                Console.WriteLine("[5/7] Fully downloaded artifact can resume at TotalChunks and still requires exact full SHA...");
                 using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
                 {
                     CopyPrefix(artifact, output, data.LongLength, false);
@@ -199,7 +199,7 @@ namespace ValheimAutoModSync
                 Assert(ShaFile(partial) == bundleSha, "complete saved artifact failed full SHA-256");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[6/6] Expired saved resume state is discarded instead of reused...");
+                Console.WriteLine("[6/7] Expired saved resume state is discarded instead of reused...");
                 AutoModSyncResumeState.Discard(amsRoot);
                 using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
                 {
@@ -209,6 +209,18 @@ namespace ValheimAutoModSync
                 System.Threading.Thread.Sleep(1100);
                 Assert(!AutoModSyncResumeState.TryPrepareClientCandidate(amsRoot, fingerprint, requestKey, 0, out candidate, out reason), "expired candidate was reused");
                 Assert(!File.Exists(AutoModSyncResumeState.GetPartialPath(amsRoot)), "expired partial was not discarded");
+                Console.WriteLine("  PASS");
+
+                Console.WriteLine("[7/7] Malformed/orphaned resume metadata is rejected and cleaned up...");
+                using (FileStream output = AutoModSyncResumeState.CreateFreshClientPartial(amsRoot, fingerprint, requestKey, bundleSha, data.LongLength, chunkBytes, totalChunks, fileCount, out partial))
+                {
+                    CopyPrefix(artifact, output, (long)2 * chunkBytes, false);
+                    output.Flush(true);
+                }
+                File.WriteAllText(AutoModSyncResumeState.GetMetadataPath(amsRoot), "BROKEN" + Environment.NewLine);
+                Assert(!AutoModSyncResumeState.TryPrepareClientCandidate(amsRoot, fingerprint, requestKey, 86400, out candidate, out reason), "malformed resume metadata was accepted");
+                Assert(!File.Exists(AutoModSyncResumeState.GetPartialPath(amsRoot)), "orphaned partial survived malformed metadata cleanup");
+                Assert(!File.Exists(AutoModSyncResumeState.GetMetadataPath(amsRoot)), "malformed metadata survived cleanup");
                 Console.WriteLine("  PASS");
 
                 AutoModSyncResumeState.Discard(amsRoot);
