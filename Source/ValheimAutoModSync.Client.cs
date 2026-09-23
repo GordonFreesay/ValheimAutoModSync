@@ -970,6 +970,11 @@ namespace ValheimAutoModSync
                     || !IsSha256Hex(sha))
                     throw new InvalidDataException("Compressed package header exceeded AutoModSync client safety limits or did not match the requested sync.");
 
+#if AMS_DEV_TESTS
+                if (_devEmulateLegacyClient && !_serverSupportsBundleResume && _instance != null)
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-client compatibility confirmed: original AMS4 bundle header shape accepted.");
+#endif
+
                 if (_serverSupportsBundleResume)
                 {
                     if (chunkBytes < 4096 || chunkBytes > 65536
