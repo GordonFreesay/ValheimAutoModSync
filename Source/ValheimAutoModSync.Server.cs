@@ -70,6 +70,7 @@ namespace ValheimAutoModSync
         private static ConfigEntry<int> _schedulerGrantBytes;
         private static ConfigEntry<int> _schedulerMaxSteamQueueMs;
         private static ConfigEntry<int> _transferIdleTimeoutSeconds;
+        private static ConfigEntry<bool> _advertiseAutoModSync;
 
         private static readonly object ManifestLock = new object();
         private static readonly HashSet<ZRpc> Registered = new HashSet<ZRpc>();
@@ -89,6 +90,8 @@ namespace ValheimAutoModSync
         private static readonly Dictionary<long, ZRpc> SchedulerPeers = new Dictionary<long, ZRpc>();
         private static long _nextSchedulerPeerId;
         private static AutoModSyncTransferScheduler _transferScheduler;
+        private static bool _serverBrowserPresencePublished;
+        private static DateTime _nextServerBrowserPresenceAttemptUtc = DateTime.MinValue;
 #if AMS_DEV_TESTS
         private static readonly HashSet<ZRpc> DevelopmentLegacyServerPeers = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> DevelopmentSuppressedAmsPeers = new HashSet<ZRpc>();
@@ -229,6 +232,7 @@ namespace ValheimAutoModSync
             _schedulerGrantBytes = Config.Bind("Transfer", "SchedulerGrantBytes", 1048576, "Maximum raw bundle bytes one active client may receive per scheduler grant before round-robin advances. Values are bounded at runtime; individual Steam/RPC messages remain <=384 KiB.");
             _schedulerMaxSteamQueueMs = Config.Bind("Transfer", "SchedulerMaxSteamQueueMs", 200, "Pause new AutoModSync grants to a Steam connection when its pending+unacked reliable bytes exceed approximately this many milliseconds at Steam's current reported send rate. 0 disables this backpressure check.");
             _transferIdleTimeoutSeconds = Config.Bind("Transfer", "TransferIdleTimeoutSeconds", 60, "Release an active bundle-transfer slot if a connected client stops requesting bundle data for this many seconds. This prevents abandoned live peers from pinning the public-server queue.");
+            _advertiseAutoModSync = Config.Bind("Discovery", "AdvertiseAutoModSync", true, "Advertise a small public Steam server-rule marker so AutoModSync clients can identify this server in Valheim's browser. The marker contains only the AutoModSync version/protocol; it never publishes the signing fingerprint or player/server PII.");
 
 #if AMS_DEV_TESTS
             ConsumeDevelopmentPhase3ZeroTtlMarker();
@@ -264,12 +268,40 @@ namespace ValheimAutoModSync
         private void Update()
         {
             DateTime now = DateTime.UtcNow;
+            TryPublishServerBrowserPresence(now);
             DrainPreparedBundleResults();
             ServiceTransferScheduler(now);
 
             if (_nextTransferCleanupUtc != DateTime.MinValue && now < _nextTransferCleanupUtc) return;
             _nextTransferCleanupUtc = now.AddSeconds(1.0);
             CleanupDisconnectedOrIdleTransfers(now);
+        }
+
+        // Intent: Publishes a passive Steam server-rule marker that AMS-aware clients can query while rendering Valheim's server browser.
+        // Privacy: only product version/protocol are advertised; the signing fingerprint, private key, endpoint metadata, and player identity are never added by this feature.
+        // Compatibility: publication is best-effort and retried because BepInEx can start before SteamGameServer is fully logged on; failure never affects synchronization or server availability.
+        private static void TryPublishServerBrowserPresence(DateTime now)
+        {
+            if (_serverBrowserPresencePublished) return;
+            if (_advertiseAutoModSync == null || !_advertiseAutoModSync.Value) return;
+            if (_nextServerBrowserPresenceAttemptUtc != DateTime.MinValue && now < _nextServerBrowserPresenceAttemptUtc) return;
+            _nextServerBrowserPresenceAttemptUtc = now.AddSeconds(5.0);
+
+            try
+            {
+                if (!SteamGameServer.BLoggedOn()) return;
+                SteamGameServer.SetKeyValue("automodsync", PluginVersion);
+                SteamGameServer.SetKeyValue("automodsync_protocol", ProtocolVersion.ToString(CultureInfo.InvariantCulture));
+                _serverBrowserPresencePublished = true;
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync published Steam server-browser presence marker: version=" +
+                        PluginVersion + ", protocol=" + ProtocolVersion.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null)
+                    _instance.Logger.LogDebug("AutoModSync Steam browser presence is not ready yet; retrying: " + ex.Message);
+            }
         }
 
         // Intent: Runs one bounded admission step and one round-robin grant per active peer each Unity frame.
