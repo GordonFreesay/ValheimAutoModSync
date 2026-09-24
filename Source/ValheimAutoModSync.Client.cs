@@ -2630,7 +2630,7 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Returns the capability string this connection should advertise; development legacy-client emulation deliberately omits only the 2.6 resume token.
+        // Intent: Returns the capability string this connection should advertise; development legacy-client emulation deliberately omits 2.6 resume/scheduler tokens.
         private static string GetCurrentClientCapabilities()
         {
 #if AMS_DEV_TESTS
@@ -2641,7 +2641,7 @@ namespace ValheimAutoModSync
 
 #if AMS_DEV_TESTS
         // Intent: Consumes a one-shot marker that makes the current connection behave like a pre-resume AMS4/2.5 client.
-        // Scope: it keeps roots1 and the existing AMS4 protocol, omits bundle-resume1 from Hello, and ignores the server's resume advertisement.
+        // Scope: it keeps roots1 and the existing AMS4 protocol, omits bundle-resume1/bundle-scheduler1 from Hello, and ignores those server advertisements.
         private static bool ConsumeDevelopmentLegacyClientMarker()
         {
             try
