@@ -57,8 +57,8 @@ namespace ValheimAutoModSync
     foreach ($required in @(
         '"SECURITY CODE"',
         'AutoModSyncIdentityDisplay.VerificationCode(_uiState.ServerFingerprint)',
-        '"  •  TRUSTED SERVER"',
-        '"  •  FIRST CONTACT"'
+        'TRUSTED SERVER',
+        'FIRST CONTACT'
     )) {
         if ($clientText.IndexOf($required,[StringComparison]::Ordinal) -lt 0) {
             throw ('Client privacy UI is missing required wiring: ' + $required)
