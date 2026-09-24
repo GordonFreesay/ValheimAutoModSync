@@ -18,6 +18,7 @@ on:
       - "SIGNING.md"
       - "DISTRIBUTION.md"
       - "README.md"
+      - "VERIFYING-RELEASES.md"
   workflow_dispatch:
 
 permissions:
