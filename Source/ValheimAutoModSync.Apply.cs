@@ -446,12 +446,29 @@ internal static class Program
         for (i = 0; i < items.Count; i++)
         {
             ApplyItem item = items[i];
+            if (item.Operation != 'W') continue;
+
             string srcRoot;
             string ignoredDstRoot;
             ResolveRoots(item.Kind, stagingRoot, pluginRoot, patcherRoot, configRoot, out srcRoot, out ignoredDstRoot);
             string src = SafeUnder(srcRoot, item.RelativePath) + ".amsnew";
             AutoModSyncPathSafety.EnsureNoReparsePoints(srcRoot, src, true);
             try { if (File.Exists(src)) File.Delete(src); } catch { throw; }
+        }
+
+        // Phase 6 ownership is published only after COMMITTED. If cleanup is interrupted, recovery
+        // republishes this immutable transaction copy idempotently before removing transaction state.
+        string txOwnership = Path.Combine(txRoot, TransactionOwnershipName);
+        if (File.Exists(txOwnership))
+        {
+            string fingerprint;
+            List<AutoModSyncOwnershipEntry> desired = AutoModSyncOwnershipState.ReadFile(txOwnership, "", out fingerprint);
+            if (!IsTrustedServerFingerprint(Path.GetDirectoryName(txRoot), fingerprint))
+                throw new InvalidDataException("Committed AutoModSync ownership metadata is not tied to a trusted server fingerprint.");
+            AutoModSyncOwnershipState.WriteLedgerDurable(Path.GetDirectoryName(txRoot), fingerprint, desired);
+
+            string pendingOwnership = Path.Combine(Path.GetDirectoryName(txRoot), AutoModSyncOwnershipState.PendingFileName);
+            if (File.Exists(pendingOwnership)) File.Delete(pendingOwnership);
         }
 
         if (File.Exists(pending)) File.Delete(pending);
@@ -529,19 +546,113 @@ internal static class Program
         return items;
     }
 
+    // Intent: Validates the exact post-commit ownership ledger against current trusted ownership plus the prepared write/delete operations, then copies it into the transaction before PREPARED.
+    // Security: new ownership can be acquired only by a prepared verified write; delete authority must match an existing same-server owned digest; another server's ledger is never consulted.
+    private static void PrepareOwnershipTransition(string amsRoot, string txRoot, List<ApplyItem> items)
+    {
+        string pendingOwnership = Path.Combine(amsRoot, AutoModSyncOwnershipState.PendingFileName);
+        if (!File.Exists(pendingOwnership))
+            throw new InvalidDataException("AutoModSync versioned apply plan is missing ownership metadata.");
+
+        string fingerprint;
+        List<AutoModSyncOwnershipEntry> desired = AutoModSyncOwnershipState.ReadFile(pendingOwnership, "", out fingerprint);
+        if (!IsTrustedServerFingerprint(amsRoot, fingerprint))
+            throw new InvalidDataException("AutoModSync ownership transition is not tied to a trusted server fingerprint.");
+
+        List<AutoModSyncOwnershipEntry> current = AutoModSyncOwnershipState.ReadLedger(amsRoot, fingerprint);
+        Dictionary<string, AutoModSyncOwnershipEntry> currentByKey = OwnershipMap(current);
+        Dictionary<string, AutoModSyncOwnershipEntry> desiredByKey = OwnershipMap(desired);
+        Dictionary<string, ApplyItem> itemByKey = new Dictionary<string, ApplyItem>(StringComparer.OrdinalIgnoreCase);
+
+        int i;
+        for (i = 0; i < items.Count; i++)
+        {
+            ApplyItem item = items[i];
+            string key = item.Kind + ":" + item.RelativePath;
+            itemByKey[key] = item;
+
+            if (item.Operation == 'D')
+            {
+                AutoModSyncOwnershipEntry prior;
+                if (!currentByKey.TryGetValue(key, out prior)
+                    || prior.Size != item.ExpectedDeleteSize
+                    || !ConstantEquals(prior.Sha256, item.ExpectedDeleteSha256))
+                    throw new InvalidDataException("AutoModSync deletion lacks exact same-server ownership authority: " + item.RelativePath);
+                if (desiredByKey.ContainsKey(key))
+                    throw new InvalidDataException("AutoModSync ownership transition both deletes and retains the same destination: " + item.RelativePath);
+            }
+            else if (item.Operation == 'W')
+            {
+                AutoModSyncOwnershipEntry next;
+                if (!desiredByKey.TryGetValue(key, out next)
+                    || next.Size != item.NewSize
+                    || !ConstantEquals(next.Sha256, item.NewSha256))
+                    throw new InvalidDataException("AutoModSync prepared write is missing matching post-commit ownership: " + item.RelativePath);
+            }
+        }
+
+        foreach (KeyValuePair<string, AutoModSyncOwnershipEntry> pair in desiredByKey)
+        {
+            AutoModSyncOwnershipEntry prior;
+            bool unchanged = currentByKey.TryGetValue(pair.Key, out prior)
+                && prior.Size == pair.Value.Size
+                && ConstantEquals(prior.Sha256, pair.Value.Sha256);
+            if (unchanged) continue;
+
+            ApplyItem writer;
+            if (!itemByKey.TryGetValue(pair.Key, out writer)
+                || writer.Operation != 'W'
+                || writer.NewSize != pair.Value.Size
+                || !ConstantEquals(writer.NewSha256, pair.Value.Sha256))
+                throw new InvalidDataException("AutoModSync attempted to acquire/change ownership without a matching prepared write: " + pair.Value.RelativePath);
+        }
+
+        string txOwnership = Path.Combine(txRoot, TransactionOwnershipName);
+        AutoModSyncOwnershipState.WriteFileDurable(txOwnership, fingerprint, desired);
+    }
+
+    // Intent: Creates a unique key map from strict ownership entries for independent apply-helper transition validation.
+    private static Dictionary<string, AutoModSyncOwnershipEntry> OwnershipMap(IList<AutoModSyncOwnershipEntry> entries)
+    {
+        Dictionary<string, AutoModSyncOwnershipEntry> map = new Dictionary<string, AutoModSyncOwnershipEntry>(StringComparer.OrdinalIgnoreCase);
+        int i;
+        for (i = 0; i < entries.Count; i++)
+        {
+            AutoModSyncOwnershipEntry entry = entries[i];
+            string key = entry.Kind + ":" + entry.RelativePath;
+            if (map.ContainsKey(key)) throw new InvalidDataException("Duplicate AutoModSync ownership destination.");
+            map[key] = entry;
+        }
+        return map;
+    }
+
+    // Intent: Requires ownership publication/deletion authority to remain scoped to a fingerprint the user has explicitly trusted.
+    private static bool IsTrustedServerFingerprint(string amsRoot, string fingerprint)
+    {
+        if (!IsSha256(fingerprint)) return false;
+        string trusted = Path.Combine(amsRoot, "trusted-servers.txt");
+        if (!File.Exists(trusted)) return false;
+        string[] lines = File.ReadAllLines(trusted);
+        int i;
+        for (i = 0; i < lines.Length; i++)
+            if (String.Equals((lines[i] ?? "").Trim(), fingerprint, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
     // Intent: Persists the complete rollback/verification metadata before PREPARED is created.
     // Format is versioned and uses Base64 for the relative path so parsing does not depend on filename punctuation.
     private static void WriteTransactionManifest(string txRoot, List<ApplyItem> items)
     {
         string path = Path.Combine(txRoot, TransactionManifestName);
         StringBuilder sb = new StringBuilder();
-        sb.AppendLine("AMSTXN1");
+        sb.AppendLine("AMSTXN2");
 
         int i;
         for (i = 0; i < items.Count; i++)
         {
             ApplyItem item = items[i];
-            sb.Append(item.Kind).Append('|')
+            sb.Append(item.Operation).Append('|')
+              .Append(item.Kind).Append('|')
               .Append(item.OldExists ? "1" : "0").Append('|')
               .Append(item.NewSize.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
               .Append(item.NewSha256 ?? "").Append('|')
@@ -561,7 +672,12 @@ internal static class Program
         if (!File.Exists(path)) throw new InvalidDataException("AutoModSync transaction manifest is missing.");
 
         string[] lines = File.ReadAllLines(path);
-        if (lines.Length < 2 || !String.Equals(lines[0], "AMSTXN1", StringComparison.Ordinal))
+        if (lines.Length < 2)
+            throw new InvalidDataException("AutoModSync transaction manifest version/header is invalid.");
+
+        bool legacyV1 = String.Equals(lines[0], "AMSTXN1", StringComparison.Ordinal);
+        bool version2 = String.Equals(lines[0], "AMSTXN2", StringComparison.Ordinal);
+        if (!legacyV1 && !version2)
             throw new InvalidDataException("AutoModSync transaction manifest version/header is invalid.");
 
         List<ApplyItem> items = new List<ApplyItem>();
@@ -572,28 +688,48 @@ internal static class Program
         {
             if (String.IsNullOrWhiteSpace(lines[i])) continue;
             string[] parts = lines[i].Split('|');
-            if (parts.Length != 7) throw new InvalidDataException("Malformed AutoModSync transaction entry.");
+            if ((legacyV1 && parts.Length != 7) || (version2 && parts.Length != 8))
+                throw new InvalidDataException("Malformed AutoModSync transaction entry.");
 
-            char kind;
-            if (parts[0].Length != 1) throw new InvalidDataException("Invalid AutoModSync transaction kind.");
-            kind = parts[0][0];
+            int offset = version2 ? 1 : 0;
+            char operation = 'W';
+            if (version2)
+            {
+                if (parts[0].Length != 1) throw new InvalidDataException("Invalid AutoModSync transaction operation.");
+                operation = parts[0][0];
+                if (operation != 'W' && operation != 'D')
+                    throw new InvalidDataException("Unsupported AutoModSync transaction operation.");
+            }
+
+            if (parts[offset].Length != 1) throw new InvalidDataException("Invalid AutoModSync transaction kind.");
+            char kind = parts[offset][0];
             if (!IsSupportedKind(kind)) throw new InvalidDataException("Unsupported AutoModSync transaction kind.");
 
             bool oldExists;
-            if (parts[1] == "1") oldExists = true;
-            else if (parts[1] == "0") oldExists = false;
+            if (parts[offset + 1] == "1") oldExists = true;
+            else if (parts[offset + 1] == "0") oldExists = false;
             else throw new InvalidDataException("Invalid AutoModSync transaction old-state marker.");
 
             long newSize;
             long oldSize;
-            if (!Int64.TryParse(parts[2], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out newSize) || newSize < 0)
+            if (!Int64.TryParse(parts[offset + 2], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out newSize))
                 throw new InvalidDataException("Invalid AutoModSync transaction new-file size.");
-            if (!Int64.TryParse(parts[4], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out oldSize))
+            if (!Int64.TryParse(parts[offset + 4], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out oldSize))
                 throw new InvalidDataException("Invalid AutoModSync transaction old-file size.");
 
-            string newSha = parts[3] ?? "";
-            string oldSha = parts[5] ?? "";
-            if (!IsSha256(newSha)) throw new InvalidDataException("Invalid AutoModSync transaction new-file SHA-256.");
+            string newSha = parts[offset + 3] ?? "";
+            string oldSha = parts[offset + 5] ?? "";
+            if (operation == 'W')
+            {
+                if (newSize < 0 || !IsSha256(newSha))
+                    throw new InvalidDataException("Invalid AutoModSync transaction new-file metadata.");
+            }
+            else
+            {
+                if (newSize != -1L || newSha.Length != 0)
+                    throw new InvalidDataException("Invalid AutoModSync transaction delete new-state metadata.");
+            }
+
             if (oldExists)
             {
                 if (oldSize < 0 || !IsSha256(oldSha)) throw new InvalidDataException("Invalid AutoModSync transaction old-file metadata.");
@@ -605,7 +741,7 @@ internal static class Program
             }
 
             string rel;
-            try { rel = NormalizeRelative(Encoding.UTF8.GetString(Convert.FromBase64String(parts[6]))); }
+            try { rel = NormalizeRelative(Encoding.UTF8.GetString(Convert.FromBase64String(parts[offset + 6]))); }
             catch { throw new InvalidDataException("Invalid AutoModSync transaction path encoding."); }
             if (rel.Length == 0) throw new InvalidDataException("Unsafe AutoModSync transaction path.");
             if (kind == 'C' && IsProtectedConfigName(Path.GetFileName(rel)))
@@ -615,6 +751,7 @@ internal static class Program
             if (!seen.Add(key)) throw new InvalidDataException("Duplicate AutoModSync transaction destination.");
 
             ApplyItem item = new ApplyItem();
+            item.Operation = operation;
             item.Kind = kind;
             item.RelativePath = rel;
             item.OldExists = oldExists;
