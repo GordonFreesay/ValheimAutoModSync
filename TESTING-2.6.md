@@ -162,9 +162,9 @@ Development-only compatibility emulation is available without a second tester. C
 - [x] Cross-server ownership isolation is covered by production-helper CI and source review: only the current trusted fingerprint ledger is loaded, and another trusted fingerprint cannot authorize deletion from the first ledger.
 - [x] Source review confirms Phase 6 adds no network protocol break: no new server RPC/capability/wire field is introduced; the existing verified signed manifest + trusted fingerprint feed local ownership lifecycle while AMS remains protocol 4.
 - [x] `test-phase6-clientpayload.ps1` passes the production client-only payload/prior-server policy checks: recursive payload hashing, exclusion filtering, case-insensitive destination-collision rejection, exact prior-server matching, and malformed-marker fail-safe behavior.
-- [ ] Files under server `BepInEx/AutoModSync/ClientPayload/plugins/**` enter the signed manifest as ordinary `P:<relative>` destinations, including nested assets, while the dedicated server never loads that tree as plugins.
-- [ ] `ExcludePatterns` applies to ClientPayload files; `ServerOnlyPatterns` / `ClientRequiredPatterns` do not reclassify the explicit client-only tree.
-- [ ] A case-insensitive collision between normal synchronized plugins and `ClientPayload/plugins` fails manifest construction explicitly instead of silently choosing one source.
+- [x] Production ClientPayload scanner CI plus server source wiring confirms files under `BepInEx/AutoModSync/ClientPayload/plugins/**` are recursively collected and added to the signed manifest as ordinary `P:<relative>` destinations while remaining outside the dedicated server's loadable plugin tree; live lifecycle validation still exercises this path end-to-end.
+- [x] Production ClientPayload scanner CI plus server source wiring confirms `ExcludePatterns` is applied to the explicit client-only tree and `ServerOnlyPatterns` / `ClientRequiredPatterns` do not reclassify it.
+- [x] Production destination-collision validation plus server source wiring confirms case-insensitive same-kind collisions between normal synchronized plugins and `ClientPayload/plugins` fail manifest construction explicitly instead of silently choosing a source.
 - [x] Exact stale deletion is allowed only when the immediately prior successful AMS reconciliation used the same trusted fingerprint. After a server switch, exact stale cleanup is deferred until a subsequent consecutive successful sync with that server.
 
 ## Runtime evidence — 2026-09-23
