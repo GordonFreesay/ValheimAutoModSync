@@ -126,11 +126,17 @@ function Inspect-Test {
         Write-Host '  PASS no synthetic follower participated.'
     }
 
-    $admissionCount=[regex]::Matches($serverText,'AutoModSync bundle request admitted to scheduler: .*requestedFiles=1,').Count
-    if($admissionCount-eq 2){
+    $admissionMatches=[regex]::Matches($serverText,'AutoModSync bundle request admitted to scheduler: .*requestedFiles=(\d+),')
+    $admissionCounts=@()
+    foreach($m in $admissionMatches){$admissionCounts+=[int]$m.Groups[1].Value}
+    $oneFileAdmissions=@($admissionCounts|Where-Object{$_-eq 1}).Count
+    if($admissionCounts.Count-eq 2-and$oneFileAdmissions-eq 2){
         Write-Host '  PASS observed exactly two scheduler admissions for the same one-file delta.'
+    }elseif($admissionCounts.Count-eq 2){
+        Write-Host("  FAIL both real clients reached the scheduler, but their requested file sets differed: requestedFiles={0}. Single-flight sharing requires an identical signed file set."-f($admissionCounts-join','))
+        $ok=$false
     }else{
-        Write-Host("  FAIL expected exactly two scheduler admissions for the two real clients; observed {0}."-f$admissionCount)
+        Write-Host("  FAIL expected exactly two scheduler admissions for the two real clients; observed {0} total ({1} one-file)."-f$admissionCounts.Count,$oneFileAdmissions)
         $ok=$false
     }
 
