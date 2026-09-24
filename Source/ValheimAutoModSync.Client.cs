@@ -42,10 +42,11 @@ namespace ValheimAutoModSync
         private const string RpcBundleChunk = "AMS4_BundleChunk";
         private const string RpcBundleBatch = "AMS4_BundleBatch";
         private const string RpcBundleEnd = "AMS4_BundleEnd";
+        private const string RpcQueueStatus = "AMS4_QueueStatus";
         private const string RpcError = "AMS4_Error";
         private const int BundleBatchChunks = 16;
         private const int BundlePipelineChunks = 128;
-        private const string ClientCapabilities = "roots1;bundle-resume1";
+        private const string ClientCapabilities = "roots1;bundle-resume1;bundle-scheduler1";
 
         // 2.6 client-side hard ceilings are deliberately independent of server configuration.
         // A trusted server may choose smaller limits, but it cannot make this client allocate/write unbounded payloads.
@@ -69,6 +70,7 @@ namespace ValheimAutoModSync
         private static bool _serverSupportsBundleBatch;
         private static bool _serverSupportsBundlePipeline;
         private static bool _serverSupportsBundleResume;
+        private static bool _serverSupportsBundleScheduler;
         private static bool _allowPeerInfo;
         private static bool _preflightGateActive;
         private static bool _allowServerHandshake;
@@ -533,6 +535,7 @@ namespace ValheimAutoModSync
                 _serverSupportsBundleBatch = false;
                 _serverSupportsBundlePipeline = false;
                 _serverSupportsBundleResume = false;
+                _serverSupportsBundleScheduler = false;
                 _preflightGateActive = false;
 #if AMS_DEV_TESTS
                 _devEmulateLegacyClient = ConsumeDevelopmentLegacyClientMarker();
@@ -576,6 +579,7 @@ namespace ValheimAutoModSync
                 rpc.Register<ZPackage>(RpcBundleChunk, new Action<ZRpc, ZPackage>(RPC_BundleChunk));
                 rpc.Register<ZPackage>(RpcBundleBatch, new Action<ZRpc, ZPackage>(RPC_BundleBatch));
                 rpc.Register<ZPackage>(RpcBundleEnd, new Action<ZRpc, ZPackage>(RPC_BundleEnd));
+                rpc.Register<ZPackage>(RpcQueueStatus, new Action<ZRpc, ZPackage>(RPC_QueueStatus));
                 rpc.Register<ZPackage>(RpcError, new Action<ZRpc, ZPackage>(RPC_Error));
                 Registered.Add(rpc);
             }
@@ -606,10 +610,12 @@ namespace ValheimAutoModSync
                 _serverSupportsBundleBatch = capabilities.IndexOf("bundle-batch1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundlePipeline = capabilities.IndexOf("bundle-pipeline1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleResume = capabilities.IndexOf("bundle-resume1", StringComparison.Ordinal) >= 0;
+                _serverSupportsBundleScheduler = capabilities.IndexOf("bundle-scheduler1", StringComparison.Ordinal) >= 0;
 #if AMS_DEV_TESTS
                 if (_devEmulateLegacyClient)
                 {
                     _serverSupportsBundleResume = false;
+                _serverSupportsBundleScheduler = false;
                     if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST emulating a pre-resume AMS4 client; bundle-resume1 is ignored for this connection.");
                 }
 #endif
@@ -1355,6 +1361,33 @@ namespace ValheimAutoModSync
             return n.ToString(unit == 0 ? "0" : "0.0", CultureInfo.InvariantCulture) + " " + units[unit];
         }
 
+        // Intent: Displays FIFO synchronization-queue status while a recognized AMS server is holding this client for an active transfer slot.
+        // Compatibility: this optional RPC is used only when bundle-scheduler1 was advertised during AMS4 acknowledgement.
+        private static void RPC_QueueStatus(ZRpc rpc, ZPackage pkg)
+        {
+            if (rpc != _pendingRpc || !_serverRecognized || !_serverSupportsBundleScheduler) return;
+            try
+            {
+                int position = pkg.ReadInt();
+                int active = pkg.ReadInt();
+                int maxActive = pkg.ReadInt();
+                if (position < 1 || position > 100000 || active < 0 || maxActive < 1 || active > maxActive)
+                    throw new InvalidDataException("Invalid AutoModSync synchronization queue status.");
+
+                ShowSyncOverlay("Queued for synchronization...",
+                    "Position " + position.ToString(CultureInfo.InvariantCulture) +
+                    " · " + active.ToString(CultureInfo.InvariantCulture) +
+                    "/" + maxActive.ToString(CultureInfo.InvariantCulture) + " transfer slots active");
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync synchronization queue: position " + position.ToString(CultureInfo.InvariantCulture) +
+                        ", active=" + active.ToString(CultureInfo.InvariantCulture) + "/" + maxActive.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+            catch (Exception ex)
+            {
+                AbortAutoModSyncJoin("Invalid AutoModSync synchronization queue status: " + ex.Message);
+            }
+        }
+
         // Intent: Handles a server-reported AMS error for the active RPC and falls back to normal Valheim behavior without applying files.
         private static void RPC_Error(ZRpc rpc, ZPackage pkg)
         {
@@ -1604,6 +1637,7 @@ namespace ValheimAutoModSync
                 _serverSupportsBundleBatch = false;
                 _serverSupportsBundlePipeline = false;
                 _serverSupportsBundleResume = false;
+                _serverSupportsBundleScheduler = false;
                 _preflightGateActive = false;
                 _serverHandshakeHeld = false;
                 _heldServerHandshakeParameters = new object[0];
