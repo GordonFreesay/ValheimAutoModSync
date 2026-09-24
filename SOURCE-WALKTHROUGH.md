@@ -115,7 +115,11 @@ Recursive manifest scanning does not traverse reparse-point files/directories. B
 
 ### Source/ValheimAutoModSync.Installer.cs
 
-The standalone GUI installer is the primary manual-distribution entry point for 2.5.0. It requires administrator elevation through its embedded Windows manifest because Steam installations commonly live under Program Files.
+The standalone GUI installer is the primary manual-distribution entry point. It requires administrator elevation through its embedded Windows manifest because Steam installations commonly live under Program Files.
+
+For 2.6 the WinForms surface uses the same embedded AMS logo and charcoal/orange branding as the in-game synchronization UI. It continuously inspects the selected root and changes `Install` to `Repair / Update` when the chosen role is complete. An `Uninstall` action is exposed only when every required component for the selected Client, Dedicated Server, or Host & Play role is present; partial/ambiguous installs remain repair-only.
+
+Uninstall is deliberately conservative. Shared BepInEx and unrelated mods are never removed. For a client uninstall, fingerprint-scoped ownership ledgers are strictly parsed and a synchronized file is retired only when its live size/SHA-256 still exactly match the bytes AutoModSync last owned; locally changed or ambiguous files are preserved. A pending apply/recovery transaction blocks uninstall rather than destroying rollback evidence. For a server uninstall, the plugin, generated bundle cache, and release client payload are removed, while operator-managed `ClientPayload` content is preserved. Server config and signing identity are preserved by default so reinstall keeps the same server identity; an explicit warning checkbox is required to remove them.
 
 It performs no network downloads. The release builder downloads the pinned BepInEx archive once at build time, verifies its fixed SHA-256, and places that archive under `Bundled/`. The installer verifies that same SHA-256 before extracting BepInEx for a dedicated-server install.
 
@@ -125,7 +129,7 @@ The installer supports the same three roles as the fallback BAT file:
 - Dedicated Server
 - Host & Play
 
-It preserves existing BepInEx installations, preserves existing server config/signing identity, refuses to overwrite an unknown `winhttp.dll`, and removes a legacy packed `version.dll` only when its SHA-256 matches the known historical AutoModSync bootstrap.
+It preserves existing BepInEx installations, preserves existing server config/signing identity unless explicitly requested during uninstall, refuses to overwrite an unknown `winhttp.dll`, and removes a legacy packed `version.dll` only when its SHA-256 matches the known historical AutoModSync bootstrap. Normal installer output uses the short server identity verification code rather than printing the complete signing-key fingerprint.
 
 ### Source/ValheimAutoModSync.Apply.cs
 
