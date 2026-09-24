@@ -47,6 +47,10 @@ try {
     $client = Join-Path $root 'Source\ValheimAutoModSync.Client.cs'
     Assert-Contains $client 'private static readonly AutoModSyncUiState _uiState' 'Client UI'
     Assert-Contains $client 'ValheimAutoModSync.Branding.Logo.png' 'Client UI'
+    Assert-Contains $client 'Type.GetType("UnityEngine.ImageConversion, UnityEngine.ImageConversionModule")' 'Client UI'
+    if ([System.IO.File]::ReadAllText($client).IndexOf('ImageConversion.LoadImage(texture, bytes)', [System.StringComparison]::Ordinal) -ge 0) {
+        throw 'Client UI must late-bind Unity PNG decoding; direct ImageConversion.LoadImage overload resolution breaks the legacy compiler against current Valheim assemblies.'
+    }
     Assert-Contains $client 'AutoModSyncUiPhase.Downloading' 'Client UI'
     Assert-Contains $client '_uiState.UpdateTransfer' 'Client UI'
     Assert-Contains $client '_uiState.BeginVerification' 'Client UI'
@@ -56,8 +60,12 @@ try {
     Write-Host '  PASS'
 
     Write-Host '[4/4] Verifying dev/release/deploy/store packaging keeps the helper ICO beside the EXE...'
-    Assert-Contains (Join-Path $root 'build-dev.bat') '/resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png' 'Dev build'
-    Assert-Contains (Join-Path $root 'build-dev.bat') '/win32icon:"%APPLYICO%"' 'Dev build'
+    $devBuild = Join-Path $root 'build-dev.bat'
+    Assert-Contains $devBuild '/resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png' 'Dev build'
+    Assert-Contains $devBuild '/win32icon:"%APPLYICO%"' 'Dev build'
+    if ([System.IO.File]::ReadAllText($devBuild).IndexOf('/reference:"%UNITY_IMAGE%"', [System.StringComparison]::Ordinal) -ge 0) {
+        throw 'Dev build must not directly reference UnityEngine.ImageConversionModule.dll with the legacy compiler.'
+    }
     Assert-Contains (Join-Path $root 'build-release.bat') '/resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png' 'Release build'
     Assert-Contains (Join-Path $root 'build-release.bat') '/win32icon:"%APPLYICO%"' 'Release build'
     Assert-Contains (Join-Path $root 'build-release.bat') 'ValheimAutoModSyncInstaller.ico' 'Standalone installer package'
