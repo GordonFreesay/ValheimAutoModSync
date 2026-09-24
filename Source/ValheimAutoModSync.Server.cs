@@ -93,6 +93,8 @@ namespace ValheimAutoModSync
         private static readonly HashSet<ZRpc> DevelopmentSuppressedAmsPeers = new HashSet<ZRpc>();
         private static readonly Dictionary<ZRpc, string> DevelopmentFailClosedModes = new Dictionary<ZRpc, string>();
         private static int DevelopmentBundleCacheSecondsOverride = -1;
+        private static bool DevelopmentDisableStartupPrewarm;
+        private static int DevelopmentDelayNextBundleBuildMs;
 #endif
         private static DateTime _nextTransferCleanupUtc = DateTime.MinValue;
 
@@ -214,6 +216,7 @@ namespace ValheimAutoModSync
 
 #if AMS_DEV_TESTS
             ConsumeDevelopmentPhase3ZeroTtlMarker();
+            ConsumeDevelopmentPhase3DisablePrewarmMarker();
 #endif
 
             _transferScheduler = new AutoModSyncTransferScheduler(
@@ -510,6 +513,13 @@ namespace ValheimAutoModSync
         {
             if (_enabled == null || !_enabled.Value || _prebuildFreshClientBundle == null || !_prebuildFreshClientBundle.Value) return;
             if (!IsDedicatedServerProcess()) return;
+#if AMS_DEV_TESTS
+            if (DevelopmentDisableStartupPrewarm)
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST disabled startup bundle prewarm for this server process.");
+                return;
+            }
+#endif
 
             try
             {
@@ -614,6 +624,64 @@ namespace ValheimAutoModSync
             {
                 if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV Phase 3 cache-TTL marker could not be consumed: " + ex.Message);
             }
+        }
+#endif
+
+#if AMS_DEV_TESTS
+        // Intent: Disables startup prewarm for one development server process so ordinary on-demand MISS/HIT cache behavior can be validated without a startup artifact masking the first request.
+        private static void ConsumeDevelopmentPhase3DisablePrewarmMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-disable-prewarm.once");
+                if (!File.Exists(marker)) return;
+                try { File.Delete(marker); } catch { }
+                DevelopmentDisableStartupPrewarm = true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV Phase 3 disable-prewarm marker could not be consumed: " + ex.Message);
+            }
+        }
+
+        // Intent: Adds one concurrent follower acquisition against the exact production cache path.
+        // Concurrency: the main request claims the build slot, its build is briefly delayed, and the follower must observe WAIT then acquire the identical published artifact as WAIT-HIT.
+        private static void StartDevelopmentSingleFlightFollowerIfArmed(PendingBundleRequest request, long maxBundleBytes)
+        {
+            if (request == null) return;
+            string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-singleflight-follower.once");
+            if (!File.Exists(marker)) return;
+            try { File.Delete(marker); } catch { }
+
+            Interlocked.Exchange(ref DevelopmentDelayNextBundleBuildMs, 1500);
+            List<FileRecord> records = new List<FileRecord>(request.Records);
+            long expandedBytes = request.ExpandedBytes;
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                BundleArtifact followerArtifact = null;
+                try
+                {
+                    Thread.Sleep(150);
+                    string followerStatus;
+                    double followerWaitSeconds;
+                    followerArtifact = AcquireBundleArtifact(records, expandedBytes, maxBundleBytes, out followerStatus, out followerWaitSeconds);
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST single-flight follower result: cache=" + followerStatus +
+                            ", key=" + ShortCacheKey(followerArtifact.CacheKey) +
+                            ", sha256=" + followerArtifact.Sha256 +
+                            ", compressedBytes=" + followerArtifact.Size.ToString(CultureInfo.InvariantCulture) +
+                            ", wait=" + followerWaitSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s.");
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV TEST single-flight follower failed: " + ex.Message);
+                }
+                finally
+                {
+                    if (followerArtifact != null) ReleaseBundleArtifact(followerArtifact);
+                }
+            });
         }
 #endif
 
@@ -1035,6 +1103,9 @@ namespace ValheimAutoModSync
                 long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
                 string cacheStatus;
                 double waitSeconds;
+#if AMS_DEV_TESTS
+                StartDevelopmentSingleFlightFollowerIfArmed(request, maxBundleBytes);
+#endif
                 Stopwatch prepareWatch = Stopwatch.StartNew();
                 artifact = AcquireBundleArtifact(request.Records, request.ExpandedBytes, maxBundleBytes, out cacheStatus, out waitSeconds);
                 prepareWatch.Stop();
@@ -1127,6 +1198,8 @@ namespace ValheimAutoModSync
                     double queueSeconds = Math.Max(0.0, (DateTime.UtcNow - request.QueuedUtc).TotalSeconds);
                     _instance.Logger.LogInfo("AutoModSync bundle ready: cache=" + cacheStatus +
                         ", key=" + ShortCacheKey(artifact.CacheKey) +
+                        ", sha256=" + artifact.Sha256 +
+                        ", compressedBytes=" + artifact.Size.ToString(CultureInfo.InvariantCulture) +
                         ", files=" + artifact.FileCount.ToString(CultureInfo.InvariantCulture) +
                         ", compressed=" + FormatBytes(artifact.Size) +
                         ", expanded=" + FormatBytes(artifact.ExpandedBytes) +
@@ -1442,6 +1515,14 @@ namespace ValheimAutoModSync
             try
             {
                 if (File.Exists(finalPath)) File.Delete(finalPath);
+#if AMS_DEV_TESTS
+                int developmentDelayMs = Interlocked.Exchange(ref DevelopmentDelayNextBundleBuildMs, 0);
+                if (developmentDelayMs > 0)
+                {
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST delaying one bundle build by " + developmentDelayMs.ToString(CultureInfo.InvariantCulture) + " ms to force an overlapping identical acquisition.");
+                    Thread.Sleep(developmentDelayMs);
+                }
+#endif
 
                 zipWatch.Start();
                 using (FileStream output = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
