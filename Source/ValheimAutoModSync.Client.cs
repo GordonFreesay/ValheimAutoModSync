@@ -140,7 +140,7 @@ namespace ValheimAutoModSync
         private static DateTime _nextServerBrowserBadgeRefreshUtc = DateTime.MinValue;
         private static readonly Dictionary<string, ServerBrowserPresence> ServerBrowserPresenceCache = new Dictionary<string, ServerBrowserPresence>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<int, Vector4> ServerBrowserOriginalNameMargins = new Dictionary<int, Vector4>();
-        private static FieldInfo _serverBrowserFilteredListField;
+        private static FieldInfo _serverBrowserElementsField;
         private static FieldInfo _serverBrowserEnsureVisibleField;
         private static Type _serverBrowserImageType;
         private static Type _serverBrowserTextType;
@@ -3178,7 +3178,8 @@ namespace ValheimAutoModSync
             return ClientCapabilities;
         }
 
-        // Intent: Refreshes AMS badges only while Valheim's Join Game browser is visible, using the live row/index structure confirmed by the Phase 7 browser probe.
+        // Intent: Refreshes AMS badges only while Valheim's Join Game browser is visible, binding each rendered row to the ServerJoinData carried by the same ServerListElement wrapper.
+        // Correctness: pooled UI rows and m_filteredList are updated independently by Valheim, so index-zipping those collections is forbidden; an unproven binding always renders no AMS badge.
         // Network scope: only currently visible dedicated rows are considered, Steam rule lookups are cached, and at most four rule queries can be outstanding at once.
         private static void UpdateServerBrowserBadges()
         {
@@ -3198,37 +3199,47 @@ namespace ValheimAutoModSync
             try { listRoot = panel.transform.Find("ServerList/ListRoot"); } catch { }
             if (listRoot == null) return;
 
-            if (_serverBrowserFilteredListField == null)
-                _serverBrowserFilteredListField = typeof(ServerListGui).GetField("m_filteredList", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (_serverBrowserFilteredListField == null) return;
-
-            IList filtered = null;
-            try { filtered = _serverBrowserFilteredListField.GetValue(browser) as IList; } catch { }
-            if (filtered == null) return;
-
             bool enabled = _showServerBadges == null || _showServerBadges.Value;
-            RectTransform viewport = GetServerBrowserViewport(browser, panel, listRoot);
-            int rowCount = Math.Min(listRoot.childCount, filtered.Count);
-            int i;
-            for (i = 0; i < rowCount; i++)
+            if (!enabled)
             {
-                Transform row = listRoot.GetChild(i);
-                if (row == null) continue;
+                HideAllServerBrowserBadges(listRoot);
+                return;
+            }
 
-                if (!enabled)
-                {
-                    SetServerBrowserBadge(row, false, "");
-                    continue;
-                }
+            if (_serverBrowserElementsField == null)
+                _serverBrowserElementsField = typeof(ServerListGui).GetField("m_serverListElements", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (_serverBrowserElementsField == null)
+            {
+                HideAllServerBrowserBadges(listRoot);
+                return;
+            }
 
-                if (!IsServerBrowserRowVisible(row as RectTransform, viewport)) continue;
+            IList elements = null;
+            try { elements = _serverBrowserElementsField.GetValue(browser) as IList; } catch { }
+            if (elements == null)
+            {
+                HideAllServerBrowserBadges(listRoot);
+                return;
+            }
 
+            RectTransform viewport = GetServerBrowserViewport(browser, panel, listRoot);
+            HashSet<int> boundRows = new HashSet<int>();
+            int i;
+            for (i = 0; i < elements.Count; i++)
+            {
+                object element = elements[i];
+                Transform row;
                 string host;
                 int gamePort;
-                if (!TryGetServerBrowserEndpoint(filtered[i], out host, out gamePort))
+                if (!TryGetServerBrowserElementBinding(element, out row, out host, out gamePort))
+                    continue;
+
+                int rowId = row.gameObject.GetInstanceID();
+                boundRows.Add(rowId);
+
+                if (!IsServerBrowserRowVisible(row as RectTransform, viewport))
                 {
-                    // Valheim rebuilds the pooled row list and filtered model in separate steps while changing tabs.
-                    // A transient mismatch must not erase a badge from a row that will be rebound on the next refresh.
+                    SetServerBrowserBadge(row, false, "");
                     continue;
                 }
 
@@ -3241,7 +3252,137 @@ namespace ValheimAutoModSync
                 SetServerBrowserBadge(row, show, show ? presence.Version : "");
             }
 
+            // Any rendered pooled row that is not represented by one current ServerListElement binding is ambiguous.
+            // Fail closed visually: hide its AMS badge rather than carrying branding across a recycled row.
+            for (i = 0; i < listRoot.childCount; i++)
+            {
+                Transform row = listRoot.GetChild(i);
+                if (row == null) continue;
+                if (!boundRows.Contains(row.gameObject.GetInstanceID()))
+                    SetServerBrowserBadge(row, false, "");
+            }
+
             PruneServerBrowserPresenceCache(now);
+        }
+
+        // Intent: Hides AMS branding from every currently rendered server row, used for opt-out and fail-closed browser binding.
+        private static void HideAllServerBrowserBadges(Transform listRoot)
+        {
+            if (listRoot == null) return;
+            int i;
+            for (i = 0; i < listRoot.childCount; i++)
+            {
+                Transform row = listRoot.GetChild(i);
+                if (row != null) SetServerBrowserBadge(row, false, "");
+            }
+        }
+
+        // Intent: Extracts the rendered ServerElement row and dedicated endpoint from one ServerListElement wrapper so UI identity and server identity come from the same Valheim object.
+        // Safety: the binding is accepted only when both halves can be proven from the wrapper; there is no index-based fallback to m_filteredList.
+        private static bool TryGetServerBrowserElementBinding(object element, out Transform row, out string host, out int gamePort)
+        {
+            row = null;
+            host = "";
+            gamePort = 0;
+            if (element == null) return false;
+
+            row = FindServerBrowserRow(element, 0, new HashSet<object>());
+            if (row == null) return false;
+
+            ServerJoinData joinData;
+            if (!TryExtractServerJoinData(element, 0, out joinData) || !joinData.IsValid || (int)joinData.m_type != 3) return false;
+
+            try
+            {
+                ServerJoinDataDedicated dedicated = joinData.Dedicated;
+                host = (dedicated.GetHost() ?? "").Trim();
+                gamePort = dedicated.m_port;
+                return host.Length > 0 && gamePort > 0 && gamePort < 65535;
+            }
+            catch
+            {
+                row = null;
+                host = "";
+                gamePort = 0;
+                return false;
+            }
+        }
+
+        // Intent: Finds the actual ServerElement transform owned by one ServerListElement wrapper using a bounded reflection walk over only server/UI container members.
+        private static Transform FindServerBrowserRow(object value, int depth, HashSet<object> visited)
+        {
+            if (value == null || depth > 2 || visited == null) return null;
+            if (!value.GetType().IsValueType)
+            {
+                if (visited.Contains(value)) return null;
+                visited.Add(value);
+            }
+
+            GameObject gameObject = value as GameObject;
+            if (gameObject != null)
+                return String.Equals(gameObject.name, "ServerElement(Clone)", StringComparison.Ordinal) ||
+                       String.Equals(gameObject.name, "ServerElement", StringComparison.Ordinal)
+                    ? gameObject.transform
+                    : null;
+
+            Transform transform = value as Transform;
+            if (transform != null)
+                return String.Equals(transform.name, "ServerElement(Clone)", StringComparison.Ordinal) ||
+                       String.Equals(transform.name, "ServerElement", StringComparison.Ordinal)
+                    ? transform
+                    : null;
+
+            Component component = value as Component;
+            if (component != null)
+            {
+                Transform componentTransform = component.transform;
+                if (componentTransform != null &&
+                    (String.Equals(componentTransform.name, "ServerElement(Clone)", StringComparison.Ordinal) ||
+                     String.Equals(componentTransform.name, "ServerElement", StringComparison.Ordinal)))
+                    return componentTransform;
+            }
+
+            Type type = value.GetType();
+            FieldInfo[] fields;
+            try { fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic); }
+            catch { fields = new FieldInfo[0]; }
+
+            int i;
+            for (i = 0; i < fields.Length; i++)
+            {
+                FieldInfo field = fields[i];
+                if (!ShouldInspectServerBrowserUiMember(field.FieldType)) continue;
+                object child = null;
+                try { child = field.GetValue(value); } catch { continue; }
+                Transform found = FindServerBrowserRow(child, depth + 1, visited);
+                if (found != null) return found;
+            }
+
+            PropertyInfo[] properties;
+            try { properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic); }
+            catch { properties = new PropertyInfo[0]; }
+
+            for (i = 0; i < properties.Length; i++)
+            {
+                PropertyInfo property = properties[i];
+                if (!property.CanRead || property.GetIndexParameters().Length != 0 || !ShouldInspectServerBrowserUiMember(property.PropertyType)) continue;
+                object child = null;
+                try { child = property.GetValue(value, null); } catch { continue; }
+                Transform found = FindServerBrowserRow(child, depth + 1, visited);
+                if (found != null) return found;
+            }
+
+            return null;
+        }
+
+        // Intent: Bounds row-owner reflection to Valheim/Unity UI container types so browser discovery never walks arbitrary object graphs.
+        private static bool ShouldInspectServerBrowserUiMember(Type type)
+        {
+            if (type == null || type.IsPrimitive || type.IsEnum || type == typeof(string)) return false;
+            if (typeof(GameObject).IsAssignableFrom(type) || typeof(Transform).IsAssignableFrom(type) || typeof(Component).IsAssignableFrom(type)) return true;
+            string name = type.FullName ?? type.Name ?? "";
+            return name.IndexOf("ServerListElement", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   name.IndexOf("ServerListEntry", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         // Intent: Uses Valheim's own ServerList scroll controller as the clipping rectangle, falling back to the JoinPanel only when that private field is unavailable.
@@ -3311,30 +3452,6 @@ namespace ValheimAutoModSync
             _instance.Logger.LogInfo("AutoModSync DEV browser row binding: row=" + id.ToString(CultureInfo.InvariantCulture) + " endpoint=" + key + ".");
         }
 #endif
-
-        // Intent: Extracts the dedicated host/game-port pair from Valheim's ServerListEntryData without depending on a private field name that may change between game builds.
-        private static bool TryGetServerBrowserEndpoint(object entry, out string host, out int gamePort)
-        {
-            host = "";
-            gamePort = 0;
-
-            ServerJoinData joinData;
-            if (!TryExtractServerJoinData(entry, 0, out joinData) || !joinData.IsValid || (int)joinData.m_type != 3) return false;
-
-            try
-            {
-                ServerJoinDataDedicated dedicated = joinData.Dedicated;
-                host = (dedicated.GetHost() ?? "").Trim();
-                gamePort = dedicated.m_port;
-                return host.Length > 0 && gamePort > 0 && gamePort < 65535;
-            }
-            catch
-            {
-                host = "";
-                gamePort = 0;
-                return false;
-            }
-        }
 
         // Intent: Finds a boxed ServerJoinData inside one browser-entry object using a bounded two-level reflection walk, allowing the badge feature to survive harmless private-field renames.
         private static bool TryExtractServerJoinData(object value, int depth, out ServerJoinData joinData)
