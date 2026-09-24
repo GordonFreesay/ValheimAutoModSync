@@ -430,7 +430,7 @@ namespace ValheimAutoModSync
             long id;
             if (!SchedulerPeerIds.TryGetValue(rpc, out id)) return;
             int position = _transferScheduler.QueuePosition(id);
-            if (position <= 0) return;
+            if (position <= 0 || _transferScheduler.ActiveCount < _transferScheduler.MaxActive) return;
 
             try
             {
