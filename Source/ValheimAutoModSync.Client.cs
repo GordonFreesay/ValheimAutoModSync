@@ -1088,6 +1088,14 @@ namespace ValheimAutoModSync
 #if AMS_DEV_TESTS
                 if (_devEmulateLegacyClient && !_serverSupportsBundleResume && _instance != null)
                     _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-client compatibility confirmed: original AMS4 bundle header shape accepted.");
+
+                if (ConsumeDevelopmentPhase3StopAfterBundleHeaderMarker())
+                {
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 stopping after validated bundle header before payload transfer.");
+                    AbortAutoModSyncJoin("DEV TEST Phase 3 stopped after validated bundle header.");
+                    return;
+                }
 #endif
 
                 if (!_serverSupportsBundleResume)
