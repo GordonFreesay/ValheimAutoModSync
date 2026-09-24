@@ -246,13 +246,16 @@ Development-only compatibility emulation is available without a second tester. C
 - [x] Local 2026-09-24 dev build PII guard passed before compilation over first-party tracked text and again after compilation over the authored Client DLL, Server DLL, and Apply EXE; source documentation validation also passed all 15 C# files before the build.
 - [x] Dedicated Steam server publishes `automodsync=<version>` and `automodsync_protocol=<protocol>` as passive server rules when `Discovery.AdvertiseAutoModSync=true`.
 - [ ] Development server-browser probe captures the exact Valheim 1.0 `ServerListGui` row hierarchy/field layout for Favorite/Recent/Friends/Community without mutating UI or issuing network discovery requests.
-- [ ] AMS-aware client renders a small logo badge beside each positively identified AMS server row without altering the advertised server name; Steam-rule discovery is passive and no fingerprint/PII is exposed.
+- [x] AMS-aware client renders a small logo badge beside a positively identified AMS Favorite row without altering the advertised server name; Steam-rule discovery is passive and no fingerprint/PII is exposed.
+- [ ] Server-browser pooled-row reuse is clean across Favorite/Recent/Friends/Community: AMS badges follow only positively identified AMS entries, never remain on reused non-AMS rows, and disappear when `Discovery.ShowServerBadges=false`.
 - [ ] `verify-no-pii.ps1` passes over tracked first-party text and the current AutoModSync-authored dev binaries.
 - [x] Real changed-file synchronization drives comparison -> queue (when applicable) -> download -> verify -> apply/restart -> reconnect states from production events, with telemetry moving monotonically and the final reconnect remaining one-shot.
 - [ ] A real interrupted/resumed package displays the retained prefix, measures only new session bytes for average rate, completes verification/apply/reconnect, and leaves no stale Phase 7 overlay.
 - [ ] Failure/connection-loss presentation self-clears and never changes the established fail-open/fail-closed policy.
 
 The development-only visual preview is presentation-only: it does not open an AutoModSync connection, alter trust, request a bundle, write synchronized files, or change scheduler/transfer policy. A real connection immediately disables the preview. Release builds do not compile the marker path.
+
+Server-browser badge visual evidence, 2026-09-24: the live Valheim Favorite list rendered the embedded AMS shield immediately to the left of the unchanged server name after passive rule discovery. The badge fit inside the existing `ServerElement/name` row without clipping the version/player/status columns or rewriting the advertised name. Cross-tab/pool-reuse cleanup remains a separate browser UI gate.
 
 Steam browser presence evidence, 2026-09-24: the dedicated server published `automodsync=2.6.0` and `automodsync_protocol=4` successfully through Steam server rules. The validation harness confirmed that no signing fingerprint is part of the advertised marker. This closes the server-side passive presence publication gate; client-side row identification/badge rendering remains pending.
 
