@@ -45,6 +45,7 @@ try {
 
     Write-Host '[3/4] Verifying the production client is state-driven and expects the embedded logo resource...'
     $client = Join-Path $root 'Source\ValheimAutoModSync.Client.cs'
+    $server = Join-Path $root 'Source\ValheimAutoModSync.Server.cs'
     Assert-Contains $client 'private static readonly AutoModSyncUiState _uiState' 'Client UI'
     Assert-Contains $client 'ValheimAutoModSync.Branding.Logo.png' 'Client UI'
     Assert-Contains $client 'Type.GetType("UnityEngine.ImageConversion, UnityEngine.ImageConversionModule")' 'Client UI'
@@ -57,7 +58,12 @@ try {
     Assert-Contains $client '_uiState.SetComparison' 'Client UI'
     Assert-Contains $client '_uiState.SetQueue' 'Client UI'
     Assert-Contains $client 'phase7-test-ui-preview.once' 'Client UI preview'
+    Assert-Contains $client 'phase7-test-server-browser-probe.once' 'Client server-browser probe'
+    Assert-Contains $client 'AutoModSync DEV SERVER BROWSER PROBE BEGIN' 'Client server-browser probe'
     Assert-Contains $client 'AutoModSyncIdentityDisplay.VerificationCode' 'Client identity display'
+    Assert-Contains $server 'SteamGameServer.SetKeyValue("automodsync", PluginVersion)' 'Server browser presence'
+    Assert-Contains $server 'SteamGameServer.SetKeyValue("automodsync_protocol"' 'Server browser presence'
+    Assert-Contains $server 'AdvertiseAutoModSync' 'Server browser presence config'
     Write-Host '  PASS'
 
     Write-Host '[4/4] Verifying dev/release/deploy/store packaging keeps the helper ICO beside the EXE...'
