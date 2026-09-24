@@ -247,7 +247,7 @@ namespace ValheimAutoModSync
                 LoadIdentity();
                 CleanupOldBundleCache();
                 Logger.LogInfo("AutoModSync uses Valheim's existing ZRpc connection; no additional listening port is opened.");
-                Logger.LogInfo("AutoModSync server fingerprint: " + _publicFingerprint);
+                Logger.LogInfo("AutoModSync server identity verification code: " + AutoModSyncIdentityDisplay.VerificationCode(_publicFingerprint) + ".");
                 new Harmony(PluginGuid).PatchAll(typeof(NetworkPatches));
                 Logger.LogInfo("AutoModSync early connection hooks installed.");
                 try { UpgradeDevelopmentTransferDefaults(); }
