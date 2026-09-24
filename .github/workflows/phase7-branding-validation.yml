@@ -1,0 +1,35 @@
+name: Phase 7 Branding Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+    paths:
+      - "Source/ValheimAutoModSync.Client.cs"
+      - "Source/AutoModSync.SyncUiState.cs"
+      - "Thunderstore/icon.png"
+      - "build-branding-assets.ps1"
+      - "build-dev.bat"
+      - "build-release.bat"
+      - "deploy-dev.ps1"
+      - "build-thunderstore.ps1"
+      - "build-modsite-package.ps1"
+      - "install.bat"
+      - "test-phase7-branding.ps1"
+      - ".github/workflows/phase7-branding-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  branding:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run deterministic Phase 7 branding/package harness
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase7-branding.ps1"
