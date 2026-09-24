@@ -241,6 +241,9 @@ Development-only compatibility emulation is available without a second tester. C
 - [x] Gray/charcoal/orange/ember palette, typography, stat tiles, progress bars, fingerprint block, and failure accent were visually readable against multiple Valheim intro/menu backgrounds.
 - [x] Resumed Downloading preview clearly shows retained bytes plus current/average throughput and ETA without treating retained bytes as current-session throughput.
 - [x] `ValheimAutoModSync.Apply.exe` exposes an associated 32x32 embedded icon and `ValheimAutoModSync.Apply.ico` is produced beside it by the dev build.
+- [ ] First-contact branded UI and native trust prompt show only the 64-bit security code; the complete/partial fingerprint is absent from normal player presentation and normal client/server logs.
+- [ ] Already-trusted compare/download/reconnect UI footer says `TRUSTED SERVER` without a stable fingerprint fragment.
+- [ ] `verify-no-pii.ps1` passes over tracked first-party text and the current AutoModSync-authored dev binaries.
 - [ ] Real changed-file synchronization drives comparison -> queue (when applicable) -> download -> verify -> apply/restart -> reconnect states from production events, with telemetry moving monotonically and the final reconnect remaining one-shot.
 - [ ] A real interrupted/resumed package displays the retained prefix, measures only new session bytes for average rate, completes verification/apply/reconnect, and leaves no stale Phase 7 overlay.
 - [ ] Failure/connection-loss presentation self-clears and never changes the established fail-open/fail-closed policy.
