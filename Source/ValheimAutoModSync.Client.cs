@@ -2703,9 +2703,11 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Best-effort dismissal when a protected connection dies while the native trust dialog is still open.
-        // Reliability: targets the exact native thread that owns this MessageBox and retries briefly so a late-created dialog cannot survive generation invalidation.
+        // Reliability: MB_YESNO has no Cancel result, so WM_CLOSE can be ignored; after generation invalidation we post the dialog's IDNO command to the exact prompt thread and retry briefly for late window creation.
         private static bool CloseNativeTrustPromptWindow(int nativeThreadId, bool allowCaptionFallback)
         {
+            const uint WM_COMMAND = 0x0111u;
+            const int IDNO = 7;
             bool found = false;
             try
             {
@@ -2714,7 +2716,7 @@ namespace ValheimAutoModSync
                     EnumThreadWindows(unchecked((uint)nativeThreadId), delegate(IntPtr hwnd, IntPtr lParam)
                     {
                         found = true;
-                        try { PostMessage(hwnd, 0x0010u, IntPtr.Zero, IntPtr.Zero); } catch { }
+                        try { PostMessage(hwnd, WM_COMMAND, new IntPtr(IDNO), IntPtr.Zero); } catch { }
                         return true;
                     }, IntPtr.Zero);
                 }
@@ -2725,7 +2727,7 @@ namespace ValheimAutoModSync
                     if (hwnd != IntPtr.Zero)
                     {
                         found = true;
-                        PostMessage(hwnd, 0x0010u, IntPtr.Zero, IntPtr.Zero);
+                        PostMessage(hwnd, WM_COMMAND, new IntPtr(IDNO), IntPtr.Zero);
                     }
                 }
             }
@@ -3082,7 +3084,7 @@ namespace ValheimAutoModSync
         private static extern uint GetCurrentThreadId();
 
         [DllImport("user32.dll")]
-        // Intent: Posts WM_CLOSE to a stale native trust prompt without blocking the Unity thread.
+        // Intent: Posts a non-blocking native dialog command to a stale trust prompt from the Unity thread.
         private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
         // Intent: Hides the current BepInEx console and updates BepInEx.cfg so future launches keep the console disabled.
