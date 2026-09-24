@@ -219,7 +219,7 @@ namespace ValheimAutoModSync
             _maxExpandedBundleMiB = Config.Bind("Transfer", "MaxExpandedBundleMiB", 4096, "Refuse a requested change set whose signed source files exceed this many MiB before compression.");
             _bundleCacheSeconds = Config.Bind("Transfer", "BundleCacheSeconds", 600, "How long a completed immutable bundle remains reusable after its last client use. 0 keeps artifacts only while actively referenced.");
             _bundleCacheMaxMiB = Config.Bind("Transfer", "BundleCacheMaxMiB", 4096, "Maximum total on-disk size of retained completed bundle artifacts. Active transfers are never deleted; idle least-recently-used artifacts are evicted to meet this budget.");
-            _prebuildFreshClientBundle = Config.Bind("Transfer", "PrebuildFreshClientBundle", true, "On a dedicated-server process, build the likely fresh-client bundle during startup so the first normal join can reuse it. The prebuilt baseline contains every signed distributable file except ValheimAutoModSync.Client.dll, which a connecting AutoModSync client already needs in order to request synchronization.");
+            _prebuildFreshClientBundle = Config.Bind("Transfer", "PrebuildFreshClientBundle", true, "On a dedicated-server process, build the likely fresh-client ZIP bundle during startup so the first normal join can reuse it. The signed manifest is always warmed during dedicated-server startup so AMS discovery stays responsive even when ZIP prebuild is disabled. The prebuilt baseline contains every signed distributable file except ValheimAutoModSync.Client.dll, which a connecting AutoModSync client already needs in order to request synchronization.");
             _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 67108864, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
             _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 16777216, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
             _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 33554432, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
@@ -524,15 +524,33 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Moves the dominant public-server fresh-client ZIP cost into dedicated-server startup instead of the first player's join.
-        // Scope: prewarms the exact signed set a current AutoModSync-only client is expected to need: every distributable manifest record except the client plugin that must already be installed to initiate AMS.
-        // Compatibility: arbitrary partial/delta clients still use the normal content-keyed lazy cache; Host & Play remains lazy so opening Valheim does not incur dedicated-server prewarm cost.
+        // Intent: Warms the signed manifest on every dedicated server before joins, then optionally moves the dominant fresh-client ZIP cost into startup as well.
+        // Scope: manifest warming keeps the short client discovery window responsive; ZIP prewarm covers the exact signed set a current AutoModSync-only client is expected to need except the client plugin already required to initiate AMS.
+        // Compatibility: arbitrary partial/delta clients still use the normal content-keyed lazy cache; Host & Play remains lazy so opening Valheim does not incur dedicated-server startup hashing.
         private void Start()
         {
             if (_enabled == null || !_enabled.Value) return;
             if (!IsDedicatedServerProcess()) return;
 #if AMS_DEV_TESTS
             if (RunDevelopmentPhase3CacheSafetySelfTestIfArmed()) return;
+#endif
+
+            try
+            {
+                Stopwatch manifestWatch = Stopwatch.StartNew();
+                EnsureManifest(true);
+                manifestWatch.Stop();
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync dedicated-server startup manifest ready: files=" +
+                        _files.Count.ToString(CultureInfo.InvariantCulture) +
+                        ", hashAndSign=" + manifestWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s.");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("AutoModSync dedicated-server startup manifest warmup failed; the server will retry on demand: " + ex);
+            }
+
+#if AMS_DEV_TESTS
             if (DevelopmentDisableStartupPrewarm)
             {
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST disabled startup bundle prewarm for this server process.");
@@ -556,7 +574,7 @@ namespace ValheimAutoModSync
         private static void PrewarmFreshClientBundle()
         {
             Stopwatch watch = Stopwatch.StartNew();
-            EnsureManifest(true);
+            EnsureManifest(false);
 
             List<string> keys = new List<string>(_files.Keys);
             keys.Sort(StringComparer.OrdinalIgnoreCase);
