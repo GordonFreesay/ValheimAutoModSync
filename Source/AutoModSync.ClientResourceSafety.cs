@@ -128,6 +128,53 @@ namespace ValheimAutoModSync
                 throw new InvalidDataException("Compressed package entry ended before its signed size.");
         }
 
+        // Intent: Writes one extracted ZIP entry to staging, verifies its signed digest/size, and removes any partial file on failure.
+        // Security: callers may add the destination to pending apply state only after this method returns successfully.
+        internal static void WriteVerifiedExtractedEntry(
+            Stream source,
+            string outputPath,
+            long expectedBytes,
+            string expectedSha256,
+            ref long cumulativeExpandedBytes)
+        {
+            if (String.IsNullOrEmpty(outputPath)) throw new ArgumentException("outputPath");
+            if (!IsSha256Hex(expectedSha256)) throw new InvalidDataException("Unpacked file expected SHA-256 is invalid.");
+
+            try
+            {
+                using (FileStream destination = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                    CopyZipEntryBounded(source, destination, expectedBytes, ref cumulativeExpandedBytes);
+
+                FileInfo outInfo = new FileInfo(outputPath);
+                if (!outInfo.Exists || outInfo.Length != expectedBytes || !String.Equals(Sha256File(outputPath), expectedSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Unpacked file failed signed-manifest verification.");
+            }
+            catch
+            {
+                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
+                throw;
+            }
+        }
+
+        // Intent: Computes the SHA-256 of one extracted staging file for signed-manifest verification.
+        private static string Sha256File(string path)
+        {
+            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create())
+            {
+                byte[] hash = sha.ComputeHash(stream);
+                char[] chars = new char[hash.Length * 2];
+                const string hex = "0123456789abcdef";
+                int i;
+                for (i = 0; i < hash.Length; i++)
+                {
+                    chars[i * 2] = hex[hash[i] >> 4];
+                    chars[(i * 2) + 1] = hex[hash[i] & 15];
+                }
+                return new string(chars);
+            }
+        }
+
         // Intent: Validates protocol SHA-256 text before it is trusted as a content identifier.
         internal static bool IsSha256Hex(string value)
         {
