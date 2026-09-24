@@ -88,6 +88,21 @@ if (-not [String]::IsNullOrWhiteSpace($ServerBepInEx)) {
     $serverPlugins = Join-Path $serverRoot 'plugins'
     $serverTarget = Resolve-SingleInstalledFile $serverPlugins 'ValheimAutoModSync.Server.dll' (Join-Path $serverPlugins 'ValheimAutoModSync.Server.dll') 'Server plugin'
     $rows += Copy-Verified $srcServer $serverTarget 'Server'
+
+    # Keep the server-distributed client payload on the exact same dev build. Otherwise the first live join can
+    # immediately "self-update" the freshly deployed client back to an older Client.dll from ClientPayload/release.
+    $serverAms = Join-Path $serverRoot 'AutoModSync'
+    $clientPayloadTarget = Join-Path (Join-Path $serverAms 'ClientPayload\plugins') 'ValheimAutoModSync.Client.dll'
+    $clientPayloadParent = Split-Path -Parent $clientPayloadTarget
+    if (-not (Test-Path -LiteralPath $clientPayloadParent -PathType Container)) {
+        New-Item -ItemType Directory -Path $clientPayloadParent -Force | Out-Null
+    }
+    $rows += Copy-Verified $srcClient $clientPayloadTarget 'Server client payload'
+
+    $releaseTarget = Join-Path (Join-Path $serverAms 'release') 'ValheimAutoModSync.Client.dll'
+    if (Test-Path -LiteralPath $releaseTarget -PathType Leaf) {
+        $rows += Copy-Verified $srcClient $releaseTarget 'Server release client payload'
+    }
 }
 
 Write-Host ''
