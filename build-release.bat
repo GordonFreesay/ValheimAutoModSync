@@ -111,7 +111,7 @@ set "INSTALLEREXE=%WORK%\ValheimAutoModSyncInstaller.exe"
 echo Compiling AutoModSync components...
 "%CSC%" @"%REFS%" /target:library /out:"%CLIENTDLL%" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs"
+"%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
 if errorlevel 1 goto :Fail
 "%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /out:"%APPLYEXE%" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
