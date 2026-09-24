@@ -153,6 +153,7 @@ Development-only compatibility emulation is available without a second tester. C
 - [x] Killing the helper after COMMITTED but before ownership publication preserves the winning new live state and publishes the new ledger during COMMITTED recovery.
 - [x] The helper reads legacy `AMSTXN1` journals for interrupted pre-Phase-6 recovery while new transactions write operation-aware `AMSTXN2`.
 - [ ] `build-dev.bat` compiles the integrated client/apply runtime with `AutoModSync.OwnershipState.cs`.
+- [ ] `test-phase6-live.ps1` guided three-join fixture completes acquisition/pre-existing-local, rename/modified-local preservation, and delete-only cleanup with the expected ownership ledger transitions.
 - [ ] Live client installs a previously absent server file, restarts/reconnects, and the current server fingerprint ledger records exactly that installed path/digest.
 - [ ] Removing that same file from the server causes a delete-only transactional restart; the client removes the exact owned bytes and the next reconnect is zero-delta.
 - [ ] Renaming/moving a server-owned file results in one transactional old-path delete plus one verified new-path write, followed by a zero-delta reconnect.
