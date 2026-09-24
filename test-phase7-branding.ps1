@@ -59,6 +59,7 @@ try {
     Assert-Contains (Join-Path $root 'build-dev.bat') '/win32icon:"%APPLYICO%"' 'Dev build'
     Assert-Contains (Join-Path $root 'build-release.bat') '/resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png' 'Release build'
     Assert-Contains (Join-Path $root 'build-release.bat') '/win32icon:"%APPLYICO%"' 'Release build'
+    Assert-Contains (Join-Path $root 'build-release.bat') 'ValheimAutoModSyncInstaller.ico' 'Standalone installer package'
     Assert-Contains (Join-Path $root 'deploy-dev.ps1') "'Apply helper icon'" 'Dev deploy'
     Assert-Contains (Join-Path $root 'build-thunderstore.ps1') 'ValheimAutoModSync.Apply.ico' 'Thunderstore package'
     Assert-Contains (Join-Path $root 'build-modsite-package.ps1') 'ValheimAutoModSync.Apply.ico' 'Mod-site package'
