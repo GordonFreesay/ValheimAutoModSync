@@ -101,14 +101,14 @@ echo Compiling AutoModSync 2.6 development runtime only...
 rem AMS_DEV_TESTS enables only local development validation hooks: client transfer interruption,
 rem client/server pre-resume AMS4 compatibility emulation, and Apply transaction boundary tests.
 rem The release builder never defines this symbol, so public binaries do not contain these test-only paths.
-"%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Client.dll" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs"
+"%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Client.dll" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 exit /b 1
 
 "%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Server.dll" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs"
 if errorlevel 1 exit /b 1
 
 rem Apply uses the same AMS_DEV_TESTS symbol for its deterministic transactional interruption markers.
-"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Apply.exe" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs"
+"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Apply.exe" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 exit /b 1
 
 del /q "%REFS%" >nul 2>&1
