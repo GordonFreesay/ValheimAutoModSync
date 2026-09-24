@@ -143,8 +143,8 @@ function Replace-ManifestPath([string]$RelativePath) {
     $lines = [System.IO.File]::ReadAllLines($manifest)
     Assert-True ($lines.Length -ge 2) 'Transaction manifest did not contain an entry.'
     $parts = $lines[1].Split('|')
-    Assert-True ($parts.Length -eq 7) 'Transaction manifest entry did not have seven fields.'
-    $parts[6] = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($RelativePath))
+    Assert-True ($parts.Length -eq 8) 'Transaction manifest entry did not have eight fields.'
+    $parts[7] = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($RelativePath))
     $lines[1] = ($parts -join '|')
     [System.IO.File]::WriteAllText($manifest, (($lines -join $crlf) + $crlf), $utf8NoBom)
 }
@@ -191,8 +191,8 @@ try {
     $manifest = Join-Path $txRoot 'manifest.txt'
     $goodManifest = [System.IO.File]::ReadAllBytes($manifest)
     $manifestText = [System.Text.Encoding]::UTF8.GetString($goodManifest)
-    Assert-True ($manifestText.StartsWith('AMSTXN1')) 'Prepared manifest did not use AMSTXN1.'
-    Write-Utf8NoBom $manifest ($manifestText.Replace('AMSTXN1', 'AMSTXN999'))
+    Assert-True ($manifestText.StartsWith('AMSTXN2')) 'Prepared manifest did not use AMSTXN2.'
+    Write-Utf8NoBom $manifest ($manifestText.Replace('AMSTXN2', 'AMSTXN999'))
 
     $exitCode = Invoke-ApplyHelper
     Assert-True ($exitCode -eq 1) "Version-mismatched journal returned unexpected exit code $exitCode."
