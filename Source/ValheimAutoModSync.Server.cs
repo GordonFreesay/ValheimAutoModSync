@@ -696,6 +696,256 @@ namespace ValheimAutoModSync
                 }
             });
         }
+
+        // Intent: Runs the remaining Phase 3 cache-safety/eviction checks against the real production cache methods at dedicated-server startup.
+        // Scope: development builds only; fixtures live outside synchronized roots, startup prewarm is skipped for this process, and all test cache/source files are removed before normal server use.
+        private static bool RunDevelopmentPhase3CacheSafetySelfTestIfArmed()
+        {
+            string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-cache-safety.once");
+            if (!File.Exists(marker)) return false;
+            try { File.Delete(marker); } catch { }
+
+            DevelopmentDisableStartupPrewarm = true;
+            string sourceRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-cache-safety-source");
+            string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
+            long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
+
+            try
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 cache-safety suite BEGIN.");
+                if (Directory.Exists(sourceRoot)) Directory.Delete(sourceRoot, true);
+                Directory.CreateDirectory(sourceRoot);
+                Directory.CreateDirectory(cacheRoot);
+                DevelopmentResetBundleCacheForTest();
+
+                // Restart/orphan follow-up: after Awake has removed prior-process orphan files, the first valid acquisition must build a fresh artifact.
+                string restartSource = Path.Combine(sourceRoot, "restart.bin");
+                WriteDevelopmentPseudoRandomFile(restartSource, 65536, 1101);
+                List<FileRecord> restartRecords = new List<FileRecord>();
+                restartRecords.Add(CreateDevelopmentCacheRecord(restartSource, "__AMS_PHASE3_SAFETY__\\restart.bin"));
+                string restartStatus;
+                double restartWait;
+                BundleArtifact restartArtifact = AcquireBundleArtifact(restartRecords, new FileInfo(restartSource).Length, maxBundleBytes, out restartStatus, out restartWait);
+                DevelopmentAssert(String.Equals(restartStatus, "MISS", StringComparison.Ordinal), "post-restart acquisition did not rebuild from cache=MISS");
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS restart rebuild used cache=MISS after startup orphan cleanup.");
+                ReleaseBundleArtifact(restartArtifact);
+                DevelopmentResetBundleCacheForTest();
+
+                // Re-hash failure: sign/hash A, mutate to same-size B, then build with the stale signed record.
+                string rehashSource = Path.Combine(sourceRoot, "rehash.bin");
+                WriteDevelopmentPseudoRandomFile(rehashSource, 131072, 2101);
+                List<FileRecord> staleRecords = new List<FileRecord>();
+                staleRecords.Add(CreateDevelopmentCacheRecord(rehashSource, "__AMS_PHASE3_SAFETY__\\rehash.bin"));
+                string staleKey = BuildBundleCacheKey(staleRecords);
+                string staleFinalPath = Path.Combine(cacheRoot, "bundle-cache-" + staleKey + ".zip");
+                WriteDevelopmentPseudoRandomFile(rehashSource, 131072, 2102);
+
+                bool rehashRejected = false;
+                try
+                {
+                    string ignoredStatus;
+                    double ignoredWait;
+                    BundleArtifact unexpected = AcquireBundleArtifact(staleRecords, 131072L, maxBundleBytes, out ignoredStatus, out ignoredWait);
+                    if (unexpected != null) ReleaseBundleArtifact(unexpected);
+                }
+                catch (Exception ex)
+                {
+                    rehashRejected = ex.Message.IndexOf("changed after the signed manifest", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+
+                DevelopmentAssert(rehashRejected, "same-size post-manifest source mutation was not rejected by source re-hash");
+                DevelopmentAssert(!DevelopmentCacheContains(staleKey), "failed re-hash build published a cache entry");
+                DevelopmentAssert(!File.Exists(staleFinalPath), "failed re-hash build published an immutable ZIP");
+                string[] failedTemps = Directory.GetFiles(cacheRoot, "bundle-build-*.tmp", SearchOption.TopDirectoryOnly);
+                DevelopmentAssert(failedTemps.Length == 0, "failed ZIP construction left a private bundle-build temp file");
+                if (_instance != null)
+                {
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS same-size post-manifest mutation aborted during source re-hash before publication.");
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS failed ZIP construction left no cache entry, published ZIP, or bundle-build temp file.");
+                }
+                DevelopmentResetBundleCacheForTest();
+
+                // TTL=0: identical active users share one immutable artifact; the file survives the first release and disappears only after the last release.
+                DevelopmentBundleCacheSecondsOverride = 0;
+                string zeroSource = Path.Combine(sourceRoot, "zero-ttl.bin");
+                WriteDevelopmentPseudoRandomFile(zeroSource, 131072, 3101);
+                List<FileRecord> zeroRecords = new List<FileRecord>();
+                zeroRecords.Add(CreateDevelopmentCacheRecord(zeroSource, "__AMS_PHASE3_SAFETY__\\zero-ttl.bin"));
+                string zeroStatus1;
+                string zeroStatus2;
+                double zeroWait1;
+                double zeroWait2;
+                BundleArtifact zeroA = AcquireBundleArtifact(zeroRecords, 131072L, maxBundleBytes, out zeroStatus1, out zeroWait1);
+                BundleArtifact zeroB = AcquireBundleArtifact(zeroRecords, 131072L, maxBundleBytes, out zeroStatus2, out zeroWait2);
+                DevelopmentAssert(String.Equals(zeroStatus1, "MISS", StringComparison.Ordinal), "zero-TTL first acquisition was not MISS");
+                DevelopmentAssert(String.Equals(zeroStatus2, "HIT", StringComparison.Ordinal), "zero-TTL overlapping acquisition did not share the active artifact");
+                DevelopmentAssert(Object.ReferenceEquals(zeroA, zeroB), "zero-TTL active acquisitions did not reference the same immutable artifact");
+                string zeroKey = zeroA.CacheKey;
+                string zeroPath = zeroA.ZipPath;
+                ReleaseBundleArtifact(zeroB);
+                DevelopmentAssert(DevelopmentCacheContains(zeroKey) && File.Exists(zeroPath), "zero-TTL artifact was removed while one active reference remained");
+                ReleaseBundleArtifact(zeroA);
+                DevelopmentAssert(!DevelopmentCacheContains(zeroKey) && !File.Exists(zeroPath), "zero-TTL artifact remained after the last active reference released");
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS BundleCacheSeconds=0 shared the active artifact and removed it only after the last release.");
+                DevelopmentResetBundleCacheForTest();
+
+                // TTL expiry: an old idle artifact expires, while an equally old active artifact remains present.
+                DevelopmentBundleCacheSecondsOverride = 1;
+                string ttlIdleSource = Path.Combine(sourceRoot, "ttl-idle.bin");
+                string ttlActiveSource = Path.Combine(sourceRoot, "ttl-active.bin");
+                WriteDevelopmentPseudoRandomFile(ttlIdleSource, 65536, 4101);
+                WriteDevelopmentPseudoRandomFile(ttlActiveSource, 65536, 4102);
+                List<FileRecord> ttlIdleRecords = new List<FileRecord>();
+                List<FileRecord> ttlActiveRecords = new List<FileRecord>();
+                ttlIdleRecords.Add(CreateDevelopmentCacheRecord(ttlIdleSource, "__AMS_PHASE3_SAFETY__\\ttl-idle.bin"));
+                ttlActiveRecords.Add(CreateDevelopmentCacheRecord(ttlActiveSource, "__AMS_PHASE3_SAFETY__\\ttl-active.bin"));
+                string ttlStatus;
+                double ttlWait;
+                BundleArtifact ttlIdle = AcquireBundleArtifact(ttlIdleRecords, 65536L, maxBundleBytes, out ttlStatus, out ttlWait);
+                BundleArtifact ttlActive = AcquireBundleArtifact(ttlActiveRecords, 65536L, maxBundleBytes, out ttlStatus, out ttlWait);
+                string ttlIdleKey = ttlIdle.CacheKey;
+                string ttlActiveKey = ttlActive.CacheKey;
+                string ttlIdlePath = ttlIdle.ZipPath;
+                string ttlActivePath = ttlActive.ZipPath;
+                ReleaseBundleArtifact(ttlIdle);
+                lock (BundleCacheLock)
+                {
+                    DateTime old = DateTime.UtcNow.AddSeconds(-5.0);
+                    ttlIdle.LastUsedUtc = old;
+                    ttlActive.LastUsedUtc = old;
+                    PruneBundleCacheLocked(DateTime.UtcNow);
+                }
+                DevelopmentAssert(!DevelopmentCacheContains(ttlIdleKey) && !File.Exists(ttlIdlePath), "TTL expiry did not remove the old idle artifact");
+                DevelopmentAssert(DevelopmentCacheContains(ttlActiveKey) && File.Exists(ttlActivePath), "TTL expiry removed an active artifact");
+                ReleaseBundleArtifact(ttlActive);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS TTL expiry removed only the idle artifact and preserved the active artifact.");
+                DevelopmentResetBundleCacheForTest();
+
+                // LRU budget: among idle artifacts, evict the oldest one first while an active artifact is never selected for deletion.
+                DevelopmentBundleCacheSecondsOverride = 600;
+                DevelopmentBundleCacheMaxBytesOverride = -1L;
+                string lruOldSource = Path.Combine(sourceRoot, "lru-old.bin");
+                string lruNewSource = Path.Combine(sourceRoot, "lru-new.bin");
+                string lruActiveSource = Path.Combine(sourceRoot, "lru-active.bin");
+                WriteDevelopmentPseudoRandomFile(lruOldSource, 131072, 5101);
+                WriteDevelopmentPseudoRandomFile(lruNewSource, 131072, 5102);
+                WriteDevelopmentPseudoRandomFile(lruActiveSource, 131072, 5103);
+                List<FileRecord> lruOldRecords = new List<FileRecord>();
+                List<FileRecord> lruNewRecords = new List<FileRecord>();
+                List<FileRecord> lruActiveRecords = new List<FileRecord>();
+                lruOldRecords.Add(CreateDevelopmentCacheRecord(lruOldSource, "__AMS_PHASE3_SAFETY__\\lru-old.bin"));
+                lruNewRecords.Add(CreateDevelopmentCacheRecord(lruNewSource, "__AMS_PHASE3_SAFETY__\\lru-new.bin"));
+                lruActiveRecords.Add(CreateDevelopmentCacheRecord(lruActiveSource, "__AMS_PHASE3_SAFETY__\\lru-active.bin"));
+                string lruStatus;
+                double lruWait;
+                BundleArtifact lruOld = AcquireBundleArtifact(lruOldRecords, 131072L, maxBundleBytes, out lruStatus, out lruWait);
+                BundleArtifact lruNew = AcquireBundleArtifact(lruNewRecords, 131072L, maxBundleBytes, out lruStatus, out lruWait);
+                BundleArtifact lruActive = AcquireBundleArtifact(lruActiveRecords, 131072L, maxBundleBytes, out lruStatus, out lruWait);
+                string lruOldKey = lruOld.CacheKey;
+                string lruNewKey = lruNew.CacheKey;
+                string lruActiveKey = lruActive.CacheKey;
+                string lruOldPath = lruOld.ZipPath;
+                string lruNewPath = lruNew.ZipPath;
+                string lruActivePath = lruActive.ZipPath;
+                ReleaseBundleArtifact(lruOld);
+                ReleaseBundleArtifact(lruNew);
+                lock (BundleCacheLock)
+                {
+                    DateTime now = DateTime.UtcNow;
+                    lruOld.LastUsedUtc = now.AddSeconds(-30.0);
+                    lruNew.LastUsedUtc = now.AddSeconds(-10.0);
+                    lruActive.LastUsedUtc = now.AddSeconds(-20.0);
+                    DevelopmentBundleCacheMaxBytesOverride = lruNew.Size + lruActive.Size;
+                    PruneBundleCacheLocked(now);
+                }
+                DevelopmentAssert(!DevelopmentCacheContains(lruOldKey) && !File.Exists(lruOldPath), "LRU budget did not evict the oldest idle artifact");
+                DevelopmentAssert(DevelopmentCacheContains(lruNewKey) && File.Exists(lruNewPath), "LRU budget evicted the newer idle artifact unnecessarily");
+                DevelopmentAssert(DevelopmentCacheContains(lruActiveKey) && File.Exists(lruActivePath), "LRU budget deleted an active artifact");
+                ReleaseBundleArtifact(lruActive);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS cache-budget LRU evicted the oldest idle artifact while preserving newer idle and active artifacts.");
+
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 cache-safety suite PASS.");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogError("AutoModSync DEV TEST Phase 3 cache-safety suite FAIL: " + ex);
+            }
+            finally
+            {
+                DevelopmentBundleCacheSecondsOverride = -1;
+                DevelopmentBundleCacheMaxBytesOverride = -1L;
+                DevelopmentResetBundleCacheForTest();
+                try { if (Directory.Exists(sourceRoot)) Directory.Delete(sourceRoot, true); } catch { }
+            }
+
+            return true;
+        }
+
+        // Intent: Creates one synthetic production-cache record from the exact current bytes of a development-only source file.
+        private static FileRecord CreateDevelopmentCacheRecord(string fullPath, string relativePath)
+        {
+            FileInfo info = new FileInfo(fullPath);
+            FileRecord record = new FileRecord();
+            record.Kind = 'P';
+            record.RelativePath = relativePath;
+            record.FullPath = fullPath;
+            record.SourceLabel = "Phase3DevelopmentCacheSafety";
+            record.Size = info.Length;
+            record.Sha256 = Sha256File(fullPath);
+            return record;
+        }
+
+        // Intent: Writes deterministic incompressible-enough bytes so cache-budget tests operate on meaningful ZIP sizes without large fixtures.
+        private static void WriteDevelopmentPseudoRandomFile(string path, int byteCount, int seed)
+        {
+            byte[] data = new byte[byteCount];
+            Random random = new Random(seed);
+            random.NextBytes(data);
+            File.WriteAllBytes(path, data);
+        }
+
+        // Intent: Fails a development cache-safety case immediately with a concise reason while leaving production cache behavior untouched.
+        private static void DevelopmentAssert(bool condition, string message)
+        {
+            if (!condition) throw new InvalidOperationException("Phase 3 cache-safety assertion failed: " + message + ".");
+        }
+
+        // Intent: Checks the production in-memory cache index under its real lock for deterministic development assertions.
+        private static bool DevelopmentCacheContains(string cacheKey)
+        {
+            lock (BundleCacheLock) return BundleArtifactCache.ContainsKey(cacheKey);
+        }
+
+        // Intent: Clears only this startup self-test's in-memory cache state and published artifacts between cases; no live transfers exist while this development suite runs.
+        private static void DevelopmentResetBundleCacheForTest()
+        {
+            lock (BundleCacheLock)
+            {
+                foreach (KeyValuePair<string, BundleArtifact> pair in BundleArtifactCache)
+                {
+                    BundleArtifact artifact = pair.Value;
+                    if (artifact == null || String.IsNullOrEmpty(artifact.ZipPath)) continue;
+                    try { if (File.Exists(artifact.ZipPath)) File.Delete(artifact.ZipPath); } catch { }
+                }
+                BundleArtifactCache.Clear();
+                BundleBuilds.Clear();
+            }
+
+            try
+            {
+                string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
+                if (Directory.Exists(cacheRoot))
+                {
+                    string[] temps = Directory.GetFiles(cacheRoot, "bundle-build-*.tmp", SearchOption.TopDirectoryOnly);
+                    int i;
+                    for (i = 0; i < temps.Length; i++)
+                    {
+                        try { File.Delete(temps[i]); } catch { }
+                    }
+                }
+            }
+            catch { }
+        }
 #endif
 
         // Intent: Limits startup prewarming to the dedicated-server executable; Host & Play retains lazy cache behavior until it actually needs a bundle.
@@ -2182,15 +2432,33 @@ namespace ValheimAutoModSync
 
                 string[] zipFiles = Directory.GetFiles(cacheRoot, "bundle-*.zip", SearchOption.TopDirectoryOnly);
                 string[] tempFiles = Directory.GetFiles(cacheRoot, "bundle-build-*.tmp", SearchOption.TopDirectoryOnly);
+                int deletedZip = 0;
+                int deletedTemp = 0;
                 int i;
                 for (i = 0; i < zipFiles.Length; i++)
                 {
-                    try { File.Delete(zipFiles[i]); } catch { }
+                    try
+                    {
+                        File.Delete(zipFiles[i]);
+                        if (!File.Exists(zipFiles[i])) deletedZip++;
+                    }
+                    catch { }
                 }
                 for (i = 0; i < tempFiles.Length; i++)
                 {
-                    try { File.Delete(tempFiles[i]); } catch { }
+                    try
+                    {
+                        File.Delete(tempFiles[i]);
+                        if (!File.Exists(tempFiles[i])) deletedTemp++;
+                    }
+                    catch { }
                 }
+
+                if (_instance != null && (zipFiles.Length > 0 || tempFiles.Length > 0))
+                    _instance.Logger.LogInfo("AutoModSync startup cache cleanup: discoveredZip=" + zipFiles.Length.ToString(CultureInfo.InvariantCulture) +
+                        ", deletedZip=" + deletedZip.ToString(CultureInfo.InvariantCulture) +
+                        ", discoveredTemp=" + tempFiles.Length.ToString(CultureInfo.InvariantCulture) +
+                        ", deletedTemp=" + deletedTemp.ToString(CultureInfo.InvariantCulture) + ".");
             }
             catch { }
         }
