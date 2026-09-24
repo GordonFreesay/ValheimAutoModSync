@@ -112,6 +112,8 @@ namespace ValheimAutoModSync
 #if AMS_DEV_TESTS
         private static int _devDisconnectAfterChunk;
         private static bool _devEmulateLegacyClient;
+        private static int _devTrustDisconnectGeneration;
+        private static DateTime _devTrustDisconnectUtc = DateTime.MinValue;
 #endif
         private static bool _restartRequested;
         private static DateTime _quitAfterUtc = DateTime.MinValue;
@@ -233,6 +235,25 @@ namespace ValheimAutoModSync
             {
                 HideSyncOverlay();
             }
+
+#if AMS_DEV_TESTS
+            if (_trustPromptPending && _devTrustDisconnectGeneration == _trustPromptGeneration &&
+                _devTrustDisconnectUtc != DateTime.MinValue && DateTime.UtcNow >= _devTrustDisconnectUtc)
+            {
+                _devTrustDisconnectGeneration = 0;
+                _devTrustDisconnectUtc = DateTime.MinValue;
+                if (_instance != null)
+                    _instance.Logger.LogWarning("AutoModSync DEV TEST closing the protected socket while the native trust dialog is still open.");
+                try
+                {
+                    if (_pendingRpc != null && _pendingRpc.GetSocket() != null) _pendingRpc.GetSocket().Close();
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV TEST could not close the trust-dialog socket: " + ex.Message);
+                }
+            }
+#endif
 
             if (_trustPromptPending && _trustPromptDecision != 0)
             {
@@ -2587,6 +2608,16 @@ namespace ValheimAutoModSync
 
             StartNativeTrustPrompt(fingerprint, generation);
 
+#if AMS_DEV_TESTS
+            if (ConsumeDevelopmentDisconnectDuringTrustMarker())
+            {
+                _devTrustDisconnectGeneration = generation;
+                _devTrustDisconnectUtc = DateTime.UtcNow.AddMilliseconds(1500.0);
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST armed protected-socket loss while the native trust dialog remains open.");
+            }
+#endif
+
             if (_instance != null)
                 _instance.Logger.LogInfo("AutoModSync is waiting for first-contact trust confirmation for server fingerprint " + fingerprint + ".");
         }
@@ -2622,7 +2653,17 @@ namespace ValheimAutoModSync
 
                 // A stale dialog result must never apply to a later connection.
                 if (generation == _trustPromptGeneration)
+                {
                     _trustPromptDecision = decision;
+                }
+#if AMS_DEV_TESTS
+                else if (_instance != null)
+                {
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST ignored stale native trust-dialog result from generation " +
+                        generation.ToString(CultureInfo.InvariantCulture) + "; current generation=" +
+                        _trustPromptGeneration.ToString(CultureInfo.InvariantCulture) + ".");
+                }
+#endif
             });
 
             thread.IsBackground = true;
@@ -2697,6 +2738,10 @@ namespace ValheimAutoModSync
             _trustPromptRpc = null;
             _trustPromptDecision = 0;
             _trustPromptGeneration++;
+#if AMS_DEV_TESTS
+            _devTrustDisconnectGeneration = 0;
+            _devTrustDisconnectUtc = DateTime.MinValue;
+#endif
 
             if (hadPrompt) CloseNativeTrustPromptWindow();
         }
@@ -2780,6 +2825,24 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV trust-prompt marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
+        // Intent: Forces one recognized connection to lose its transport while the native first-contact trust dialog is still pending.
+        // Scope: development-only live validation of stale-dialog dismissal and generation-bound result rejection.
+        private static bool ConsumeDevelopmentDisconnectDuringTrustMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase3-test-disconnect-during-trust.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV trust-disconnect marker could not be consumed: " + ex.Message);
                 return false;
             }
         }
