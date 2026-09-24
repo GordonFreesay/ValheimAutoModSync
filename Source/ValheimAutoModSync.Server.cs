@@ -1328,7 +1328,7 @@ namespace ValheimAutoModSync
                             cached.LastUsedUtc = now;
                             // The startup baseline is pinned only until its first real client use; afterward normal TTL/LRU policy applies.
                             cached.StartupPinned = false;
-                            if (wasStartupPinned && idleSeconds > ordinaryTtlSeconds && _instance != null)
+                            if (wasStartupPinned && (ordinaryTtlSeconds == 0 || idleSeconds > ordinaryTtlSeconds) && _instance != null)
                                 _instance.Logger.LogInfo("AutoModSync startup-pinned bundle survived ordinary cache TTL until first real client use: idle=" +
                                     idleSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s, BundleCacheSeconds=" +
                                     ordinaryTtlSeconds.ToString(CultureInfo.InvariantCulture) + ", key=" + ShortCacheKey(cached.CacheKey) + ".");
