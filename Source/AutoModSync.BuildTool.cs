@@ -212,7 +212,8 @@ internal static class BuildTool
         byte[] bytes = Encoding.UTF8.GetBytes(publicXml);
         string fingerprint;
         using (SHA256 sha = SHA256.Create()) fingerprint = ToHex(sha.ComputeHash(bytes));
-        Console.WriteLine("Server public fingerprint: " + fingerprint);
+                Console.WriteLine("Server verification code: " + ValheimAutoModSync.AutoModSyncIdentityDisplay.VerificationCode(fingerprint));
+        Console.WriteLine("Full server public fingerprint (technical): " + ValheimAutoModSync.AutoModSyncIdentityDisplay.FullFingerprint(fingerprint));
         return 0;
     }
 
