@@ -28,6 +28,10 @@ if exist "%ROOT%verify-version.ps1" (
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-version.ps1"
   if errorlevel 1 exit /b 1
 )
+if exist "%ROOT%verify-no-pii.ps1" (
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -Root "%ROOT%"
+  if errorlevel 1 exit /b 1
+)
 
 set "VALHEIMROOT=%AMS_VALHEIMROOT%"
 if defined VALHEIMROOT set "VALHEIMROOT=%VALHEIMROOT:"=%"
@@ -114,10 +118,10 @@ echo Compiling AutoModSync 2.6 development runtime only...
 rem AMS_DEV_TESTS enables only local development validation hooks: client transfer interruption,
 rem client/server pre-resume AMS4 compatibility emulation, and Apply transaction boundary tests.
 rem The release builder never defines this symbol, so public binaries do not contain these test-only paths.
-"%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /out:"%OUT%\ValheimAutoModSync.Client.dll" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.SyncUiState.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ClientResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
+"%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /out:"%OUT%\ValheimAutoModSync.Client.dll" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.SyncUiState.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ClientResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 exit /b 1
 
-"%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Server.dll" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
+"%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Server.dll" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
 if errorlevel 1 exit /b 1
 
 rem Apply uses the same AMS_DEV_TESTS symbol for its deterministic transactional interruption markers.
@@ -125,6 +129,11 @@ rem Apply uses the same AMS_DEV_TESTS symbol for its deterministic transactional
 if errorlevel 1 exit /b 1
 
 del /q "%REFS%" >nul 2>&1
+
+if exist "%ROOT%verify-no-pii.ps1" (
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -Root "%ROOT%" -ArtifactPaths "%OUT%\ValheimAutoModSync.Client.dll;%OUT%\ValheimAutoModSync.Server.dll;%OUT%\ValheimAutoModSync.Apply.exe"
+  if errorlevel 1 exit /b 1
+)
 
 echo.
 echo SUCCESS: development runtime built in:
