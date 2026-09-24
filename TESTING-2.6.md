@@ -25,9 +25,15 @@ Development-only non-AMS discovery validation can be performed against the norma
 
 The first live attempt on 2026-09-24 exposed a test-hook bug rather than an AMS compatibility failure: the marker suppressed only the first `AMS4_Hello`, so the client's next discovery retry received normal AMS responses, detected the server, confirmed matching mods, and then released the vanilla handshake after successful AMS preflight. The hook was corrected so suppression remains attached to the selected `ZRpc` until disconnect. The corrected live run then passed: the server suppressed AMS responses for the selected peer, the client logged that no AutoModSync preflight response was received and continued Valheim normally, then replayed the original held `ServerHandshake` with one argument. The server accepted that vanilla handshake and completed the normal network-version/peer-connect path. This closes the non-AutoModSync discovery/fail-open compatibility gate.
 
+The recognized-AMS matrix remains unchecked until the guided 12-mode live suite is completed. Each mode is intentionally one-shot and bound to a single peer so a failed test cannot silently contaminate a later connection.
+
 ### Recognized AMS must fail closed
 
 For every case below, verify that no normal ServerHandshake is replayed and no live synchronized file is changed:
+
+The development runtime now includes a guided live fault-injection suite in `test-phase1-failclosed-live.ps1`. Run `StartSuite` with Valheim and the dedicated server stopped; it creates one reserved server fixture, arms the first fault, and records client/server log baselines. After each join, run `Next`: it verifies the expected client rejection, confirms the server consumed the requested fault mode, rejects any vanilla `ServerHandshake` replay in the new log window, verifies the reserved payload did not reach the live client plugin tree, verifies no durable `pending.txt` was accepted, and only then arms the next case. The 12-mode sequence is: bad Ack, Ack-without-manifest timeout, invalid manifest header, incomplete manifest, bad RSA/SHA-256 signature, explicit trust decline, server-reported AMS error after recognition, oversized bundle header, out-of-order legacy chunk, invalid binary batch, mismatched final bundle completion, and forced apply/restart preparation failure after verified extraction. The fault markers and hooks are compiled only under `AMS_DEV_TESTS`.
+
+`trust-decline` deliberately forces the already-pinned development server through first-contact UI without modifying the trust store; click **No**. `apply-prep-failure` injects the failure after verified extraction but before ownership/pending state is written, so an inert staged `.amsnew` may exist until suite cleanup, but no live synchronized file may change.
 
 - [ ] Invalid/malformed `AMS4_Ack`.
 - [ ] Server acknowledges AMS but never begins a manifest.
