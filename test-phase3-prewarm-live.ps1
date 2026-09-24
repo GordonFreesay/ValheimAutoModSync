@@ -79,16 +79,15 @@ function Prepare-Test {
         clientLogLines=(Get-LineCount $clientLog)
         serverLogLines=(Get-LineCount $serverLog)
         preparedUtc=[DateTime]::UtcNow.ToString('o')
-        testBundleCacheSeconds=3
+        testBundleCacheSeconds=0
     }|ConvertTo-Json|Set-Content -LiteralPath $statePath -Encoding UTF8
     Write-Host ''
     Write-Host 'ARMED: Phase 3 dedicated-server startup-prewarm TTL-retention test.'
-    Write-Host 'Temporary server config: PrebuildFreshClientBundle=true, BundleCacheSeconds=3.'
+    Write-Host 'Temporary server config: PrebuildFreshClientBundle=true, BundleCacheSeconds=0.'
     Write-Host '1. Start ONLY the dedicated server.'
     Write-Host '2. Wait until the server logs "AutoModSync fresh-client bundle prewarm ready".'
-    Write-Host '3. After that line appears, wait at least 8 more seconds.'
-    Write-Host '4. Start Valheim and join once.'
-    Write-Host '5. Wait for the deliberate apply-preparation failure/disconnect, then run -Action Inspect.'
+    Write-Host '3. Start Valheim and join once after prewarm ready. With BundleCacheSeconds=0, any ordinary idle artifact would already be ineligible for retention.'
+    Write-Host '4. Wait for the deliberate apply-preparation failure/disconnect, then run -Action Inspect.'
 }
 
 function Inspect-Test {
@@ -118,9 +117,10 @@ function Inspect-Test {
         $idle=[double]::Parse($ttlMatch.Groups[1].Value,[Globalization.CultureInfo]::InvariantCulture)
         $ttl=[int]$ttlMatch.Groups[2].Value
         $ttlKey=$ttlMatch.Groups[3].Value.ToLowerInvariant()
-        if(($idle-gt$ttl)-and(($key.Length-eq 0)-or($ttlKey-eq$key))){Write-Host("  PASS startup pin retained baseline beyond ordinary TTL: idle={0:0.000}s > TTL={1}s."-f$idle,$ttl)}
+        if((($ttl-eq 0)-or($idle-gt$ttl))-and(($key.Length-eq 0)-or($ttlKey-eq$key))){if($ttl-eq 0){Write-Host("  PASS startup pin retained baseline with BundleCacheSeconds=0: idle={0:0.000}s."-f$idle)}
+            else{Write-Host("  PASS startup pin retained baseline beyond ordinary TTL: idle={0:0.000}s > TTL={1}s."-f$idle,$ttl)}}
         else{Write-Host '  FAIL TTL-retention evidence did not exceed TTL or key did not match.';$ok=$false}
-    }else{Write-Host '  FAIL missing startup-pinned TTL-retention evidence. Wait 8+ seconds after prewarm ready before joining.';$ok=$false}
+    }else{Write-Host '  FAIL missing startup-pinned TTL-retention evidence.';$ok=$false}
 
     $matchingHit=$false
     foreach($m in [regex]::Matches($serverText,'AutoModSync bundle ready: cache=HIT, key=([0-9a-fA-F]+)')){
