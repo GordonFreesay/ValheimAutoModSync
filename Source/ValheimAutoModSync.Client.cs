@@ -136,6 +136,8 @@ namespace ValheimAutoModSync
         private static int _startupReconnectBackend = -1;
         private static bool _startupReconnectForceBackend;
         private static readonly List<string> PendingRelativePaths = new List<string>();
+        private static readonly List<AutoModSyncOwnershipEntry> DesiredOwnershipEntries = new List<AutoModSyncOwnershipEntry>();
+        private static bool _ownershipLedgerChanged;
 
         private sealed class ManifestEntry
         {
@@ -743,20 +745,42 @@ namespace ValheimAutoModSync
                 BuildNeededList(manifest);
                 if (NeededFiles.Count == 0)
                 {
+                    if (PendingRelativePaths.Count > 0)
+                    {
+                        _overlayTotalFiles = PendingRelativePaths.Count;
+                        _overlayCompletedFiles = 0;
+                        _overlayFileProgress = 0f;
+                        _overlayBundleMode = false;
+                        ShowSyncOverlay("Removing stale server-managed mods...", "");
+                        if (_instance != null)
+                            _instance.Logger.LogInfo("AutoModSync: " + PendingRelativePaths.Count.ToString(CultureInfo.InvariantCulture) + " stale owned file(s) require transactional removal.");
+                        BeginApplyAndRestart();
+                        return;
+                    }
+
+                    if (_ownershipLedgerChanged)
+                    {
+                        AutoModSyncOwnershipState.WriteLedgerDurable(GetAutoModSyncRoot(), _serverFingerprint, DesiredOwnershipEntries);
+                        if (_instance != null)
+                            _instance.Logger.LogInfo("AutoModSync ownership metadata updated without live file changes.");
+                    }
+
                     HideSyncOverlay();
                     if (_instance != null) _instance.Logger.LogInfo("AutoModSync: client mods already match the trusted server.");
                     ResumeNormalHandshake();
                 }
                 else
                 {
-                    _overlayTotalFiles = NeededFiles.Count;
+                    _overlayTotalFiles = NeededFiles.Count + PendingRelativePaths.Count;
                     _overlayCompletedFiles = 0;
                     _overlayFileProgress = 0f;
                     _overlayBundleMode = true;
                     _overlayBytesReceived = 0L;
                     _overlayBytesTotal = 0L;
                     ShowSyncOverlay("Preparing compressed mod package...", "");
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync: requesting one compressed package containing " + NeededFiles.Count + " missing/changed file(s).");
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync: requesting one compressed package containing " + NeededFiles.Count +
+                            " missing/changed file(s)" + (PendingRelativePaths.Count > 0 ? " plus " + PendingRelativePaths.Count + " stale owned removal(s)." : "."));
                     RequestBundle();
                 }
             }
@@ -772,7 +796,17 @@ namespace ValheimAutoModSync
         {
             NeededFiles.Clear();
             PendingRelativePaths.Clear();
+            DesiredOwnershipEntries.Clear();
+            _ownershipLedgerChanged = false;
 
+            string amsRoot = GetAutoModSyncRoot();
+            List<AutoModSyncOwnershipEntry> owned = AutoModSyncOwnershipState.ReadLedger(amsRoot, _serverFingerprint);
+            Dictionary<string, AutoModSyncOwnershipEntry> ownedByKey = new Dictionary<string, AutoModSyncOwnershipEntry>(StringComparer.OrdinalIgnoreCase);
+            int oi;
+            for (oi = 0; oi < owned.Count; oi++)
+                ownedByKey[owned[oi].Kind + ":" + owned[oi].RelativePath] = owned[oi];
+
+            Dictionary<string, ManifestEntry> manifestByKey = new Dictionary<string, ManifestEntry>(StringComparer.OrdinalIgnoreCase);
             string[] lines = manifest.Replace("\r", "").Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
             HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             long expandedNeededBytes = 0L;
@@ -809,9 +843,10 @@ namespace ValheimAutoModSync
 
                 ManifestEntry e = new ManifestEntry();
                 e.Kind = kind;
-                e.Sha256 = fields[1];
+                e.Sha256 = fields[1].ToLowerInvariant();
                 e.Size = size;
                 e.RelativePath = rel;
+                manifestByKey[destinationKey] = e;
 
                 string local = SafeTargetPath(kind, rel);
                 bool needed = !File.Exists(local);
@@ -820,6 +855,13 @@ namespace ValheimAutoModSync
                     FileInfo localInfo = new FileInfo(local);
                     needed = localInfo.Length != e.Size || !ConstantEquals(Sha256File(local), e.Sha256);
                 }
+
+                AutoModSyncOwnershipEntry previousOwned;
+                bool wasOwned = ownedByKey.TryGetValue(destinationKey, out previousOwned);
+                // Already-owned destinations remain owned across server updates. An unowned path is claimed only
+                // when AMS must actually install/replace it; a coincidentally matching local file remains local/user-owned.
+                if (wasOwned || needed)
+                    AddDesiredOwnership(e.Kind, e.RelativePath, e.Size, e.Sha256);
 
                 if (!needed) continue;
                 if (e.Size > MaxIndividualSyncFileBytes)
@@ -832,6 +874,36 @@ namespace ValheimAutoModSync
                 if (NeededFiles.Count > MaxBundleFiles)
                     throw new InvalidDataException("Required synchronized file count exceeds the AutoModSync client hard limit.");
             }
+
+            // A signed-manifest omission can retire only a path this exact trusted server previously caused AMS to own.
+            // If the live bytes changed since that successful install, preserve the local file and relinquish ownership instead.
+            for (oi = 0; oi < owned.Count; oi++)
+            {
+                AutoModSyncOwnershipEntry prior = owned[oi];
+                string key = prior.Kind + ":" + prior.RelativePath;
+                if (manifestByKey.ContainsKey(key)) continue;
+
+                string local = SafeTargetPath(prior.Kind, prior.RelativePath);
+                if (File.Exists(local))
+                {
+                    FileInfo info = new FileInfo(local);
+                    bool exactOwnedBytes = info.Length == prior.Size && ConstantEquals(Sha256File(local), prior.Sha256);
+                    if (exactOwnedBytes)
+                    {
+                        PendingRelativePaths.Add(MakePendingDeleteEntry(prior));
+                    }
+                    else if (_instance != null)
+                    {
+                        _instance.Logger.LogWarning("AutoModSync preserved locally modified stale file and relinquished server ownership: " + prior.Kind + ":" + prior.RelativePath);
+                    }
+                }
+                else if (Directory.Exists(local) && _instance != null)
+                {
+                    _instance.Logger.LogWarning("AutoModSync preserved unexpected directory at stale owned path and relinquished server ownership: " + prior.Kind + ":" + prior.RelativePath);
+                }
+            }
+
+            _ownershipLedgerChanged = !AutoModSyncOwnershipState.Equivalent(owned, DesiredOwnershipEntries);
         }
 
         // Intent: Detects whether AutoModSync is running from a package-manager subdirectory rather than directly at BepInEx/plugins.
@@ -1310,7 +1382,7 @@ namespace ValheimAutoModSync
                     FileInfo outInfo = new FileInfo(output);
                     if (!outInfo.Exists || outInfo.Length != expectedEntry.Size || !ConstantEquals(Sha256File(output), expectedEntry.Sha256))
                         throw new InvalidDataException("Unpacked file failed signed-manifest verification: " + expectedEntry.RelativePath);
-                    PendingRelativePaths.Add(expectedEntry.Kind + ":" + expectedEntry.RelativePath);
+                    PendingRelativePaths.Add(MakePendingWriteEntry(expectedEntry));
                 }
             }
 
@@ -1408,7 +1480,10 @@ namespace ValheimAutoModSync
                 string amsRoot = GetAutoModSyncRoot();
                 if (!Directory.Exists(amsRoot)) Directory.CreateDirectory(amsRoot);
                 string pending = Path.Combine(amsRoot, "pending.txt");
+                if (PendingRelativePaths.Count == 0)
+                    throw new InvalidOperationException("AutoModSync apply/restart was requested without any live file operations.");
                 WritePendingFileDurable(pending, PendingRelativePaths);
+                AutoModSyncOwnershipState.WritePendingDurable(amsRoot, _serverFingerprint, DesiredOwnershipEntries);
                 string reconnect = Path.Combine(amsRoot, "reconnect.txt");
                 bool reconnectAvailable = !String.IsNullOrEmpty(_reconnectHost);
                 if (reconnectAvailable)
@@ -1460,10 +1535,13 @@ namespace ValheimAutoModSync
 
         // Intent: Publishes the verified pending-file list atomically and durably before launching the helper.
         // Safety: a temporary file is flushed with write-through semantics, then renamed on the same volume; an existing pending request is treated as recovery state instead of being overwritten.
+        // Intent: Writes the versioned Phase 6 apply plan durably; write entries name verified staging files and delete entries carry the last-owned digest.
         private static void WritePendingFileDurable(string pendingPath, IList<string> entries)
         {
             if (File.Exists(pendingPath))
                 throw new InvalidOperationException("An earlier AutoModSync pending apply still exists.");
+            if (entries == null || entries.Count == 0)
+                throw new InvalidDataException("AutoModSync pending apply contains no operations.");
 
             string temp = pendingPath + ".tmp";
             try { if (File.Exists(temp)) File.Delete(temp); } catch { }
@@ -1471,6 +1549,7 @@ namespace ValheimAutoModSync
             using (FileStream stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
             using (StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false), 4096, true))
             {
+                writer.WriteLine("AMSPENDING2");
                 int i;
                 for (i = 0; i < entries.Count; i++)
                     writer.WriteLine(entries[i] ?? "");
@@ -1480,6 +1559,44 @@ namespace ValheimAutoModSync
             }
 
             File.Move(temp, pendingPath);
+        }
+
+        // Intent: Encodes one verified staged replacement into the versioned apply plan without permitting a destination outside the fixed kind root.
+        private static string MakePendingWriteEntry(ManifestEntry entry)
+        {
+            if (entry == null || !IsSupportedManifestKind(entry.Kind))
+                throw new InvalidDataException("Invalid AutoModSync pending write entry.");
+            string rel = NormalizeRelative(entry.RelativePath);
+            if (rel.Length == 0) throw new InvalidDataException("Unsafe AutoModSync pending write path.");
+            return "W|" + entry.Kind + "|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(rel));
+        }
+
+        // Intent: Encodes deletion authority from the exact last-owned digest; the apply helper rechecks these bytes after Valheim exits before deleting anything.
+        private static string MakePendingDeleteEntry(AutoModSyncOwnershipEntry entry)
+        {
+            if (entry == null || !IsSupportedManifestKind(entry.Kind) || entry.Size < 0 || !IsSha256Hex(entry.Sha256))
+                throw new InvalidDataException("Invalid AutoModSync pending delete entry.");
+            string rel = NormalizeRelative(entry.RelativePath);
+            if (rel.Length == 0) throw new InvalidDataException("Unsafe AutoModSync pending delete path.");
+            return "D|" + entry.Kind + "|" + entry.Size.ToString(CultureInfo.InvariantCulture) + "|" +
+                entry.Sha256.ToLowerInvariant() + "|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(rel));
+        }
+
+        // Intent: Adds one canonical post-commit ownership record; duplicate destinations indicate an internal manifest/ownership inconsistency.
+        private static void AddDesiredOwnership(char kind, string relative, long size, string sha256)
+        {
+            string key = kind + ":" + relative;
+            int i;
+            for (i = 0; i < DesiredOwnershipEntries.Count; i++)
+                if (String.Equals(DesiredOwnershipEntries[i].Kind + ":" + DesiredOwnershipEntries[i].RelativePath, key, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Duplicate AutoModSync desired ownership destination.");
+
+            AutoModSyncOwnershipEntry entry = new AutoModSyncOwnershipEntry();
+            entry.Kind = kind;
+            entry.RelativePath = relative;
+            entry.Size = size;
+            entry.Sha256 = sha256.ToLowerInvariant();
+            DesiredOwnershipEntries.Add(entry);
         }
 
         // Intent: Saves the exact executable, working directory, and command-line arguments used by a package-managed Valheim launch.
@@ -1777,6 +1894,9 @@ namespace ValheimAutoModSync
             _serverPublicKeyXml = "";
             _serverFingerprint = "";
             NeededFiles.Clear();
+            PendingRelativePaths.Clear();
+            DesiredOwnershipEntries.Clear();
+            _ownershipLedgerChanged = false;
             _bundleSize = 0L;
             _bundleSha256 = "";
             _bundleNextChunk = 0;
