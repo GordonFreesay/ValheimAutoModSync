@@ -191,7 +191,16 @@ function Next-Test {
         Write-Host ''
         Write-Host 'Inspecting Phase 3 stale-trust stage 2/2: stale result cannot act on a later connection...'
 
-        if($clientText.IndexOf('AutoModSync DEV FAIL-CLOSED forcing first-contact trust prompt for this verified session.',[StringComparison]::OrdinalIgnoreCase)-ge 0-and
+        $forcedPromptSeen=$clientText.IndexOf('AutoModSync DEV FAIL-CLOSED forcing first-contact trust prompt for this verified session.',[StringComparison]::OrdinalIgnoreCase)-ge 0
+        $pendingPromptSeen=$clientText.IndexOf('AutoModSync is waiting for first-contact trust confirmation for server fingerprint',[StringComparison]::OrdinalIgnoreCase)-ge 0
+        if(-not$forcedPromptSeen-and-not(Test-Path -LiteralPath $forceTrustMarker)){
+            Write-Host '  INVALID RERUN: the one-shot Stage 2 force-trust marker was already consumed, but this log window no longer contains the forced-prompt evidence.'
+            Write-Host '  A subsequent join to an already trusted server may therefore enter normally. Do not treat that as stale-result acceptance.'
+            Write-Host '  Use the original Stage 2 inspection plus its required visual confirmation, or Cleanup and rerun the suite from Prepare.'
+            exit 2
+        }
+
+        if($forcedPromptSeen-and$pendingPromptSeen){
            $clientText.IndexOf('AutoModSync is waiting for first-contact trust confirmation for server fingerprint',[StringComparison]::OrdinalIgnoreCase)-ge 0){
             Write-Host '  PASS the later connection independently reached a new pending trust generation.'
         }else{
