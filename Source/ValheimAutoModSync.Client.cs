@@ -2803,6 +2803,24 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Stops one development cache-validation connection after the production bundle header has been validated.
+        // Scope: avoids transferring the full prewarmed payload when the live test only needs to prove cache acquisition/retention.
+        private static bool ConsumeDevelopmentPhase3StopAfterBundleHeaderMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase3-test-stop-after-bundle-header.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV Phase 3 stop-after-header marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
         // Intent: Forces one trusted-manifest comparison to request the same nearly-bare-client file set used by dedicated-server startup prewarm.
         // Scope: existing live files are only treated as missing for request construction; the installed AutoModSync client DLL is excluded so the request key matches the startup baseline exactly.
         private static bool ConsumeDevelopmentNearlyBareClientMarker()
