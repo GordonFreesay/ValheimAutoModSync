@@ -87,12 +87,6 @@ set "UNITY_IMGUI=%BEPSOURCE%\unstripped_corlib\UnityEngine.IMGUIModule.dll"
 if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%VALHEIMMANAGED%\UnityEngine.IMGUIModule.dll"
 set "UNITY_TEXT=%BEPSOURCE%\unstripped_corlib\UnityEngine.TextRenderingModule.dll"
 if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%VALHEIMMANAGED%\UnityEngine.TextRenderingModule.dll"
-set "UNITY_IMAGE=%BEPSOURCE%\unstripped_corlib\UnityEngine.ImageConversionModule.dll"
-if not exist "%UNITY_IMAGE%" set "UNITY_IMAGE=%VALHEIMMANAGED%\UnityEngine.ImageConversionModule.dll"
-if not exist "%UNITY_IMAGE%" (
-  echo ERROR: UnityEngine.ImageConversionModule.dll was not found under the selected Valheim installation.
-  goto :Fail
-)
 if not exist "%BRANDING_PNG%" (
   echo ERROR: AutoModSync branding PNG was not found at "%BRANDING_PNG%".
   goto :Fail
@@ -117,7 +111,6 @@ set "REFS=%WORK%\refs.rsp"
 >>"%REFS%" echo /reference:"%UNITY_CORE%"
 >>"%REFS%" echo /reference:"%UNITY_IMGUI%"
 >>"%REFS%" echo /reference:"%UNITY_TEXT%"
->>"%REFS%" echo /reference:"%UNITY_IMAGE%"
 >>"%REFS%" echo /reference:"%SPLATFORM_DLL%"
 >>"%REFS%" echo /reference:"%STEAMWORKS_DLL%"
 >>"%REFS%" echo /reference:"%NETSTANDARD_DLL%"
