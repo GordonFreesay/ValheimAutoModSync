@@ -113,8 +113,10 @@ namespace ValheimAutoModSync
                 if (!_peers.TryGetValue(id, out state) || !state.Active || state.DemandBytes <= 0L) continue;
 
                 long available = (long)Math.Floor(_tokens);
-                long grant = Math.Min(state.DemandBytes, Math.Min((long)_maxGrantBytes, available));
-                if (grant <= 0L) return false;
+                long grant = Math.Min(state.DemandBytes, (long)_maxGrantBytes);
+                // Fixed-size grants avoid turning each refill remainder into a tiny extra turn for the next peer.
+                // The only smaller grant is the peer's final outstanding demand.
+                if (grant <= 0L || available < grant) return false;
 
                 state.DemandBytes -= grant;
                 _tokens -= grant;
