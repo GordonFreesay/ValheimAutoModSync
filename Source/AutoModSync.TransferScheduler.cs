@@ -107,17 +107,22 @@ namespace ValheimAutoModSync
             {
                 if (_roundRobinCursor >= _active.Count) _roundRobinCursor = 0;
                 long id = _active[_roundRobinCursor];
-                _roundRobinCursor = (_roundRobinCursor + 1) % Math.Max(1, _active.Count);
 
                 PeerState state;
-                if (!_peers.TryGetValue(id, out state) || !state.Active || state.DemandBytes <= 0L) continue;
+                if (!_peers.TryGetValue(id, out state) || !state.Active || state.DemandBytes <= 0L)
+                {
+                    _roundRobinCursor = (_roundRobinCursor + 1) % Math.Max(1, _active.Count);
+                    continue;
+                }
 
                 long available = (long)Math.Floor(_tokens);
                 long grant = Math.Min(state.DemandBytes, (long)_maxGrantBytes);
                 // Fixed-size grants avoid turning each refill remainder into a tiny extra turn for the next peer.
-                // The only smaller grant is the peer's final outstanding demand.
+                // The only smaller grant is the peer's final outstanding demand. If the bucket is short,
+                // keep the cursor on this peer so refill boundaries cannot silently skip its turn.
                 if (grant <= 0L || available < grant) return false;
 
+                _roundRobinCursor = (_roundRobinCursor + 1) % Math.Max(1, _active.Count);
                 state.DemandBytes -= grant;
                 _tokens -= grant;
                 peerId = id;
