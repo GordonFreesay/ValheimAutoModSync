@@ -1360,23 +1360,17 @@ namespace ValheimAutoModSync
                     if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
                     AutoModSyncPathSafety.EnsureNoReparsePoints(stagingRoot, output, true);
 
-                    try
+                    using (Stream source = entry.Open())
                     {
-                        using (Stream source = entry.Open())
-                        using (FileStream destination = new FileStream(output, FileMode.Create, FileAccess.Write, FileShare.None))
-                        {
-                            CopyZipEntryBounded(source, destination, expectedEntry.Size, ref expandedBytes);
-                        }
-                    }
-                    catch
-                    {
-                        try { if (File.Exists(output)) File.Delete(output); } catch { }
-                        throw;
+                        AutoModSyncClientResourceSafety.WriteVerifiedExtractedEntry(
+                            source,
+                            output,
+                            expectedEntry.Size,
+                            expectedEntry.Sha256,
+                            ref expandedBytes);
                     }
 
-                    FileInfo outInfo = new FileInfo(output);
-                    if (!outInfo.Exists || outInfo.Length != expectedEntry.Size || !ConstantEquals(Sha256File(output), expectedEntry.Sha256))
-                        throw new InvalidDataException("Unpacked file failed signed-manifest verification: " + expectedEntry.RelativePath);
+                    // Pending apply acceptance occurs only after the extracted staging file has passed size/SHA-256 verification.
                     PendingRelativePaths.Add(MakePendingWriteEntry(expectedEntry));
                 }
             }
