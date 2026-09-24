@@ -608,7 +608,7 @@ internal static class AutoModSyncInstaller
             TryDeleteEmptyDirectory(Path.Combine(ams, "release"));
 
             if (Directory.Exists(Path.Combine(ams, "ClientPayload")))
-                AppendLog("Preserved operator-managed BepInEx\AutoModSync\ClientPayload content.");
+                AppendLog(@"Preserved operator-managed BepInEx\AutoModSync\ClientPayload content.");
 
             if (removeIdentity)
             {
