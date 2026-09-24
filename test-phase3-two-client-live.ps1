@@ -45,6 +45,32 @@ function Get-NewLines([string]$Path,[int]$StartCount){
     return @($all[$StartCount..($all.Length-1)])
 }
 
+function Get-LatestTwoClientRunLines([string]$Path){
+    $all=@(Read-SharedLogLines $Path)
+    if($all.Length-eq 0){return @()}
+
+    $delayNeedle='AutoModSync DEV TEST armed a 10000 ms background bundle-build delay for real two-client overlap validation.'
+    $startNeedle='AutoModSync DEV TEST armed startup-prewarm disable for this server process.'
+    $delayIndex=-1
+    for($i=$all.Length-1;$i-ge 0;$i--){
+        if($all[$i].IndexOf($delayNeedle,[StringComparison]::OrdinalIgnoreCase)-ge 0){$delayIndex=$i;break}
+    }
+    if($delayIndex-lt 0){return @()}
+
+    $startIndex=0
+    for($i=$delayIndex;$i-ge 0;$i--){
+        if($all[$i].IndexOf($startNeedle,[StringComparison]::OrdinalIgnoreCase)-ge 0){$startIndex=$i;break}
+    }
+
+    $endIndex=$all.Length-1
+    for($i=$delayIndex+1;$i-lt$all.Length;$i++){
+        if($all[$i].IndexOf($startNeedle,[StringComparison]::OrdinalIgnoreCase)-ge 0){$endIndex=$i-1;break}
+    }
+
+    if($endIndex-lt$startIndex){return @()}
+    return @($all[$startIndex..$endIndex])
+}
+
 function Write-RandomFixture {
     New-Item -ItemType Directory -Path $fixtureDir -Force|Out-Null
     $bytes=New-Object byte[] (4*1024*1024)
@@ -92,15 +118,37 @@ function Inspect-Test {
     if(-not(Test-Path -LiteralPath $statePath -PathType Leaf)){throw 'No two-client test state exists. Run Prepare first.'}
     $state=Get-Content -LiteralPath $statePath -Raw|ConvertFrom-Json
 
-    $deadline=[DateTime]::UtcNow.AddSeconds(20)
-    do{
-        $newServer=@(Get-NewLines $serverLog ([int]$state.serverLogLines))
-        $serverText=$newServer-join[Environment]::NewLine
-        $readyCount=[regex]::Matches($serverText,'AutoModSync bundle ready: cache=(?:MISS|WAIT-HIT|HIT), key=[0-9a-fA-F]+, sha256=[0-9a-fA-F]{64}, compressedBytes=\d+, files=\d+,').Count
-        if($readyCount-ge 2){break}
-        Start-Sleep -Milliseconds 250
-    }while([DateTime]::UtcNow-lt$deadline)
+    $newServer=@()
+    $capturedProperty=$state.PSObject.Properties['capturedServerLines']
+    if($null-ne$capturedProperty-and$null-ne$capturedProperty.Value-and@($capturedProperty.Value).Count-gt 0){
+        $newServer=@($capturedProperty.Value)
+    }else{
+        $deadline=[DateTime]::UtcNow.AddSeconds(20)
+        do{
+            $newServer=@(Get-NewLines $serverLog ([int]$state.serverLogLines))
+            $serverText=$newServer-join[Environment]::NewLine
+            $readyCount=[regex]::Matches($serverText,'AutoModSync bundle ready: cache=(?:MISS|WAIT-HIT|HIT), key=[0-9a-fA-F]+, sha256=[0-9a-fA-F]{64}, compressedBytes=\d+, files=\d+,').Count
+            if($readyCount-ge 2){break}
+            Start-Sleep -Milliseconds 250
+        }while([DateTime]::UtcNow-lt$deadline)
 
+        $serverText=$newServer-join[Environment]::NewLine
+        if($serverText.IndexOf('AutoModSync DEV TEST armed a 10000 ms background bundle-build delay for real two-client overlap validation.',[StringComparison]::OrdinalIgnoreCase)-lt 0){
+            $recovered=@(Get-LatestTwoClientRunLines $serverLog)
+            if($recovered.Count-gt 0){
+                $newServer=$recovered
+                $serverText=$newServer-join[Environment]::NewLine
+                Write-Host 'Recovered the latest armed two-client run from the current server log because the saved line-count baseline no longer matched the log file.'
+            }
+        }
+
+        if($newServer.Count-gt 0){
+            $state|Add-Member -NotePropertyName capturedServerLines -NotePropertyValue @($newServer) -Force
+            Save-State $state
+        }
+    }
+
+    $serverText=$newServer-join[Environment]::NewLine
     $ok=$true
     Write-Host ''
     Write-Host 'Inspecting real two-client Phase 3 overlap...'
