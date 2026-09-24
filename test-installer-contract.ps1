@@ -36,6 +36,8 @@ try {
     Assert-Contains $source 'ValheimAutoModSync.Branding.Logo.png' 'Installer'
     Assert-Contains $source 'AUTOMODSYNC' 'Installer'
     Assert-Contains $source 'VERIFIED MOD SYNCHRONIZATION' 'Installer'
+    Assert-Contains $source 'TryApplyWindowIcon()' 'Installer window icon'
+    Assert-Contains $source 'Icon.ExtractAssociatedIcon(Application.ExecutablePath)' 'Installer window icon'
     Assert-Contains $source 'AutoModSyncIdentityDisplay.VerificationCode' 'Installer'
     if ([IO.File]::ReadAllText($source).IndexOf('AppendLog("Server fingerprint:',[StringComparison]::Ordinal) -ge 0) {
         throw 'Installer must not print the full server fingerprint in normal UI.'
