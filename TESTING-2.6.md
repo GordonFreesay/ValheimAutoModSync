@@ -42,13 +42,13 @@ For every case below, verify that no normal ServerHandshake is replayed and no l
 
 Create fixtures only inside a disposable test Valheim/BepInEx tree.
 
-- [ ] Manifest path containing `..` is rejected.
-- [ ] Rooted/drive-style path is rejected.
-- [ ] Windows device-name segment such as `CON.dll`, `NUL.txt`, `COM1.json` is rejected.
-- [ ] Segment ending in a period is rejected.
-- [ ] Segment ending in a space is rejected.
-- [ ] Control/invalid filename character is rejected.
-- [ ] Excessive segment/path length is rejected.
+- [x] Manifest path containing `..` is rejected.
+- [x] Rooted/drive-style path is rejected.
+- [x] Windows device-name segment such as `CON.dll`, `NUL.txt`, `COM1.json` is rejected.
+- [x] Segment ending in a period is rejected.
+- [x] Segment ending in a space is rejected.
+- [x] Control/invalid filename character is rejected.
+- [x] Excessive segment/path length is rejected.
 - [ ] Server scanner does not traverse a junction/reparse-point directory under plugins/patchers/config.
 - [ ] Server scanner does not publish a reparse-point file.
 - [ ] Client refuses a live destination whose existing parent/leaf is a reparse point.
@@ -174,6 +174,7 @@ Development-only compatibility emulation is available without a second tester. C
 - After the Phase 6 AMSTXN2/delete changes, the existing Phase 2 adversarial helper regression suite was independently rerun in Windows CI against a freshly compiled current Apply helper and passed all 4/4 cases: caught-failure rollback, malformed/version rejection, protected/fixed-root rejection, and recovery reparse-point rejection. This confirms the new operation-aware journal did not regress the previously closed transaction safety gates.
 - Phase 6 client-payload/prior-server Windows CI passed all 5/5 production-policy checks at commit `c5aebf053dae391ec205b58c83945d8df9adb402`: recursive fixed-root client-only payload discovery with exact hashes, exclusion filtering, case-insensitive same-kind destination-collision rejection, exact immediately-prior trusted-server deletion authority, and malformed prior-server marker fail-safe behavior. This closes the isolated ClientPayload/prior-server policy gate.
 - Phase 6 live lifecycle validation passed end-to-end on 2026-09-24. The initial join installed and owned only the two missing fixture files while leaving an already-matching pre-existing local file unowned. The transition join transactionally deleted the old owned path, installed the renamed replacement, preserved a locally modified stale file while relinquishing its ownership, and preserved the never-owned pre-existing file. The final delete-only join removed the exact owned renamed file, published an empty fixture ownership set, relaunched Valheim, and reconnected successfully. Live testing also exposed and fixed two edge cases before closure: exact-root reparse validation incorrectly rejected the trusted root itself, and an externally updated formerly-owned file that already matched the next server digest could be re-owned without a matching AMS write; both now fail safe/correctly relinquish ownership.
+- Phase 1 isolated path-boundary validation passed on 2026-09-24 with 20 assertions against the production `AutoModSync.PathSafety.cs`: safe canonicalization, parent traversal rejection, rooted/drive-style rejection, Windows reserved device-name rejection, trailing dot/space rejection, control/invalid filename rejection, excessive segment/path rejection, exact-root acceptance, sibling-prefix containment, and a real Windows junction/reparse traversal rejection. The harness modified only a `%TEMP%` sandbox.
 - Phase 5 integrated development build passed locally after the scheduler integration was added. `build-dev.bat` reported `SUCCESS: development runtime built in: C:\Users\billy\source\repos\oG1337\ValheimAutoModSync\DevBuild` and explicitly produced no installer, release ZIP, store package, tag, or publication artifact.
 - Phase 5 one-client live scheduler integration passed on 2026-09-23 with a one-file delta. The server logged scheduler admission (`queuePosition=1, active=0/4`), built the 4.0 KB bundle, applied temporary Steam transport tuning, published `bundle ready` with `schedulerQueue=0.018 s`, emitted transfer telemetry, and restored the exact Steam bundle transport settings after synchronization. The restarted client then executed its one-shot reconnect, reported that its mods already matched the trusted server, and released the held Valheim ServerHandshake. This closes the basic integrated admission -> transfer -> apply/restart/reconnect path for one client.
 - Phase 5 aggregate-cap/backpressure live validation passed on 2026-09-23 using the 313.4 MB / 60-file cached bundle with `AggregateSendRateMaxBytesPerSec=4194304` and `SchedulerMaxSteamQueueMs=1`. The server repeatedly logged scheduler backpressure while Steam reliable queue time was approximately 13-62 ms, then completed normally instead of disconnecting/failing. Completion telemetry reported `rawPayload=313.4 MB, elapsed=83.383 s, avgRawPayload=3.76 MiB/s, aggregateCap=4.0 MB/s`, and the original Steam transport settings were restored afterward. The normal 64 MiB/s aggregate configuration was subsequently restored, as confirmed by the following compatibility run's `aggregateCap=64.0 MB/s` completion telemetry.
