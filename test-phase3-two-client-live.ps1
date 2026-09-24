@@ -82,7 +82,7 @@ function Prepare-Test {
 
     Write-Host ''
     Write-Host 'ARMED: real two-client single-flight validation.'
-    Write-Host 'The server has one new 4 MiB random client payload, startup prewarm is disabled for this process, and the first real bundle build will pause 10 seconds on a worker thread.'
+    Write-Host 'The server has one new 4 MiB random client payload, startup ZIP prewarm is disabled for this process, and the first real bundle build will pause 10 seconds on a worker thread. Additional identical real-world deltas on both clients are allowed.'
     Write-Host 'Start the dedicated server. Then connect BOTH already-baselined 2.6 clients as close together as practical (within the 10-second build window).'
     Write-Host 'Let both synchronization attempts finish/restart. Then run -Action Inspect.'
 }
@@ -96,7 +96,7 @@ function Inspect-Test {
     do{
         $newServer=@(Get-NewLines $serverLog ([int]$state.serverLogLines))
         $serverText=$newServer-join[Environment]::NewLine
-        $readyCount=[regex]::Matches($serverText,'AutoModSync bundle ready: cache=(?:MISS|WAIT-HIT|HIT), key=[0-9a-fA-F]+, sha256=[0-9a-fA-F]{64}, compressedBytes=\d+, files=1,').Count
+        $readyCount=[regex]::Matches($serverText,'AutoModSync bundle ready: cache=(?:MISS|WAIT-HIT|HIT), key=[0-9a-fA-F]+, sha256=[0-9a-fA-F]{64}, compressedBytes=\d+, files=\d+,').Count
         if($readyCount-ge 2){break}
         Start-Sleep -Milliseconds 250
     }while([DateTime]::UtcNow-lt$deadline)
@@ -129,14 +129,13 @@ function Inspect-Test {
     $admissionMatches=[regex]::Matches($serverText,'AutoModSync bundle request admitted to scheduler: .*requestedFiles=(\d+),')
     $admissionCounts=@()
     foreach($m in $admissionMatches){$admissionCounts+=[int]$m.Groups[1].Value}
-    $oneFileAdmissions=@($admissionCounts|Where-Object{$_-eq 1}).Count
-    if($admissionCounts.Count-eq 2-and$oneFileAdmissions-eq 2){
-        Write-Host '  PASS observed exactly two scheduler admissions for the same one-file delta.'
+    if($admissionCounts.Count-eq 2-and$admissionCounts[0]-gt 0-and$admissionCounts[0]-eq$admissionCounts[1]){
+        Write-Host("  PASS observed exactly two scheduler admissions with the same file count ({0}); cache identity checks below prove the exact signed set matched."-f$admissionCounts[0])
     }elseif($admissionCounts.Count-eq 2){
-        Write-Host("  FAIL both real clients reached the scheduler, but their requested file sets differed: requestedFiles={0}. Single-flight sharing requires an identical signed file set."-f($admissionCounts-join','))
+        Write-Host("  FAIL both real clients reached the scheduler, but their requested file counts differed: requestedFiles={0}."-f($admissionCounts-join','))
         $ok=$false
     }else{
-        Write-Host("  FAIL expected exactly two scheduler admissions for the two real clients; observed {0} total ({1} one-file)."-f$admissionCounts.Count,$oneFileAdmissions)
+        Write-Host("  FAIL expected exactly two scheduler admissions for the two real clients; observed {0}."-f$admissionCounts.Count)
         $ok=$false
     }
 
@@ -160,7 +159,7 @@ function Inspect-Test {
         $ok=$false
     }
 
-    $pattern='AutoModSync bundle ready: cache=(MISS|WAIT-HIT|HIT), key=([0-9a-fA-F]+), sha256=([0-9a-fA-F]{64}), compressedBytes=(\d+), files=1,'
+    $pattern='AutoModSync bundle ready: cache=(MISS|WAIT-HIT|HIT), key=([0-9a-fA-F]+), sha256=([0-9a-fA-F]{64}), compressedBytes=(\d+), files=(\d+),'
     $matches=[regex]::Matches($serverText,$pattern)
     $miss=$null
     $waitHit=$null
@@ -170,6 +169,7 @@ function Inspect-Test {
             Key=$m.Groups[2].Value.ToLowerInvariant()
             Sha=$m.Groups[3].Value.ToLowerInvariant()
             Bytes=[int64]$m.Groups[4].Value
+            Files=[int]$m.Groups[5].Value
         }
         if($entry.Status-eq'MISS'-and$null-eq$miss){$miss=$entry}
         if($entry.Status-eq'WAIT-HIT'-and$null-eq$waitHit){$waitHit=$entry}
@@ -189,10 +189,10 @@ function Inspect-Test {
         $ok=$false
     }
 
-    if($null-ne$miss-and$null-ne$waitHit-and$miss.Key-eq$waitHit.Key-and$miss.Sha-eq$waitHit.Sha-and$miss.Bytes-eq$waitHit.Bytes){
-        Write-Host '  PASS both real clients received the exact same immutable cache key/SHA-256/compressed size.'
+    if($null-ne$miss-and$null-ne$waitHit-and$miss.Key-eq$waitHit.Key-and$miss.Sha-eq$waitHit.Sha-and$miss.Bytes-eq$waitHit.Bytes-and$miss.Files-eq$waitHit.Files-and($waitKey.Length-eq 0-or$waitKey-eq$miss.Key)){
+        Write-Host("  PASS both real clients received the exact same immutable cache key/SHA-256/compressed size/file count ({0} file(s))."-f$miss.Files)
     }elseif($null-ne$miss-and$null-ne$waitHit){
-        Write-Host '  FAIL MISS and WAIT-HIT artifact identities differ.'
+        Write-Host '  FAIL MISS, WAIT, and WAIT-HIT artifact identities differ.'
         $ok=$false
     }
 
