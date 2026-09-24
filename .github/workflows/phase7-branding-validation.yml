@@ -16,6 +16,7 @@ on:
       - "build-modsite-package.ps1"
       - "install.bat"
       - "test-phase7-branding.ps1"
+      - "test-phase7-ui-preview.ps1"
       - ".github/workflows/phase7-branding-validation.yml"
   workflow_dispatch:
 
@@ -29,6 +30,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Verify source documentation guard
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\verify-source-docs.ps1"
+
+      - name: Run deterministic Phase 7 UI-state harness
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase7-ui-state.ps1"
 
       - name: Run deterministic Phase 7 branding/package harness
         shell: powershell
