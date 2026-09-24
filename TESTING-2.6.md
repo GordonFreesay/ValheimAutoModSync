@@ -47,6 +47,8 @@ Live fail-closed evidence, 2026-09-24: `bad-legacy-chunk` passed. The client rej
 
 Live fail-closed evidence, 2026-09-24: `bad-binary-batch` passed. The client rejected the injected invalid/out-of-order binary compressed-package batch, the server consumed the intended fault mode, no vanilla `ServerHandshake` replay was observed, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
 
+Live fail-closed evidence, 2026-09-24: `bad-bundle-end` passed. The client rejected the intentionally mismatched final bundle completion metadata before extraction/apply acceptance, the server consumed the intended fault mode, no vanilla `ServerHandshake` replay was observed, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
+
 ### Recognized AMS must fail closed
 
 For every case below, verify that no normal ServerHandshake is replayed and no live synchronized file is changed:
@@ -65,7 +67,7 @@ The development runtime now includes a guided live fault-injection suite in `tes
 - [x] Invalid/oversized bundle header.
 - [x] Out-of-order/oversized legacy bundle chunk.
 - [x] Out-of-order/oversized binary bundle batch.
-- [ ] Wrong final bundle SHA-256/size/file count.
+- [x] Wrong final bundle SHA-256/size/file count.
 - [ ] Apply/restart preparation failure after a verified download.
 
 ### Path boundary
