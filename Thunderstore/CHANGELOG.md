@@ -3,11 +3,13 @@
 ## 2.6.0 (development)
 
 - Added conservative trusted-server content ownership. AutoModSync records only files it actually installs/replaces, scoped by the trusted server fingerprint; matching pre-existing local files are not claimed.
+- Added a fixed server-side `BepInEx/AutoModSync/ClientPayload/plugins/**` tree for client-required plugins/assets that the dedicated server must not load. Payload files reuse signed `P` destinations, honor exclusions, and fail explicitly on case-insensitive collisions with normal synchronized plugins.
+- Stale owned deletion now additionally requires the immediately prior successful synchronization to have used the same trusted server fingerprint; a server switch defers exact stale cleanup instead of deleting across server contexts.
 - Added transactional stale-file retirement. A later signed omission can delete only exact bytes still matching that same server's last-owned digest; modified local files are preserved and ownership is relinquished. Write/delete operations share PREPARED/COMMITTED recovery, with AMSTXN2 journals retaining AMSTXN1 recovery compatibility.
 - Added isolated Phase 6 ownership/apply Windows CI covering ownership publication, exact deletion, wrong-digest and cross-server rejection, PREPARED delete rollback, and COMMITTED ownership recovery.
 
 - Added a server-wide concurrent bundle scheduler with FIFO active slots, a bounded waiting queue, round-robin aggregate bandwidth grants, optional client queue-position status, Steam reliable-queue backpressure, per-transfer persistent ZIP streams, and dead/idle slot cleanup. Defaults are four active transfers, 32 additional queued requests, and a 64 MiB/s aggregate raw-payload budget.
-- Added deterministic eight-peer scheduler validation and Windows CI. The first CI run exposed a refill-boundary fairness bug; the scheduler now preserves a peer's turn when tokens are temporarily insufficient and the corrected 6/6 harness passes.
+- Added deterministic eight-peer scheduler validation and Windows CI. The first CI run exposed a refill-boundary fairness bug; the scheduler now preserves a peer's turn when tokens are temporarily insufficient and the expanded corrected 8/8 harness passes.
 
 - Added exact-artifact resumable bundle downloads as an optional AMS4 `bundle-resume1` capability. Interrupted clients retain one bounded partial ZIP, and the server independently verifies the exact retained prefix against the current immutable artifact before allowing a nonzero resume offset; mismatches safely restart from zero.
 - Added development-only single-client transfer interruption emulation and an isolated deterministic Phase 4 resume harness. These validation hooks are not compiled into release client binaries.
