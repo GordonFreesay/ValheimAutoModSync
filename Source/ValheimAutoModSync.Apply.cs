@@ -22,9 +22,11 @@ internal static class Program
     private const string TransactionManifestName = "manifest.txt";
     private const string PreparedMarkerName = "prepared.ok";
     private const string CommittedMarkerName = "committed.ok";
+    private const string TransactionOwnershipName = "ownership-next.txt";
 
     private sealed class ApplyItem
     {
+        public char Operation = 'W';
         public char Kind;
         public string RelativePath;
         public bool OldExists;
@@ -32,6 +34,8 @@ internal static class Program
         public string NewSha256;
         public long OldSize;
         public string OldSha256;
+        public long ExpectedDeleteSize = -1L;
+        public string ExpectedDeleteSha256 = "";
     }
 
     private sealed class FileDigest
@@ -162,8 +166,9 @@ internal static class Program
     // Invariant: every old destination is durably backed up and PREPARED is durably recorded before the first live write; COMMITTED is recorded only after every new destination is verified.
     private static void ApplyPendingTransaction(string amsRoot, string pluginRoot, string patcherRoot, string configRoot, string stagingRoot, string pending)
     {
-        List<ApplyItem> items = ReadPendingItems(pending);
-        if (items.Count == 0) throw new InvalidDataException("AutoModSync pending transaction contained no files.");
+        bool ownershipRequired;
+        List<ApplyItem> items = ReadPendingItems(pending, out ownershipRequired);
+        if (items.Count == 0) throw new InvalidDataException("AutoModSync pending transaction contained no operations.");
 
         string txRoot = Path.Combine(amsRoot, TransactionDirectoryName);
         if (Directory.Exists(txRoot))
@@ -174,8 +179,11 @@ internal static class Program
 
         try
         {
-            AppendApplyLog(amsRoot, "Preparing transactional apply for " + items.Count + " file(s).");
+            AppendApplyLog(amsRoot, "Preparing transactional apply for " + items.Count + " operation(s).");
             PrepareTransaction(txRoot, items, pluginRoot, patcherRoot, configRoot, stagingRoot);
+            if (ownershipRequired)
+                PrepareOwnershipTransition(amsRoot, txRoot, items);
+            WriteTransactionManifest(txRoot, items);
             WriteMarkerDurable(Path.Combine(txRoot, PreparedMarkerName), "PREPARED");
             AppendApplyLog(amsRoot, "Transaction PREPARED; all old-state backups are durable.");
 
@@ -411,33 +419,73 @@ internal static class Program
     }
 
     // Intent: Strictly parses the pending list into unique fixed-root transaction entries; malformed lines are errors rather than silently skipped.
-    private static List<ApplyItem> ReadPendingItems(string pending)
+    private static List<ApplyItem> ReadPendingItems(string pending, out bool ownershipRequired)
     {
         string[] lines = File.ReadAllLines(pending);
         List<ApplyItem> items = new List<ApplyItem>();
         HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        ownershipRequired = lines.Length > 0 && String.Equals(lines[0], "AMSPENDING2", StringComparison.Ordinal);
 
+        int start = ownershipRequired ? 1 : 0;
         int i;
-        for (i = 0; i < lines.Length; i++)
+        for (i = start; i < lines.Length; i++)
         {
             string line = lines[i] ?? "";
-            if (line.Length < 3 || line[1] != ':') throw new InvalidDataException("Malformed AutoModSync pending entry.");
-            char kind = line[0];
-            if (!IsSupportedKind(kind)) throw new InvalidDataException("Unsupported AutoModSync pending-file kind.");
-
-            string rel = NormalizeRelative(line.Substring(2));
-            if (rel.Length == 0) throw new InvalidDataException("Unsafe AutoModSync pending-file path.");
-            if (kind == 'C' && IsProtectedConfigName(Path.GetFileName(rel)))
-                throw new InvalidDataException("Refusing to apply a protected BepInEx/AutoModSync config file.");
-
-            string key = kind + ":" + rel;
-            if (!seen.Add(key)) throw new InvalidDataException("Duplicate AutoModSync pending-file destination.");
+            if (String.IsNullOrWhiteSpace(line)) continue;
 
             ApplyItem item = new ApplyItem();
-            item.Kind = kind;
-            item.RelativePath = rel;
+            if (!ownershipRequired)
+            {
+                // Backward-compatible Phase 2 plan: kind:path always means a staged write.
+                if (line.Length < 3 || line[1] != ':') throw new InvalidDataException("Malformed AutoModSync pending entry.");
+                item.Operation = 'W';
+                item.Kind = line[0];
+                if (!IsSupportedKind(item.Kind)) throw new InvalidDataException("Unsupported AutoModSync pending-file kind.");
+                item.RelativePath = NormalizeRelative(line.Substring(2));
+            }
+            else
+            {
+                string[] parts = line.Split('|');
+                if (parts.Length < 3 || parts[0].Length != 1 || parts[1].Length != 1)
+                    throw new InvalidDataException("Malformed AutoModSync versioned pending entry.");
+
+                item.Operation = parts[0][0];
+                item.Kind = parts[1][0];
+                if (item.Operation != 'W' && item.Operation != 'D')
+                    throw new InvalidDataException("Unsupported AutoModSync pending operation.");
+                if (!IsSupportedKind(item.Kind))
+                    throw new InvalidDataException("Unsupported AutoModSync pending-file kind.");
+
+                if (item.Operation == 'W')
+                {
+                    if (parts.Length != 3) throw new InvalidDataException("Malformed AutoModSync pending write entry.");
+                    try { item.RelativePath = NormalizeRelative(Encoding.UTF8.GetString(Convert.FromBase64String(parts[2]))); }
+                    catch { throw new InvalidDataException("Invalid AutoModSync pending write path encoding."); }
+                }
+                else
+                {
+                    if (parts.Length != 5) throw new InvalidDataException("Malformed AutoModSync pending delete entry.");
+                    if (!Int64.TryParse(parts[2], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out item.ExpectedDeleteSize)
+                        || item.ExpectedDeleteSize < 0)
+                        throw new InvalidDataException("Invalid AutoModSync pending delete size.");
+                    item.ExpectedDeleteSha256 = (parts[3] ?? "").ToLowerInvariant();
+                    if (!IsSha256(item.ExpectedDeleteSha256))
+                        throw new InvalidDataException("Invalid AutoModSync pending delete SHA-256.");
+                    try { item.RelativePath = NormalizeRelative(Encoding.UTF8.GetString(Convert.FromBase64String(parts[4]))); }
+                    catch { throw new InvalidDataException("Invalid AutoModSync pending delete path encoding."); }
+                }
+            }
+
+            if (String.IsNullOrEmpty(item.RelativePath))
+                throw new InvalidDataException("Unsafe AutoModSync pending-file path.");
+            if (item.Kind == 'C' && IsProtectedConfigName(Path.GetFileName(item.RelativePath)))
+                throw new InvalidDataException("Refusing to apply a protected BepInEx/AutoModSync config file.");
+
+            string key = item.Kind + ":" + item.RelativePath;
+            if (!seen.Add(key)) throw new InvalidDataException("Duplicate AutoModSync pending-file destination.");
             items.Add(item);
         }
+
         return items;
     }
 
