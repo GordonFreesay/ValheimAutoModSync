@@ -89,8 +89,8 @@ namespace ValheimAutoModSync
                 Dictionary<string, AutoModSyncClientPayloadFile> byRel = new Dictionary<string, AutoModSyncClientPayloadFile>(StringComparer.OrdinalIgnoreCase);
                 for (int i = 0; i < all.Count; i++) byRel[all[i].RelativePath] = all[i];
                 Assert(byRel.ContainsKey("client-only.dll"), "root payload file missing");
-                Assert(byRel.ContainsKey("Nested\\asset.bin"), "nested payload file missing");
-                Assert(byRel["Nested\\asset.bin"].Sha256 == ShaFile(nestedFile), "nested payload hash mismatch");
+                Assert(byRel.ContainsKey("Nested/asset.bin"), "nested payload file missing");
+                Assert(byRel["Nested/asset.bin"].Sha256 == ShaFile(nestedFile), "nested payload hash mismatch");
                 Assert(byRel["client-only.dll"].Size == new FileInfo(rootFile).Length, "payload size mismatch");
                 Console.WriteLine("  PASS");
 
@@ -105,15 +105,15 @@ namespace ValheimAutoModSync
 
                 Console.WriteLine("[3/5] Case-insensitive destination collision fails explicitly while different kinds may share a relative name...");
                 Dictionary<string, string> destinations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                AutoModSyncClientPayload.RegisterUniqueDestination(destinations, 'P', "Nested\\asset.bin", "normal plugins");
+                AutoModSyncClientPayload.RegisterUniqueDestination(destinations, 'P', "Nested/asset.bin", "normal plugins");
                 bool collisionThrown = false;
                 try
                 {
-                    AutoModSyncClientPayload.RegisterUniqueDestination(destinations, 'P', "nested\\ASSET.bin", "ClientPayload/plugins");
+                    AutoModSyncClientPayload.RegisterUniqueDestination(destinations, 'P', "nested/ASSET.bin", "ClientPayload/plugins");
                 }
                 catch (InvalidDataException) { collisionThrown = true; }
                 Assert(collisionThrown, "case-insensitive P destination collision was silently accepted");
-                AutoModSyncClientPayload.RegisterUniqueDestination(destinations, 'R', "Nested\\asset.bin", "patchers");
+                AutoModSyncClientPayload.RegisterUniqueDestination(destinations, 'R', "Nested/asset.bin", "patchers");
                 Console.WriteLine("  PASS");
 
                 Console.WriteLine("[4/5] Stale-deletion authority requires the exact immediately prior successful fingerprint...");
