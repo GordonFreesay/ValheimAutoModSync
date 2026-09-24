@@ -37,6 +37,8 @@ try {
     Assert-Contains $source 'AUTOMODSYNC' 'Installer'
     Assert-Contains $source 'VERIFIED MOD SYNCHRONIZATION' 'Installer'
     Assert-Contains $source 'TryApplyWindowIcon()' 'Installer window icon'
+    Assert-Contains $source 'role.UseMnemonic = false;' 'Installer role mnemonic handling'
+    Assert-Contains $source 'roleHelp.UseMnemonic = false;' 'Installer role help mnemonic handling'
     Assert-Contains $source 'Icon.ExtractAssociatedIcon(Application.ExecutablePath)' 'Installer window icon'
     Assert-Contains $source 'AutoModSyncIdentityDisplay.VerificationCode' 'Installer'
     if ([IO.File]::ReadAllText($source).IndexOf('AppendLog("Server fingerprint:',[StringComparison]::Ordinal) -ge 0) {
