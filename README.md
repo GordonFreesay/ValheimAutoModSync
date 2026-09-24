@@ -55,7 +55,7 @@ Store-specific archive names identify packaging targets only; they do not create
 
 ## What happens when a client connects
 
-1. **Trust** — on first contact, the client is shown the server signing fingerprint and chooses whether to trust it.
+1. **Trust** — on first contact, the client is shown a short security code derived from the server signing identity and chooses whether to trust it. The complete fingerprint remains internal for cryptographic pinning.
 2. **Compare** — local synchronized BepInEx file hashes are compared with the server's signed manifest.
 3. **Download** — only missing or changed synchronized files are transferred.
 4. **Verify** — received data and extracted files are verified before installation.
@@ -87,7 +87,8 @@ build-store-packages.ps1        Builds every distribution package from one compi
 build-all-releases.bat          Convenience entry point for all distribution formats
 DISTRIBUTION.md                 Distribution/version/publishing policy and required store credentials
 install.bat                     Readable/manual fallback installer included in standalone releases
-SIGNING.md                      Current unsigned-release policy and optional future Authenticode signing paths
+SIGNING.md                      Authenticode status, GitHub/Sigstore provenance, and optional future trusted signing paths
+VERIFYING-RELEASES.md           One-line provenance and SHA-256 verification instructions for downloaded packages
 SOURCE-WALKTHROUGH.md           End-to-end source, trust-boundary, handshake, and restart flow map
 verify-source-docs.ps1          Verifies source-level Intent documentation
 verify-version.ps1              Prevents package/plugin/assembly version drift
@@ -103,7 +104,7 @@ Local builds can run `build-release.bat` on a Windows PC with Valheim installed.
 
 The root `VERSION` file is the authoritative distribution version. `verify-version.ps1` checks the client/server plugin versions and all AutoModSync assembly/installer versions before a release build. `build-all-releases.bat` builds the standalone, Nexus, CurseForge, and Thunderstore packages from the same compiled binaries.
 
-The repository also contains `.github/workflows/release-build.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, and uploads the resulting ZIP as a GitHub Actions artifact. Public releases are currently distributed unsigned. The workflow retains optional SignPath submission steps for a future eligible Foundation application or another SignPath subscription, but those steps remain inactive unless signing credentials are configured.
+The repository also contains `.github/workflows/release-build.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, generates SHA-256 checksums, and creates GitHub/Sigstore build-provenance attestations for official GitHub-built artifacts. The Windows PE files remain Authenticode-unsigned unless trusted signing credentials are configured. Optional SignPath submission remains dormant unless such credentials become available.
 
 The release builder pins **BepInExPack Valheim 5.4.2350** and verifies this SHA-256 before using it:
 
@@ -115,11 +116,11 @@ Valheim and Unity assemblies required for compilation are taken from the user's 
 
 ## Code signing policy
 
-AutoModSync public Windows releases are currently **unsigned**.
+AutoModSync public Windows PE files are currently **not Authenticode-signed by a publicly trusted publisher certificate**.
 
 The project applied to the SignPath Foundation program in September 2026. The application was declined at this stage because the project did not yet have enough external public-trust and adoption signals such as community usage, stars/forks/contributors, independent references, or sustained public engagement. The decision was not a technical rejection of AutoModSync. The project may reapply after broader adoption or use another trusted Authenticode signing path in the future.
 
-Release builds continue to run from `main` through GitHub Actions on GitHub-hosted runners. The resulting unsigned ZIP is uploaded as a GitHub Actions artifact so the public build origin remains independently inspectable even without an Authenticode publisher certificate.
+Release builds continue to run through GitHub Actions on GitHub-hosted runners. Starting with the 2.6 release pipeline, official GitHub-built package bytes receive SHA-256 manifests and GitHub/Sigstore artifact attestations that bind the digest to this repository, workflow, commit, and build event. This provenance is separate from Authenticode and does not suppress Windows SmartScreen.
 
 The workflow retains optional SignPath support but does not submit signing requests unless valid SignPath credentials are explicitly configured.
 
@@ -133,7 +134,7 @@ Project roles:
 
 Privacy policy: This program will not transfer information to other networked systems unless specifically requested by the user or by the person installing or operating it. AutoModSync communicates with the Valheim server the user chooses to connect to for synchronization and uses the game's existing network connection.
 
-See `SIGNING.md` for the current unsigned-release policy and the retained optional signing infrastructure.
+See `SIGNING.md` for the Authenticode/provenance distinction and `VERIFYING-RELEASES.md` for verification commands.
 
 ## Release integrity
 
@@ -146,6 +147,8 @@ SHA-256:
 ```
 
 GitHub Releases is the authoritative source for the standalone installer artifact. Nexus Mods, CurseForge, and Thunderstore use store-specific packaging variants of the same AutoModSync version. Those variants are not separate GitHub releases. See `DISTRIBUTION.md`. Repository source files are integrity-tracked by Git rather than by a generated repository-wide checksum file.
+
+For 2.6 and later official GitHub-built packages, use `gh attestation verify <artifact> -R GordonFreesay/ValheimAutoModSync` to verify GitHub/Sigstore provenance. The canonical release also publishes `SHA256SUMS.txt`. See `VERIFYING-RELEASES.md` for exact commands and limitations.
 
 ## License
 
