@@ -29,7 +29,7 @@ if exist "%ROOT%verify-version.ps1" (
   if errorlevel 1 exit /b 1
 )
 if exist "%ROOT%verify-no-pii.ps1" (
-  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -Root "%ROOT%"
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1"
   if errorlevel 1 exit /b 1
 )
 
@@ -131,7 +131,7 @@ if errorlevel 1 exit /b 1
 del /q "%REFS%" >nul 2>&1
 
 if exist "%ROOT%verify-no-pii.ps1" (
-  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -Root "%ROOT%" -ArtifactPaths "%OUT%\ValheimAutoModSync.Client.dll;%OUT%\ValheimAutoModSync.Server.dll;%OUT%\ValheimAutoModSync.Apply.exe"
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -ArtifactPaths "%OUT%\ValheimAutoModSync.Client.dll;%OUT%\ValheimAutoModSync.Server.dll;%OUT%\ValheimAutoModSync.Apply.exe"
   if errorlevel 1 exit /b 1
 )
 
