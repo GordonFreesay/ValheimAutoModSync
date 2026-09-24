@@ -39,7 +39,7 @@ The store-specific builders intentionally do not bundle BepInEx. Only the standa
 
 `.github/workflows/distribution-packages.yml`
 
-Runs manually or when a `v*` tag is pushed. It builds the standalone, Nexus, CurseForge, and Thunderstore ZIPs from the same source revision and uploads each as a GitHub Actions artifact.
+Runs manually or when a `v*` tag is pushed. It builds the standalone, Nexus, CurseForge, and Thunderstore ZIPs from the same source revision, generates one `SHA256SUMS.txt` covering all four package files, creates GitHub/Sigstore provenance attestations for those exact digests plus the checksum manifest, and uploads each package/checksum file as a GitHub Actions artifact.
 
 ### Nexus Mods
 
@@ -84,6 +84,8 @@ The token should belong to a Thunderstore team service account allowed to publis
 
 Run the workflow manually with `publish=true` to publish. With `publish=false`, it only builds and uploads the package as a GitHub Actions artifact.
 
+Each manual store-publishing workflow also SHA-256 hashes and attests the exact store ZIP produced in that publishing run before upload. Do not substitute an independently rebuilt ZIP merely because it has the same version number; provenance is digest-specific.
+
 ## Release procedure
 
 For a future release:
@@ -92,10 +94,12 @@ For a future release:
 2. Update the matching AutoModSync source/assembly version declarations.
 3. Update changelog/release notes.
 4. Run the build. `verify-version.ps1` prevents version drift.
-5. Publish the canonical GitHub standalone release/tag.
-6. Run the distribution/store workflows for that same version.
-7. Keep the website's current version equal to the shared AutoModSync version; link to store pages as alternate installation channels rather than presenting them as different versions.
+5. Push the matching `v<version>` tag and require the Distribution Packages workflow to pass.
+6. Download/use the workflow-produced canonical standalone ZIP and `SHA256SUMS.txt`; verify the ZIP with `gh attestation verify <artifact> -R GordonFreesay/ValheimAutoModSync`.
+7. Publish the canonical GitHub release using those exact workflow-produced bytes and attach `SHA256SUMS.txt`.
+8. Run the store publication workflows for the same version; each workflow attests the exact package it uploads.
+9. Keep the website's current version equal to the shared AutoModSync version; link to store pages as alternate installation channels rather than presenting them as different versions.
 
 ## Signing
 
-Public Windows releases are currently unsigned. Store packaging does not change that status. See `SIGNING.md`.
+AutoModSync PE files are currently Authenticode-unsigned, but official GitHub-built 2.6+ packages receive SHA-256 manifests and GitHub/Sigstore provenance attestations. Store packaging does not convert provenance into Authenticode. See `SIGNING.md` and `VERIFYING-RELEASES.md`.
