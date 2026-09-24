@@ -1320,10 +1320,18 @@ namespace ValheimAutoModSync
                             if (cached.Size > maxBundleBytes)
                                 throw new InvalidDataException("Cached AutoModSync package exceeds the current configured server transfer limit.");
 
+                            bool wasStartupPinned = cached.StartupPinned;
+                            double idleSeconds = Math.Max(0.0, (now - cached.LastUsedUtc).TotalSeconds);
+                            int ordinaryTtlSeconds = _bundleCacheSeconds == null ? 600 : Math.Max(0, _bundleCacheSeconds.Value);
+
                             cached.ActiveTransfers++;
                             cached.LastUsedUtc = now;
                             // The startup baseline is pinned only until its first real client use; afterward normal TTL/LRU policy applies.
                             cached.StartupPinned = false;
+                            if (wasStartupPinned && idleSeconds > ordinaryTtlSeconds && _instance != null)
+                                _instance.Logger.LogInfo("AutoModSync startup-pinned bundle survived ordinary cache TTL until first real client use: idle=" +
+                                    idleSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s, BundleCacheSeconds=" +
+                                    ordinaryTtlSeconds.ToString(CultureInfo.InvariantCulture) + ", key=" + ShortCacheKey(cached.CacheKey) + ".");
                             cacheStatus = waited ? "WAIT-HIT" : "HIT";
                             waitSeconds = waited ? (now - waitStartedUtc).TotalSeconds : 0.0;
                             return cached;
