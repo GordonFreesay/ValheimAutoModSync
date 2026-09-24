@@ -61,6 +61,16 @@ try {
     Assert-Contains $client 'phase7-test-server-browser-probe.once' 'Client server-browser probe'
     Assert-Contains $client 'AutoModSync DEV SERVER BROWSER PROBE BEGIN' 'Client server-browser probe'
     Assert-Contains $client 'AutoModSyncIdentityDisplay.VerificationCode' 'Client identity display'
+    $preprocessorDepth = 0
+    foreach ($line in [System.IO.File]::ReadAllLines($client)) {
+        $trimmed = $line.Trim()
+        if ($trimmed -match '^#if\b') { $preprocessorDepth++ }
+        elseif ($trimmed -match '^#endif\b') {
+            $preprocessorDepth--
+            Assert-True ($preprocessorDepth -ge 0) 'Client source contains an unmatched #endif directive.'
+        }
+    }
+    Assert-True ($preprocessorDepth -eq 0) 'Client source contains an unmatched #if directive.'
     Assert-Contains $server 'SteamGameServer.SetKeyValue("automodsync", PluginVersion)' 'Server browser presence'
     Assert-Contains $server 'SteamGameServer.SetKeyValue("automodsync_protocol"' 'Server browser presence'
     Assert-Contains $server 'AdvertiseAutoModSync' 'Server browser presence config'
