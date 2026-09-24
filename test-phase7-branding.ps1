@@ -60,6 +60,10 @@ try {
     Assert-Contains $client 'phase7-test-ui-preview.once' 'Client UI preview'
     Assert-Contains $client 'phase7-test-server-browser-probe.once' 'Client server-browser probe'
     Assert-Contains $client 'AutoModSync DEV SERVER BROWSER PROBE BEGIN' 'Client server-browser probe'
+    Assert-Contains $client 'UpdateServerBrowserBadges()' 'Client server-browser badges'
+    Assert-Contains $client 'SteamMatchmakingServers.ServerRules' 'Client passive Steam-rule discovery'
+    Assert-Contains $client 'AutoModSyncBadge' 'Client server-browser badge object'
+    Assert-Contains $client 'ShowServerBadges' 'Client server-browser badge config'
     Assert-Contains $client 'AutoModSyncIdentityDisplay.VerificationCode' 'Client identity display'
     $preprocessorDepth = 0
     foreach ($line in [System.IO.File]::ReadAllLines($client)) {
