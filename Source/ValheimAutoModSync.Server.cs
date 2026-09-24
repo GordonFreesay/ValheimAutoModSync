@@ -1492,7 +1492,7 @@ namespace ValheimAutoModSync
 
 #if AMS_DEV_TESTS
         // Intent: Consumes a one-shot server marker during AMS4_Hello and pins that peer to the pre-resume AMS4 wire shape for the life of the connection.
-        // Scope: the emulated server still supports roots1/batch/pipeline exactly as 2.5 did; only bundle-resume1 is withheld and no resume fields are parsed or emitted.
+        // Scope: the emulated server still supports roots1/batch/pipeline exactly as 2.5 did; bundle-resume1 and bundle-scheduler1 are withheld, and no 2.6 resume/queue extension fields are emitted.
         private static bool ArmDevelopmentLegacyServerPeer(ZRpc rpc)
         {
             if (rpc == null) return false;
