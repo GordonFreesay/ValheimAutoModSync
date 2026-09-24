@@ -50,11 +50,11 @@ namespace ValheimAutoModSync
 
         // 2.6 client-side hard ceilings are deliberately independent of server configuration.
         // A trusted server may choose smaller limits, but it cannot make this client allocate/write unbounded payloads.
-        private const int MaxBundleFiles = 4096;
-        private const int MaxBundleChunks = 524288;
-        private const long MaxIncomingBundleBytes = 2048L * 1024L * 1024L;
-        private const long MaxExpandedSyncBytes = 4096L * 1024L * 1024L;
-        private const long MaxIndividualSyncFileBytes = 512L * 1024L * 1024L;
+        private const int MaxBundleFiles = AutoModSyncClientResourceSafety.MaxBundleFiles;
+        private const int MaxBundleChunks = AutoModSyncClientResourceSafety.MaxBundleChunks;
+        private const long MaxIncomingBundleBytes = AutoModSyncClientResourceSafety.MaxIncomingBundleBytes;
+        private const long MaxExpandedSyncBytes = AutoModSyncClientResourceSafety.MaxExpandedSyncBytes;
+        private const long MaxIndividualSyncFileBytes = AutoModSyncClientResourceSafety.MaxIndividualSyncFileBytes;
 
         private static ClientPlugin _instance;
         private static ZRpc _pendingRpc;
@@ -874,15 +874,9 @@ namespace ValheimAutoModSync
                     _instance.Logger.LogWarning("AutoModSync found an externally changed owned file already matching the server and relinquished ownership: " + e.Kind + ":" + e.RelativePath);
 
                 if (!needed) continue;
-                if (e.Size > MaxIndividualSyncFileBytes)
-                    throw new InvalidDataException("Required file exceeds the AutoModSync client hard limit: " + rel);
-                if (expandedNeededBytes > MaxExpandedSyncBytes - e.Size)
-                    throw new InvalidDataException("Required synchronized content exceeds the AutoModSync client expanded-size limit.");
-
-                expandedNeededBytes += e.Size;
+                expandedNeededBytes = AutoModSyncClientResourceSafety.AddRequiredFile(e.Size, expandedNeededBytes, rel);
                 NeededFiles.Add(e);
-                if (NeededFiles.Count > MaxBundleFiles)
-                    throw new InvalidDataException("Required synchronized file count exceeds the AutoModSync client hard limit.");
+                AutoModSyncClientResourceSafety.ValidateRequiredFileCount(NeededFiles.Count);
             }
 
             // A signed-manifest omission can retire only a path this exact trusted server previously caused AMS to own.
@@ -1054,36 +1048,24 @@ namespace ValheimAutoModSync
                     resumeStartChunk = pkg.ReadInt();
                 }
 
-                long size;
-                if (!long.TryParse(sizeText, NumberStyles.Integer, CultureInfo.InvariantCulture, out size)
-                    || size <= 0
-                    || size > MaxIncomingBundleBytes
-                    || chunks < 1
-                    || chunks > MaxBundleChunks
-                    || files < 1
-                    || files > MaxBundleFiles
-                    || files != NeededFiles.Count
-                    || !IsSha256Hex(sha))
-                    throw new InvalidDataException("Compressed package header exceeded AutoModSync client safety limits or did not match the requested sync.");
+                long size = AutoModSyncClientResourceSafety.ValidateBundleHeader(
+                    sizeText,
+                    sha,
+                    chunks,
+                    files,
+                    NeededFiles.Count,
+                    _serverSupportsBundleResume,
+                    chunkBytes,
+                    resumeStartChunk,
+                    out chunkBytes);
 
 #if AMS_DEV_TESTS
                 if (_devEmulateLegacyClient && !_serverSupportsBundleResume && _instance != null)
                     _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-client compatibility confirmed: original AMS4 bundle header shape accepted.");
 #endif
 
-                if (_serverSupportsBundleResume)
-                {
-                    if (chunkBytes < 4096 || chunkBytes > 65536
-                        || (size + chunkBytes - 1L) / chunkBytes != chunks
-                        || resumeStartChunk < 0 || resumeStartChunk > chunks)
-                        throw new InvalidDataException("Compressed package resume header contained invalid chunk geometry.");
-                }
-                else
-                {
-                    // Legacy AMS4 servers do not publish chunk geometry; resume is disabled for that transfer.
-                    chunkBytes = (int)Math.Max(1L, (size + chunks - 1L) / chunks);
+                if (!_serverSupportsBundleResume)
                     resumeStartChunk = 0;
-                }
 
                 string amsRoot = GetAutoModSyncRoot();
                 FileStream stream = null;
@@ -1208,8 +1190,6 @@ namespace ValheimAutoModSync
                 if (encoded == null || encoded.Length > 70000) throw new InvalidDataException("Oversized compressed package chunk.");
                 byte[] data = Convert.FromBase64String(encoded);
                 ValidateBundleChunkLength(index, data == null ? 0 : data.Length);
-                if (_bundleBytesReceived > _bundleSize || (long)data.Length > _bundleSize - _bundleBytesReceived)
-                    throw new InvalidDataException("Compressed package exceeded its declared size.");
                 _bundleStream.Write(data, 0, data.Length);
                 _bundleBytesReceived += data.Length;
                 _bundleNextChunk++;
@@ -1247,8 +1227,6 @@ namespace ValheimAutoModSync
                     if (index != _bundleNextChunk || data == null || data.Length < 1 || data.Length > 65536)
                         throw new InvalidDataException("Out-of-order or oversized compressed package batch chunk.");
                     ValidateBundleChunkLength(index, data.Length);
-                    if (_bundleBytesReceived > _bundleSize || (long)data.Length > _bundleSize - _bundleBytesReceived)
-                        throw new InvalidDataException("Compressed package exceeded its declared size.");
                     _bundleStream.Write(data, 0, data.Length);
                     _bundleBytesReceived += data.Length;
                     _bundleNextChunk++;
@@ -1271,15 +1249,14 @@ namespace ValheimAutoModSync
         // Intent: Enforces the exact chunk geometry published by resume-capable servers so every persisted offset is a complete immutable-artifact boundary.
         private static void ValidateBundleChunkLength(int index, int length)
         {
-            if (length < 1 || length > 65536) throw new InvalidDataException("Invalid compressed package chunk length.");
-            if (!_serverSupportsBundleResume) return;
-            if (_bundleChunkBytes < 1 || index < 0 || index >= _bundleTotalChunks)
-                throw new InvalidDataException("Compressed package chunk geometry is not initialized.");
-
-            long offset = (long)index * _bundleChunkBytes;
-            int expected = (int)Math.Min((long)_bundleChunkBytes, _bundleSize - offset);
-            if (expected <= 0 || length != expected)
-                throw new InvalidDataException("Compressed package chunk length did not match the resumable bundle geometry.");
+            AutoModSyncClientResourceSafety.ValidateIncomingChunk(
+                index,
+                length,
+                _bundleBytesReceived,
+                _bundleSize,
+                _bundleTotalChunks,
+                _serverSupportsBundleResume,
+                _bundleChunkBytes);
         }
 
         // Intent: Requests the next verified binary batch when supported, otherwise a bounded transfer window or one legacy AMS4 chunk.
@@ -1412,27 +1389,7 @@ namespace ValheimAutoModSync
         // Security: this prevents a malicious compressed stream from expanding until disk exhaustion before AutoModSync notices the mismatch.
         private static void CopyZipEntryBounded(Stream source, Stream destination, long expectedBytes, ref long cumulativeExpandedBytes)
         {
-            if (expectedBytes < 0 || expectedBytes > MaxIndividualSyncFileBytes)
-                throw new InvalidDataException("Compressed package entry exceeds the AutoModSync client file limit.");
-
-            byte[] buffer = new byte[81920];
-            long written = 0L;
-            while (true)
-            {
-                int read = source.Read(buffer, 0, buffer.Length);
-                if (read <= 0) break;
-                if ((long)read > expectedBytes - written)
-                    throw new InvalidDataException("Compressed package entry expanded beyond its signed size.");
-                if ((long)read > MaxExpandedSyncBytes - cumulativeExpandedBytes)
-                    throw new InvalidDataException("Compressed package exceeded the AutoModSync client expanded-size limit.");
-
-                destination.Write(buffer, 0, read);
-                written += read;
-                cumulativeExpandedBytes += read;
-            }
-
-            if (written != expectedBytes)
-                throw new InvalidDataException("Compressed package entry ended before its signed size.");
+            AutoModSyncClientResourceSafety.CopyZipEntryBounded(source, destination, expectedBytes, ref cumulativeExpandedBytes);
         }
 
         // Intent: Applies the same Windows-safe path policy to ZIP entry names used by the signed manifest.
@@ -2545,15 +2502,7 @@ namespace ValheimAutoModSync
         // Intent: Validates protocol SHA-256 text before it is trusted as a content identifier.
         private static bool IsSha256Hex(string value)
         {
-            if (String.IsNullOrEmpty(value) || value.Length != 64) return false;
-            int i;
-            for (i = 0; i < value.Length; i++)
-            {
-                char c = value[i];
-                bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-                if (!hex) return false;
-            }
-            return true;
+            return AutoModSyncClientResourceSafety.IsSha256Hex(value);
         }
 
         // Intent: Derives the stable SHA-256 fingerprint shown/pinned for a server's public signing key.
