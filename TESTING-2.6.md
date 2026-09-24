@@ -1,3 +1,15 @@
+## Standalone installer polish / uninstall
+
+- [x] Windows CI compiles the production installer with the embedded AMS logo plus shared identity/path/ownership safety helpers.
+- [x] Installer contract requires complete-role detection before exposing `Uninstall`; partial installs remain `Install`/repair-only.
+- [x] Client uninstall contract blocks on pending apply/recovery state and removes synchronized files only when strict ownership metadata plus live size/SHA-256 prove the file is still AMS-owned; local changes are preserved.
+- [x] Server uninstall contract preserves shared BepInEx, unrelated mods, operator-managed `ClientPayload`, and server config/signing identity by default; identity removal requires explicit opt-in.
+- [x] Installer normal identity output uses the short verification code rather than the full fingerprint.
+- [x] Compiled installer artifact passes the first-party PII guard.
+- [ ] Live visual check: embedded logo, dark/orange layout, complete/partial status, Repair/Update and Uninstall button placement are clean at normal Windows scaling.
+- [ ] Isolated live uninstall check: complete Client install exposes Uninstall, exact AMS-owned fixture is retired, locally changed fixture is preserved, BepInEx/unrelated mod remain, and reinstall restores the role.
+- [ ] Isolated server uninstall check: server plugin/cache/release payload are removed while config/key/ClientPayload remain; explicit identity-removal option deletes only the documented server config/key files.
+
 # AutoModSync 2.6 validation checklist
 
 **Status:** PARTIAL RUNTIME VALIDATION. Only explicitly checked items and the dated runtime evidence below have passed; all other items remain pending.
