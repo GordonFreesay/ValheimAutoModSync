@@ -2,6 +2,9 @@
 
 ## 2.6.0 (development)
 
+- First-contact trust now uses a short human-comparison security code instead of displaying the complete signing-key fingerprint; the full 256-bit fingerprint is still verified and pinned internally, while trusted sessions show only a generic trusted-server label.
+- Added a first-party PII guard to development/release builds and Windows CI. It rejects local user-home paths, email addresses, account/SID/Steam identifiers, and public IP literals from project-authored source/build content, then scans printable strings in AutoModSync-authored binaries.
+
 - Added a state-driven in-game synchronization panel using AutoModSync's charcoal/gray/orange branding, with the AMS logo, signed-manifest comparison counts, queue status, transfer progress, current/average throughput, ETA, resume-retained bytes, verification progress, restart/reconnect status, and bounded failure presentation.
 - Kept Phase 7 presentation policy-free: UI state observes decisions already made by trust/network/filesystem/scheduler code and does not control admission, pacing, trust, or fail-open/fail-closed behavior.
 - Added reproducible executable branding from the canonical AMS PNG: development/release builds generate a multi-size ICO, embed it into the Apply helper (and standalone installer on release builds), and package the physical ICO beside the executable.
