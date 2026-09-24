@@ -236,16 +236,18 @@ Development-only compatibility emulation is available without a second tester. C
 
 ### Next live visual/product gate
 
-- [ ] Development `phase7-test-ui-preview.once` cycles Trust, Comparing, Queued, resumed Downloading, Verifying, Applying, Restarting, Reconnecting, Complete, and Failed at the main menu with no clipping/overlap at the maintainer's normal resolution/UI scale.
-- [ ] Embedded AMS logo renders correctly in-game; missing/corrupt-resource fallback remains nonfatal.
-- [ ] Gray/charcoal/orange/ember palette, typography, stat tiles, progress bars, fingerprint block, and failure accent remain readable against Valheim menus.
-- [ ] Resumed Downloading preview clearly shows retained bytes plus current/average throughput and ETA without treating retained bytes as current-session throughput.
-- [ ] `ValheimAutoModSync.Apply.exe` exposes the embedded AMS icon and `ValheimAutoModSync.Apply.ico` is deployed beside it by the dev path.
+- [x] Development `phase7-test-ui-preview.once` cycles Trust, Comparing, Queued, resumed Downloading, Verifying, Applying, Restarting, Reconnecting, Complete, and Failed at the main menu with no observed clipping/overlap at the maintainer's normal resolution/UI scale.
+- [x] Embedded AMS logo renders correctly in-game; missing/corrupt-resource fallback remains nonfatal by construction.
+- [x] Gray/charcoal/orange/ember palette, typography, stat tiles, progress bars, fingerprint block, and failure accent were visually readable against multiple Valheim intro/menu backgrounds.
+- [x] Resumed Downloading preview clearly shows retained bytes plus current/average throughput and ETA without treating retained bytes as current-session throughput.
+- [x] `ValheimAutoModSync.Apply.exe` exposes an associated 32x32 embedded icon and `ValheimAutoModSync.Apply.ico` is produced beside it by the dev build.
 - [ ] Real changed-file synchronization drives comparison -> queue (when applicable) -> download -> verify -> apply/restart -> reconnect states from production events, with telemetry moving monotonically and the final reconnect remaining one-shot.
 - [ ] A real interrupted/resumed package displays the retained prefix, measures only new session bytes for average rate, completes verification/apply/reconnect, and leaves no stale Phase 7 overlay.
 - [ ] Failure/connection-loss presentation self-clears and never changes the established fail-open/fail-closed policy.
 
 The development-only visual preview is presentation-only: it does not open an AutoModSync connection, alter trust, request a bundle, write synchronized files, or change scheduler/transfer policy. A real connection immediately disables the preview. Release builds do not compile the marker path.
+
+`test-phase7-live.ps1` drives the next production-event gate with one fixed 128 MiB inert client-only payload under `__AMS_PHASE7_UI__`. The script never edits trust/config/real mod DLLs or directly deletes the synchronized client fixture. `Prepare` creates the server payload; a normal join must download/verify/apply/restart/reconnect; `Inspect` verifies exact client SHA-256, scheduler transfer completion, PREPARED/COMMITTED apply evidence, one-shot reconnect, zero-delta follow-up, and ownership. `PrepareCleanup` removes only the server source; the next normal join must retire the exact owned client fixture transactionally, and `InspectCleanup` verifies no test payload/ownership remains.
 
 ## Runtime evidence — 2026-09-23
 
