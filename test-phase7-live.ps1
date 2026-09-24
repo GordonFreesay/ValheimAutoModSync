@@ -275,6 +275,7 @@ switch ($Action) {
     'PrepareCleanup' {
         if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { throw 'No Phase 7 live state exists.' }
         Require-Clean-Apply-State
+        Require-Matching-Client-Payloads
         if (-not (Test-Path -LiteralPath $clientFixture -PathType Leaf)) { throw 'Client fixture is already absent; cleanup reconciliation cannot be validated.' }
         if (Test-Path -LiteralPath $serverFixture -PathType Leaf) { Remove-Item -LiteralPath $serverFixture -Force }
         if ((Test-Path -LiteralPath $serverTestRoot -PathType Container) -and (@(Get-ChildItem -LiteralPath $serverTestRoot -Force).Count -eq 0)) {
