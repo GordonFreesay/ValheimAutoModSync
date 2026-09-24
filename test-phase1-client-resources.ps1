@@ -24,12 +24,19 @@ $requiredWiring = @(
     'AutoModSyncClientResourceSafety.ValidateRequiredFileCount(',
     'AutoModSyncClientResourceSafety.ValidateBundleHeader(',
     'AutoModSyncClientResourceSafety.ValidateIncomingChunk(',
-    'AutoModSyncClientResourceSafety.CopyZipEntryBounded('
+    'AutoModSyncClientResourceSafety.CopyZipEntryBounded(',
+    'AutoModSyncClientResourceSafety.WriteVerifiedExtractedEntry('
 )
 foreach ($needle in $requiredWiring) {
     if ($clientText.IndexOf($needle, [StringComparison]::Ordinal) -lt 0) {
         throw "Production client resource-safety wiring is missing: $needle"
     }
+}
+
+$verifiedExtractIndex = $clientText.IndexOf('AutoModSyncClientResourceSafety.WriteVerifiedExtractedEntry(', [StringComparison]::Ordinal)
+$pendingAcceptIndex = $clientText.IndexOf('PendingRelativePaths.Add(MakePendingWriteEntry(expectedEntry));', [StringComparison]::Ordinal)
+if ($verifiedExtractIndex -lt 0 -or $pendingAcceptIndex -lt 0 -or $pendingAcceptIndex -lt $verifiedExtractIndex) {
+    throw 'Production client no longer accepts a pending extracted file only after verified extraction returns successfully.'
 }
 
 $csc = $null
@@ -74,11 +81,13 @@ namespace ValheimAutoModSync
 
         public static int Main(string[] args)
         {
+            if (args.Length != 1) return 2;
+            string sandbox = Path.GetFullPath(args[0]);
             try
             {
                 Console.WriteLine("AutoModSync 2.6 Phase 1 client resource-limit validation");
 
-                Console.WriteLine("[1/10] Bundle declaration over 2048 MiB is rejected before any archive write...");
+                Console.WriteLine("[1/12] Bundle declaration over 2048 MiB is rejected before any archive write...");
                 AssertInvalid(delegate
                 {
                     int normalized;
@@ -88,7 +97,7 @@ namespace ValheimAutoModSync
                 }, "Oversized compressed bundle");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[2/10] Required-file count above 4096 is rejected...");
+                Console.WriteLine("[2/12] Required-file count above 4096 is rejected...");
                 AutoModSyncClientResourceSafety.ValidateRequiredFileCount(AutoModSyncClientResourceSafety.MaxBundleFiles);
                 AssertInvalid(delegate
                 {
@@ -96,7 +105,7 @@ namespace ValheimAutoModSync
                 }, "Oversized required-file count");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[3/10] Individual required file above 512 MiB is rejected...");
+                Console.WriteLine("[3/12] Individual required file above 512 MiB is rejected...");
                 AssertInvalid(delegate
                 {
                     AutoModSyncClientResourceSafety.AddRequiredFile(
@@ -104,7 +113,7 @@ namespace ValheimAutoModSync
                 }, "Oversized individual file");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[4/10] Expanded required content above 4096 MiB is rejected without allocating it...");
+                Console.WriteLine("[4/12] Expanded required content above 4096 MiB is rejected without allocating it...");
                 AssertInvalid(delegate
                 {
                     AutoModSyncClientResourceSafety.AddRequiredFile(
@@ -114,7 +123,7 @@ namespace ValheimAutoModSync
                 }, "Expanded content overflow");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[5/10] Implausible/excessive chunk count is rejected...");
+                Console.WriteLine("[5/12] Implausible/excessive chunk count is rejected...");
                 AssertInvalid(delegate
                 {
                     int normalized;
@@ -124,13 +133,13 @@ namespace ValheimAutoModSync
                 }, "Oversized chunk count");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[6/10] Non-hex and non-64-character SHA-256 text is rejected...");
+                Console.WriteLine("[6/12] Non-hex and non-64-character SHA-256 text is rejected...");
                 Assert(!AutoModSyncClientResourceSafety.IsSha256Hex(new string('a', 63)), "63-character SHA text was accepted.");
                 Assert(!AutoModSyncClientResourceSafety.IsSha256Hex(new string('z', 64)), "Non-hex SHA text was accepted.");
                 Assert(AutoModSyncClientResourceSafety.IsSha256Hex(GoodSha()), "Valid SHA-256 text was rejected.");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[7/10] Incoming legacy/binary chunk cannot write past declared compressed size...");
+                Console.WriteLine("[7/12] Incoming legacy/binary chunk cannot write past declared compressed size...");
                 AssertInvalid(delegate
                 {
                     AutoModSyncClientResourceSafety.ValidateIncomingChunk(
@@ -138,7 +147,7 @@ namespace ValheimAutoModSync
                 }, "Chunk beyond declared bundle size");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[8/10] Resume-capable chunk geometry must exactly match the immutable artifact...");
+                Console.WriteLine("[8/12] Resume-capable chunk geometry must exactly match the immutable artifact...");
                 AssertInvalid(delegate
                 {
                     AutoModSyncClientResourceSafety.ValidateIncomingChunk(
@@ -148,7 +157,7 @@ namespace ValheimAutoModSync
                     0, 4096, 0L, 8192L, 2, true, 4096);
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[9/10] ZIP stream expanding beyond its signed entry size is stopped before excess bytes are written...");
+                Console.WriteLine("[9/12] ZIP stream expanding beyond its signed entry size is stopped before excess bytes are written...");
                 byte[] tooMuch = new byte[] { 1, 2, 3, 4 };
                 long cumulative = 0L;
                 MemoryStream output = new MemoryStream();
@@ -161,7 +170,7 @@ namespace ValheimAutoModSync
                 Assert(cumulative <= 3L, "Cumulative expanded counter exceeded the signed entry allowance.");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[10/10] Cumulative ZIP expansion cannot cross the 4096 MiB ceiling...");
+                Console.WriteLine("[10/12] Cumulative ZIP expansion cannot cross the 4096 MiB ceiling...");
                 cumulative = AutoModSyncClientResourceSafety.MaxExpandedSyncBytes - 2L;
                 output = new MemoryStream();
                 AssertInvalid(delegate
@@ -171,6 +180,28 @@ namespace ValheimAutoModSync
                 }, "Cumulative ZIP expansion overflow");
                 Assert(output.Length == 0L, "Bytes were written after cumulative expansion should have been rejected.");
                 Assert(cumulative == AutoModSyncClientResourceSafety.MaxExpandedSyncBytes - 2L, "Cumulative counter changed on rejected expansion.");
+                Console.WriteLine("  PASS");
+
+                Console.WriteLine("[11/12] Failed partial extraction removes the staging file before it can be accepted...");
+                string partialPath = Path.Combine(sandbox, "partial.amsnew");
+                cumulative = 0L;
+                AssertInvalid(delegate
+                {
+                    using (MemoryStream input = new MemoryStream(new byte[] { 1, 2, 3, 4 }))
+                        AutoModSyncClientResourceSafety.WriteVerifiedExtractedEntry(input, partialPath, 3L, GoodSha(), ref cumulative);
+                }, "Partially extracted oversized entry");
+                Assert(!File.Exists(partialPath), "Partial failed extraction remained on disk.");
+                Console.WriteLine("  PASS");
+
+                Console.WriteLine("[12/12] Completed-size extraction with a bad digest is also removed before pending acceptance...");
+                string badDigestPath = Path.Combine(sandbox, "bad-digest.amsnew");
+                cumulative = 0L;
+                AssertInvalid(delegate
+                {
+                    using (MemoryStream input = new MemoryStream(new byte[] { 1, 2, 3 }))
+                        AutoModSyncClientResourceSafety.WriteVerifiedExtractedEntry(input, badDigestPath, 3L, GoodSha(), ref cumulative);
+                }, "Bad-digest extracted entry");
+                Assert(!File.Exists(badDigestPath), "Digest-failed extraction remained on disk.");
                 Console.WriteLine("  PASS");
 
                 Console.WriteLine();
@@ -197,7 +228,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-& $exePath
+& $exePath $sandbox
 $exitCode = $LASTEXITCODE
 
 if ($exitCode -eq 0 -and -not $KeepSandbox) {
