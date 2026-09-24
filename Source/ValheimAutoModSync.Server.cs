@@ -43,6 +43,7 @@ namespace ValheimAutoModSync
         internal const string RpcBundleChunk = "AMS4_BundleChunk";
         internal const string RpcBundleBatch = "AMS4_BundleBatch";
         internal const string RpcBundleEnd = "AMS4_BundleEnd";
+        internal const string RpcQueueStatus = "AMS4_QueueStatus";
         internal const string RpcError = "AMS4_Error";
 
         private static ServerPlugin _instance;
@@ -63,6 +64,11 @@ namespace ValheimAutoModSync
         private static ConfigEntry<int> _transferSendRateMax;
         private static ConfigEntry<int> _transferSendRateMin;
         private static ConfigEntry<int> _transferSendBufferBytes;
+        private static ConfigEntry<int> _maxActiveBundleTransfers;
+        private static ConfigEntry<int> _aggregateSendRateMax;
+        private static ConfigEntry<int> _schedulerGrantBytes;
+        private static ConfigEntry<int> _schedulerMaxSteamQueueMs;
+        private static ConfigEntry<int> _transferIdleTimeoutSeconds;
 
         private static readonly object ManifestLock = new object();
         private static readonly HashSet<ZRpc> Registered = new HashSet<ZRpc>();
@@ -76,6 +82,11 @@ namespace ValheimAutoModSync
         private static readonly Dictionary<ZRpc, string> ClientVersions = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, string> ClientCapabilities = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, BundleTransfer> BundleTransfers = new Dictionary<ZRpc, BundleTransfer>();
+        private static readonly Dictionary<ZRpc, PendingBundleRequest> PendingBundleRequests = new Dictionary<ZRpc, PendingBundleRequest>();
+        private static readonly Dictionary<ZRpc, long> SchedulerPeerIds = new Dictionary<ZRpc, long>();
+        private static readonly Dictionary<long, ZRpc> SchedulerPeers = new Dictionary<long, ZRpc>();
+        private static long _nextSchedulerPeerId;
+        private static AutoModSyncTransferScheduler _transferScheduler;
 #if AMS_DEV_TESTS
         private static readonly HashSet<ZRpc> DevelopmentLegacyServerPeers = new HashSet<ZRpc>();
 #endif
@@ -118,8 +129,26 @@ namespace ValheimAutoModSync
             public Exception Error;
         }
 
+        private sealed class PendingBundleRequest
+        {
+            public long SchedulerPeerId;
+            public List<FileRecord> Records;
+            public long ExpandedBytes;
+            public bool ResumeNegotiated;
+            public AutoModSyncResumeCandidate ResumeCandidate;
+            public DateTime QueuedUtc;
+        }
+
+        private sealed class ScheduledChunkRequest
+        {
+            public bool BinaryBatch;
+            public int Cursor;
+            public int RemainingChunks;
+        }
+
         private sealed class BundleTransfer
         {
+            public long SchedulerPeerId;
             public BundleArtifact Artifact;
             public string ZipPath;
             public long Size;
@@ -127,6 +156,10 @@ namespace ValheimAutoModSync
             public int ChunkBytes;
             public int TotalChunks;
             public int FileCount;
+            public FileStream ReadStream;
+            public ScheduledChunkRequest PendingRequest;
+            public DateTime LastActivityUtc;
+            public DateTime LastBackpressureLogUtc;
             public uint SteamConnectionHandle;
             public int OriginalSendRateMax;
             public int OriginalSendRateMin;
@@ -165,6 +198,17 @@ namespace ValheimAutoModSync
             _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 67108864, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
             _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 16777216, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
             _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 33554432, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
+            _maxActiveBundleTransfers = Config.Bind("Transfer", "MaxActiveBundleTransfers", 4, "Maximum number of clients that may own an active AutoModSync bundle-transfer slot. Additional clients stay connected and queue FIFO until a slot opens.");
+            _aggregateSendRateMax = Config.Bind("Transfer", "AggregateSendRateMaxBytesPerSec", 67108864, "Server-wide raw AutoModSync bundle payload budget across all active clients. Round-robin grants share this token bucket; Steam framing overhead is not counted.");
+            _schedulerGrantBytes = Config.Bind("Transfer", "SchedulerGrantBytes", 1048576, "Maximum raw bundle bytes one active client may receive per scheduler grant before round-robin advances. Values are bounded at runtime; individual Steam/RPC messages remain <=384 KiB.");
+            _schedulerMaxSteamQueueMs = Config.Bind("Transfer", "SchedulerMaxSteamQueueMs", 200, "Pause new AutoModSync grants to a Steam connection when its pending+unacked reliable bytes exceed approximately this many milliseconds at Steam's current reported send rate. 0 disables this backpressure check.");
+            _transferIdleTimeoutSeconds = Config.Bind("Transfer", "TransferIdleTimeoutSeconds", 60, "Release an active bundle-transfer slot if a connected client stops requesting bundle data for this many seconds. This prevents abandoned live peers from pinning the public-server queue.");
+
+            _transferScheduler = new AutoModSyncTransferScheduler(
+                Math.Max(1, _maxActiveBundleTransfers.Value),
+                Math.Max(1024L * 1024L, (long)_aggregateSendRateMax.Value),
+                Math.Max(65536, Math.Min(4 * 1024 * 1024, _schedulerGrantBytes.Value)),
+                0.25);
 
             try
             {
@@ -183,36 +227,16 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Releases bundle/cache/Steam-transport state for peers whose socket disappeared mid-transfer.
-        // Resume safety: the client owns its partial bytes; the server retains only immutable cache artifacts, so dropping a dead transfer reference cannot invalidate a later exact-artifact resume attempt.
+        // Intent: Drives the public-server transfer scheduler every frame, while dead/idle-peer cleanup runs at a lower fixed cadence.
+        // Resume safety: clients own partial bytes; releasing a dead/idle server slot restores transport settings and drops only this process's immutable-artifact reference.
         private void Update()
         {
             DateTime now = DateTime.UtcNow;
+            ServiceTransferScheduler(now);
+
             if (_nextTransferCleanupUtc != DateTime.MinValue && now < _nextTransferCleanupUtc) return;
             _nextTransferCleanupUtc = now.AddSeconds(1.0);
-
-            if (BundleTransfers.Count == 0) return;
-            List<ZRpc> dead = new List<ZRpc>();
-            foreach (KeyValuePair<ZRpc, BundleTransfer> pair in BundleTransfers)
-            {
-                bool connected = false;
-                try { connected = pair.Key != null && pair.Key.IsConnected(); } catch { connected = false; }
-                if (!connected) dead.Add(pair.Key);
-            }
-
-            int i;
-            for (i = 0; i < dead.Count; i++)
-            {
-                ZRpc rpc = dead[i];
-                CleanupBundle(rpc);
-                Registered.Remove(rpc);
-                ClientVersions.Remove(rpc);
-                ClientCapabilities.Remove(rpc);
-#if AMS_DEV_TESTS
-                DevelopmentLegacyServerPeers.Remove(rpc);
-#endif
-                if (_instance != null) _instance.Logger.LogInfo("AutoModSync released an interrupted bundle transfer after peer disconnect.");
-            }
+            CleanupDisconnectedOrIdleTransfers(now);
         }
 
         // Intent: Moves the dominant public-server fresh-client ZIP cost into dedicated-server startup instead of the first player's join.
@@ -409,6 +433,7 @@ namespace ValheimAutoModSync
                 rpc.Register<ZPackage>(RpcBundleChunk, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcBundleBatch, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcBundleEnd, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcQueueStatus, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcError, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 Registered.Add(rpc);
                 if (_instance != null) _instance.Logger.LogDebug("AutoModSync registered AMS4 handlers on a new peer ZRpc.");
@@ -453,7 +478,7 @@ namespace ValheimAutoModSync
                 ack.Write(PluginVersion);
                 ack.Write(emulateLegacyServer
                     ? "bundle-window1;bundle-batch1;bundle-pipeline1"
-                    : "bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1");
+                    : "bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1;bundle-scheduler1");
                 rpc.Invoke(RpcAck, new object[] { ack });
 
                 EnsureManifest(false);
