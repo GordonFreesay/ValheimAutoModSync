@@ -105,7 +105,8 @@ function Get-TrackedFirstPartyFiles {
 
     foreach ($rel in $files) {
         $normalized = ($rel -replace '\\','/').TrimStart('/')
-        if ($normalized -match '^(THIRD_PARTY_LICENSES|DevBuild|Dist|\.git)/') { continue }
+        if ($normalized -match '^(THIRD_PARTY_LICENSES|DevBuild|Dist|\.git)/' -or
+            $normalized -ieq 'THIRD-PARTY-NOTICES.md') { continue }
 
         $ext = [IO.Path]::GetExtension($normalized).ToLowerInvariant()
         $name = [IO.Path]::GetFileName($normalized).ToLowerInvariant()
