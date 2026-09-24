@@ -15,6 +15,7 @@ on:
       - "verify-source-docs.ps1"
       - "verify-no-pii.ps1"
       - "test-installer-contract.ps1"
+      - "test-installer-live.ps1"
       - ".github/workflows/installer-validation.yml"
   workflow_dispatch:
 
@@ -32,6 +33,14 @@ jobs:
       - name: Verify C# intent comments
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\verify-source-docs.ps1"
+
+      - name: Parse isolated live installer gate
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\test-installer-live.ps1"), [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Host; throw "Installer live gate has PowerShell parse errors." }
 
       - name: Run standalone installer contract
         shell: powershell
