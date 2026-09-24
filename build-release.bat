@@ -133,7 +133,7 @@ if errorlevel 1 goto :Fail
 if errorlevel 1 goto :Fail
 "%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /win32icon:"%APPLYICO%" /out:"%APPLYEXE%" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /win32icon:"%APPLYICO%" /out:"%INSTALLEREXE%" "%SOURCE%\ValheimAutoModSync.Installer.cs"
+"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /win32icon:"%APPLYICO%" /out:"%INSTALLEREXE%" "%SOURCE%\ValheimAutoModSync.Installer.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
 
 rem Sign AutoModSync-authored PE files before they are copied or packaged.
