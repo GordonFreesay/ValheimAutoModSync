@@ -15,7 +15,7 @@ Release builds/publication remain deferred until the maintainer has functionally
 
 ### Compatibility / preflight
 
-- [ ] Non-AutoModSync server receives no AMS response and the original `ServerHandshake` is replayed after the discovery timeout.
+- [x] Non-AutoModSync server receives no AMS response and the original `ServerHandshake` is replayed after the discovery timeout.
 - [x] Valid 2.6 AutoModSync server with matching client files establishes/uses trust, then replays the original `ServerHandshake` unchanged.
 - [x] Jotunn/Epic Loot/other compatibility checks still run after successful AMS preflight.
 - [x] Restart reconnect remains one-shot: after the first outgoing reconnect is created, later character-selection callbacks do not dispatch a second connection.
@@ -23,7 +23,7 @@ Release builds/publication remain deferred until the maintainer has functionally
 
 Development-only non-AMS discovery validation can be performed against the normal test server without uninstalling AMS: create `BepInEx/AutoModSync/preflight-test-suppress-response.once` on the dedicated server before one connection. A dev server consumes the marker on the next `AMS4_Hello`, binds suppression to that peer, and sends no AMS acknowledgement/manifest/error for any retry on that connection. The client must retry discovery, then after approximately 3.25 seconds log that no AMS response was received and replay the original held `ServerHandshake` unchanged. This marker is compiled only under `AMS_DEV_TESTS`; release binaries do not contain it.
 
-The first live attempt on 2026-09-24 exposed a test-hook bug rather than an AMS compatibility failure: the marker suppressed only the first `AMS4_Hello`, so the client's next discovery retry received normal AMS responses, detected the server, confirmed matching mods, and then released the vanilla handshake after successful AMS preflight. The hook was corrected so suppression remains attached to the selected `ZRpc` until disconnect. This compatibility gate remains unchecked until the corrected live run shows the true no-response timeout path.
+The first live attempt on 2026-09-24 exposed a test-hook bug rather than an AMS compatibility failure: the marker suppressed only the first `AMS4_Hello`, so the client's next discovery retry received normal AMS responses, detected the server, confirmed matching mods, and then released the vanilla handshake after successful AMS preflight. The hook was corrected so suppression remains attached to the selected `ZRpc` until disconnect. The corrected live run then passed: the server suppressed AMS responses for the selected peer, the client logged that no AutoModSync preflight response was received and continued Valheim normally, then replayed the original held `ServerHandshake` with one argument. The server accepted that vanilla handshake and completed the normal network-version/peer-connect path. This closes the non-AutoModSync discovery/fail-open compatibility gate.
 
 ### Recognized AMS must fail closed
 
