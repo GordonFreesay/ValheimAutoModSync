@@ -71,7 +71,7 @@ try {
     if ([System.IO.File]::ReadAllText($client).IndexOf('_serverBrowserFilteredListField', [System.StringComparison]::Ordinal) -ge 0) {
         throw 'Server-browser badge code must not index-zip m_filteredList with pooled UI rows.'
     }
-    Assert-Contains $client 'A transient mismatch must not erase a badge' 'Client tab-rebuild safety'
+    Assert-Contains $client 'an unproven binding always renders no AMS badge' 'Client fail-closed row binding'
     if ([System.IO.File]::ReadAllText($client).IndexOf('typeof(CanvasRenderer)', [System.StringComparison]::Ordinal) -ge 0) {
         throw 'Client browser badge must not take a compile-time CanvasRenderer/UIModule dependency; Unity UI Image adds its required renderer at runtime.'
     }
