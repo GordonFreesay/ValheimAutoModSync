@@ -48,13 +48,13 @@ jobs:
       - name: Write store package checksum
         shell: pwsh
         run: |
-          $file = Join-Path $PWD 'Dist/ValheimAutoModSync-\${{ env.AMS_VERSION }}-CurseForge.zip'
+          $file = Join-Path $PWD 'Dist/ValheimAutoModSync-${{ env.AMS_VERSION }}-CurseForge.zip'
           ./write-release-checksums.ps1 -Root $PWD -OutputPath 'Dist/SHA256SUMS-CurseForge.txt' -Files @($file)
 
       - name: Attest exact store package
         uses: actions/attest@v4
         with:
-          subject-path: Dist/ValheimAutoModSync-\${{ env.AMS_VERSION }}-CurseForge.zip
+          subject-path: Dist/ValheimAutoModSync-${{ env.AMS_VERSION }}-CurseForge.zip
 
       - name: Attest store checksum manifest
         uses: actions/attest@v4
@@ -64,7 +64,7 @@ jobs:
       - name: Upload store checksum artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ValheimAutoModSync-\${{ env.AMS_VERSION }}-CurseForge-SHA256
+          name: ValheimAutoModSync-${{ env.AMS_VERSION }}-CurseForge-SHA256
           path: Dist/SHA256SUMS-CurseForge.txt
           archive: false
           if-no-files-found: error
