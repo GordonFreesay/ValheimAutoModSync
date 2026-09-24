@@ -1,6 +1,7 @@
 using BepInEx;
 using HarmonyLib;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -209,6 +210,7 @@ namespace ValheimAutoModSync
         {
 #if AMS_DEV_TESTS
             if (_devUiPreviewActive) UpdateDevelopmentUiPreview();
+            TryRunDevelopmentServerBrowserProbe();
 #endif
             if (_restartRequested && !_quitIssued && _quitAfterUtc != DateTime.MinValue && DateTime.UtcNow >= _quitAfterUtc)
             {
@@ -3145,6 +3147,133 @@ namespace ValheimAutoModSync
             if (_devEmulateLegacyClient) return "roots1";
 #endif
             return ClientCapabilities;
+        }
+
+#if AMS_DEV_TESTS
+        // Intent: Consumes a one-shot development marker only after Valheim's Join Game browser exists, then logs the exact live row hierarchy and ServerListGui fields needed for a minimally invasive AMS badge patch.
+        // Scope: diagnostic only; it neither changes server-list UI nor opens discovery/network requests, and release builds do not contain this path.
+        private static void TryRunDevelopmentServerBrowserProbe()
+        {
+            string marker;
+            try { marker = Path.Combine(GetAutoModSyncRoot(), "phase7-test-server-browser-probe.once"); }
+            catch { return; }
+            if (!File.Exists(marker)) return;
+
+            GameObject panel = GameObject.Find("GUI/StartGui/StartGame/Panel/JoinPanel");
+            if (panel == null || !panel.activeInHierarchy) return;
+
+            ServerListGui browser = panel.GetComponent<ServerListGui>();
+            if (browser == null) return;
+
+            try { File.Delete(marker); } catch { }
+            try
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV SERVER BROWSER PROBE BEGIN");
+
+                Transform listRoot = panel.transform.Find("ServerList/ListRoot");
+                if (listRoot != null)
+                {
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV browser ListRoot children=" + listRoot.childCount.ToString(CultureInfo.InvariantCulture) + ".");
+                    int i;
+                    for (i = 0; i < listRoot.childCount; i++)
+                    {
+                        Transform row = listRoot.GetChild(i);
+                        if (row == null) continue;
+                        LogDevelopmentBrowserTransform(row, "row[" + i.ToString(CultureInfo.InvariantCulture) + "]", 2);
+                    }
+                }
+                else if (_instance != null)
+                {
+                    _instance.Logger.LogWarning("AutoModSync DEV browser probe could not find ServerList/ListRoot.");
+                }
+
+                FieldInfo[] fields = typeof(ServerListGui).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                int f;
+                for (f = 0; f < fields.Length; f++)
+                {
+                    FieldInfo field = fields[f];
+                    object value = null;
+                    try { value = field.GetValue(browser); } catch { }
+                    string summary = DevelopmentBrowserValueSummary(value);
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync DEV browser field " + field.Name + " : " + field.FieldType.FullName + " = " + summary);
+                }
+
+                try
+                {
+                    if (FejdStartup.instance != null)
+                    {
+                        ServerJoinData selected = FejdStartup.instance.GetServerToJoin();
+                        if (selected.IsValid)
+                        {
+                            string selectedSummary = selected.ToString();
+                            try
+                            {
+                                if ((int)selected.m_type == 3)
+                                {
+                                    ServerJoinDataDedicated dedicated = selected.Dedicated;
+                                    selectedSummary += " host=" + dedicated.GetHost() + " port=" + dedicated.m_port.ToString(CultureInfo.InvariantCulture);
+                                }
+                            }
+                            catch { }
+                            if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV browser selected join data: " + selectedSummary);
+                        }
+                    }
+                }
+                catch (Exception selectedEx)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV browser selected-server inspection failed: " + selectedEx.Message);
+                }
+
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV SERVER BROWSER PROBE END");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV server-browser probe failed: " + ex);
+            }
+        }
+
+        // Intent: Logs a bounded portion of one live server-row hierarchy, including component type names, so browser badge placement can target stable existing anchors rather than screen coordinates.
+        private static void LogDevelopmentBrowserTransform(Transform node, string prefix, int remainingDepth)
+        {
+            if (node == null || _instance == null) return;
+            Component[] components;
+            try { components = node.GetComponents<Component>(); }
+            catch { components = new Component[0]; }
+
+            StringBuilder types = new StringBuilder();
+            int i;
+            for (i = 0; i < components.Length; i++)
+            {
+                Component component = components[i];
+                if (component == null) continue;
+                if (types.Length > 0) types.Append(",");
+                types.Append(component.GetType().FullName);
+            }
+            _instance.Logger.LogInfo("AutoModSync DEV browser " + prefix + " name=" + node.name + " components=[" + types.ToString() + "]");
+
+            if (remainingDepth <= 0) return;
+            for (i = 0; i < node.childCount; i++)
+                LogDevelopmentBrowserTransform(node.GetChild(i), prefix + "/" + i.ToString(CultureInfo.InvariantCulture), remainingDepth - 1);
+        }
+
+        // Intent: Produces a bounded reflection summary for browser diagnostics without serializing server/player objects or exposing identity data.
+        private static string DevelopmentBrowserValueSummary(object value)
+        {
+            if (value == null) return "<null>";
+            string text = value as string;
+            if (text != null) return "<string length=" + text.Length.ToString(CultureInfo.InvariantCulture) + ">";
+
+            ICollection collection = value as ICollection;
+            if (collection != null) return "<collection count=" + collection.Count.ToString(CultureInfo.InvariantCulture) + ">";
+
+            UnityEngine.Object unityObject = value as UnityEngine.Object;
+            if (unityObject != null) return "<UnityObject " + unityObject.name + ">";
+
+            Type type = value.GetType();
+            if (type.IsPrimitive || type.IsEnum || type == typeof(decimal))
+                return Convert.ToString(value, CultureInfo.InvariantCulture);
+            return "<" + type.FullName + ">";
         }
 
 #if AMS_DEV_TESTS
