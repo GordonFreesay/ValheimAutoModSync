@@ -25,7 +25,7 @@ try {
     $sizes = @(16,24,32,48,64,128,256)
 
     foreach ($size in $sizes) {
-        $bitmap = New-Object System.Drawing.Bitmap $size,$size,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+        $bitmap = New-Object System.Drawing.Bitmap -ArgumentList $size,$size,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb
         try {
             $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
             try {
@@ -74,8 +74,9 @@ try {
     [UInt32]$offset = [UInt32](6 + (16 * $frames.Count))
     for ($i = 0; $i -lt $frames.Count; $i++) {
         $size = $sizes[$i]
-        $writer.Write([Byte](if ($size -eq 256) { 0 } else { $size }))
-        $writer.Write([Byte](if ($size -eq 256) { 0 } else { $size }))
+        [Byte]$dimension = if ($size -eq 256) { 0 } else { $size }
+        $writer.Write($dimension)
+        $writer.Write($dimension)
         $writer.Write([Byte]0)
         $writer.Write([Byte]0)
         $writer.Write([UInt16]1)
