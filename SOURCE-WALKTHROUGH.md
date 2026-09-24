@@ -69,6 +69,12 @@ For Steam-backed dedicated-server peers, the server resolves the transport direc
 
 The client hello also advertises `roots1`. That capability means the client/apply helper understand the fixed `P`/ `R`/ `C` destinations. A server only requires it when its signed manifest actually contains patcher or config entries, so ordinary plugin-only AMS4 compatibility remains available.
 
+Phase 6 does not add a network capability or protocol version. After the manifest signature and trusted fingerprint have already been validated, the client loads only that fingerprint's ledger under `BepInEx/AutoModSync/ownership/<fingerprint>.txt`. A path becomes server-owned only when AutoModSync must actually install/replace it. If an unowned local file already has the exact signed bytes, it satisfies the manifest but remains local/user-owned.
+
+When a later signed manifest from the same trusted fingerprint omits an owned path, the client compares the live file against the ledger's exact last-installed size/SHA-256. Exact bytes become a transactional delete operation. Missing files simply lose ownership. Locally modified files/directories are preserved and ownership is relinquished instead of treating signed omission as broad delete authority. A different trusted server loads a different ledger and therefore cannot retire the first server's owned paths.
+
+The desired post-commit ledger is written to `ownership-next.txt` before `pending.txt`; `pending.txt` remains the startup-recovery trigger. If only ownership metadata changes because a stale file was already missing or locally modified, the client can publish that ledger durably without restarting because no synchronized live file is being mutated.
+
 ### Source/ValheimAutoModSync.Server.cs
 
 The server plugin registers AMS4 RPCs on incoming Valheim connections and serves a deterministic signed view of eligible files from fixed BepInEx roots: plugins (`P`), patchers (`R`), and explicitly allowlisted config (`C`). Server-only/client-required pattern rules are applied before the canonical manifest is signed.
@@ -116,7 +122,9 @@ The apply helper runs outside Valheim after a verified download. Its job is inte
 - preserve the reconnect token for the successfully applied/relaunched client process;
 - relaunch through the captured package-manager/Steam context when available.
 
-The transaction lives under `BepInEx/AutoModSync/apply-transaction`. Its versioned manifest records each fixed-root destination, whether the old file existed, and SHA-256/size metadata for both new staging and any old backup. `pending.txt` and verified `.amsnew` staging remain present until COMMITTED cleanup, so a pre-commit crash has enough information to roll back and retry rather than accepting a partially updated install. The helper records transaction milestones in `apply.log`.
+The transaction lives under `BepInEx/AutoModSync/apply-transaction`. New Phase 6 transactions use `AMSTXN2`, which records whether each fixed-root operation is a verified write or stale-owned delete plus old/new rollback metadata. Recovery still accepts older `AMSTXN1` write-only journals so upgrading the helper cannot strand a pre-existing interrupted Phase 2 transaction. `pending.txt` and verified `.amsnew` staging remain present until COMMITTED cleanup, so a pre-commit crash has enough information to roll back and retry rather than accepting a partially updated install. The helper records transaction milestones in `apply.log`.
+
+Before PREPARED, the helper independently validates `ownership-next.txt` against the currently trusted fingerprint-scoped ledger and the prepared operations. New/changed ownership requires a matching verified write. A delete requires exact same-server prior ownership and the live bytes must still match that last-owned digest after Valheim exits. A PREPARED deletion is backed up and restored on rollback exactly like a replaced file. The transaction copy of the desired ownership ledger is published only after COMMITTED; if the helper dies after COMMITTED, recovery preserves the complete new live state and idempotently publishes the ledger before cleanup.
 
 The client no longer performs leftover staging copies from inside a running Valheim process. If startup sees `pending.txt` or `apply-transaction`, it starts the external helper and exits/restarts before attempting any AMS server join.
 
