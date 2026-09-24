@@ -13,6 +13,8 @@ set "CLIENTDIR=%ROOT%Client"
 set "SERVERDIR=%ROOT%Server"
 set "TOOLSDIR=%ROOT%Tools"
 set "DIST=%ROOT%Dist"
+set "BRANDING_PNG=%ROOT%Thunderstore\icon.png"
+set "BRANDING_SCRIPT=%ROOT%build-branding-assets.ps1"
 set "BEPINEX_VERSION=5.4.2350"
 set "BEPINEX_URL=https://gcdn.thunderstore.io/live/repository/packages/denikson-BepInExPack_Valheim-5.4.2350.zip"
 set "BEPINEX_SHA256=37a91c000b4e88f2ed7a4bd7d812239852d2e36cbf0ff0a9f5faacfba46b105f"
@@ -85,6 +87,24 @@ set "UNITY_IMGUI=%BEPSOURCE%\unstripped_corlib\UnityEngine.IMGUIModule.dll"
 if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%VALHEIMMANAGED%\UnityEngine.IMGUIModule.dll"
 set "UNITY_TEXT=%BEPSOURCE%\unstripped_corlib\UnityEngine.TextRenderingModule.dll"
 if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%VALHEIMMANAGED%\UnityEngine.TextRenderingModule.dll"
+set "UNITY_IMAGE=%BEPSOURCE%\unstripped_corlib\UnityEngine.ImageConversionModule.dll"
+if not exist "%UNITY_IMAGE%" set "UNITY_IMAGE=%VALHEIMMANAGED%\UnityEngine.ImageConversionModule.dll"
+if not exist "%UNITY_IMAGE%" (
+  echo ERROR: UnityEngine.ImageConversionModule.dll was not found under the selected Valheim installation.
+  goto :Fail
+)
+if not exist "%BRANDING_PNG%" (
+  echo ERROR: AutoModSync branding PNG was not found at "%BRANDING_PNG%".
+  goto :Fail
+)
+if not exist "%BRANDING_SCRIPT%" (
+  echo ERROR: build-branding-assets.ps1 is missing.
+  goto :Fail
+)
+
+set "APPLYICO=%WORK%\ValheimAutoModSync.Apply.ico"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%BRANDING_SCRIPT%" -SourcePng "%BRANDING_PNG%" -OutputIco "%APPLYICO%"
+if errorlevel 1 goto :Fail
 
 set "REFS=%WORK%\refs.rsp"
 >"%REFS%" echo /nologo
@@ -97,6 +117,7 @@ set "REFS=%WORK%\refs.rsp"
 >>"%REFS%" echo /reference:"%UNITY_CORE%"
 >>"%REFS%" echo /reference:"%UNITY_IMGUI%"
 >>"%REFS%" echo /reference:"%UNITY_TEXT%"
+>>"%REFS%" echo /reference:"%UNITY_IMAGE%"
 >>"%REFS%" echo /reference:"%SPLATFORM_DLL%"
 >>"%REFS%" echo /reference:"%STEAMWORKS_DLL%"
 >>"%REFS%" echo /reference:"%NETSTANDARD_DLL%"
@@ -109,11 +130,11 @@ set "SERVERDLL=%WORK%\ValheimAutoModSync.Server.dll"
 set "APPLYEXE=%WORK%\ValheimAutoModSync.Apply.exe"
 set "INSTALLEREXE=%WORK%\ValheimAutoModSyncInstaller.exe"
 echo Compiling AutoModSync components...
-"%CSC%" @"%REFS%" /target:library /out:"%CLIENTDLL%" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.SyncUiState.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ClientResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
+"%CSC%" @"%REFS%" /target:library /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /out:"%CLIENTDLL%" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.SyncUiState.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ClientResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
 "%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /out:"%APPLYEXE%" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
+"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /win32icon:"%APPLYICO%" /out:"%APPLYEXE%" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
 "%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /out:"%INSTALLEREXE%" "%SOURCE%\ValheimAutoModSync.Installer.cs"
 if errorlevel 1 goto :Fail
@@ -135,6 +156,7 @@ mkdir "%CLIENTDIR%\BepInEx\AutoModSync" >nul 2>&1
 xcopy "%BEPSOURCE%\BepInEx\core\*" "%CLIENTDIR%\BepInEx\core\" /E /I /Y /Q >nul
 copy /y "%CLIENTDLL%" "%CLIENTDIR%\ValheimAutoModSync.Client.dll" >nul
 copy /y "%APPLYEXE%" "%CLIENTDIR%\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe" >nul
+copy /y "%APPLYICO%" "%CLIENTDIR%\BepInEx\AutoModSync\ValheimAutoModSync.Apply.ico" >nul
 copy /y "%SERVERDLL%" "%SERVERDIR%\ValheimAutoModSync.Server.dll" >nul
 if errorlevel 1 goto :Fail
 
