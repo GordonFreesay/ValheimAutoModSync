@@ -95,6 +95,7 @@ namespace ValheimAutoModSync
         private static int DevelopmentBundleCacheSecondsOverride = -1;
         private static bool DevelopmentDisableStartupPrewarm;
         private static int DevelopmentDelayNextBundleBuildMs;
+        private static long DevelopmentBundleCacheMaxBytesOverride = -1L;
 #endif
         private static DateTime _nextTransferCleanupUtc = DateTime.MinValue;
 
@@ -514,6 +515,7 @@ namespace ValheimAutoModSync
             if (_enabled == null || !_enabled.Value) return;
             if (!IsDedicatedServerProcess()) return;
 #if AMS_DEV_TESTS
+            if (RunDevelopmentPhase3CacheSafetySelfTestIfArmed()) return;
             if (DevelopmentDisableStartupPrewarm)
             {
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST disabled startup bundle prewarm for this server process.");
@@ -605,6 +607,15 @@ namespace ValheimAutoModSync
             if (DevelopmentBundleCacheSecondsOverride >= 0) return DevelopmentBundleCacheSecondsOverride;
 #endif
             return _bundleCacheSeconds == null ? 600 : Math.Max(0, _bundleCacheSeconds.Value);
+        }
+
+        // Intent: Returns the retained bundle-cache budget used by production eviction policy, with an optional development-only byte-granularity override for deterministic validation.
+        private static long GetEffectiveBundleCacheMaxBytes()
+        {
+#if AMS_DEV_TESTS
+            if (DevelopmentBundleCacheMaxBytesOverride >= 0L) return DevelopmentBundleCacheMaxBytesOverride;
+#endif
+            return (long)(_bundleCacheMaxMiB == null ? 4096 : Math.Max(0, _bundleCacheMaxMiB.Value)) * 1024L * 1024L;
         }
 
 #if AMS_DEV_TESTS
@@ -1622,7 +1633,7 @@ namespace ValheimAutoModSync
         private static void PruneBundleCacheLocked(DateTime now)
         {
             int cacheSeconds = GetEffectiveBundleCacheSeconds();
-            long maxCacheBytes = (long)(_bundleCacheMaxMiB == null ? 4096 : Math.Max(0, _bundleCacheMaxMiB.Value)) * 1024L * 1024L;
+            long maxCacheBytes = GetEffectiveBundleCacheMaxBytes();
             List<string> removeKeys = new List<string>();
 
             foreach (KeyValuePair<string, BundleArtifact> pair in BundleArtifactCache)
