@@ -68,8 +68,6 @@ set "UNITY_IMGUI=%BEPROOT%\unstripped_corlib\UnityEngine.IMGUIModule.dll"
 if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%MANAGED%\UnityEngine.IMGUIModule.dll"
 set "UNITY_TEXT=%BEPROOT%\unstripped_corlib\UnityEngine.TextRenderingModule.dll"
 if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%MANAGED%\UnityEngine.TextRenderingModule.dll"
-set "UNITY_IMAGE=%BEPROOT%\unstripped_corlib\UnityEngine.ImageConversionModule.dll"
-if not exist "%UNITY_IMAGE%" set "UNITY_IMAGE=%MANAGED%\UnityEngine.ImageConversionModule.dll"
 
 if not exist "%GAME_DLL%" (
   echo ERROR: Valheim managed references were not found under "%MANAGED%".
@@ -77,10 +75,6 @@ if not exist "%GAME_DLL%" (
 )
 if not exist "%HARMONY_DLL%" (
   echo ERROR: 0Harmony.dll was not found under "%BEPROOT%\core".
-  exit /b 1
-)
-if not exist "%UNITY_IMAGE%" (
-  echo ERROR: UnityEngine.ImageConversionModule.dll was not found under the selected Valheim installation.
   exit /b 1
 )
 if not exist "%BRANDING_PNG%" (
@@ -108,7 +102,6 @@ set "REFS=%OUT%\refs.rsp"
 >>"%REFS%" echo /reference:"%UNITY_CORE%"
 >>"%REFS%" echo /reference:"%UNITY_IMGUI%"
 >>"%REFS%" echo /reference:"%UNITY_TEXT%"
->>"%REFS%" echo /reference:"%UNITY_IMAGE%"
 >>"%REFS%" echo /reference:"%SPLATFORM_DLL%"
 >>"%REFS%" echo /reference:"%STEAMWORKS_DLL%"
 >>"%REFS%" echo /reference:"%NETSTANDARD_DLL%"
