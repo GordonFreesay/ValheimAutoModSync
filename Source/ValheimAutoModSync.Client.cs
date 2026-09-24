@@ -3547,7 +3547,7 @@ namespace ValheimAutoModSync
                 EnsureServerBrowserBadgeSprite();
                 if (_serverBrowserBadgeSprite != null)
                 {
-                    badgeObject = new GameObject("AutoModSyncBadge", typeof(RectTransform), typeof(CanvasRenderer));
+                    badgeObject = new GameObject("AutoModSyncBadge", typeof(RectTransform));
                     badgeObject.transform.SetParent(nameTransform, false);
                     RectTransform badgeRect = badgeObject.GetComponent<RectTransform>();
                     badgeRect.anchorMin = new Vector2(0f, 0.5f);
