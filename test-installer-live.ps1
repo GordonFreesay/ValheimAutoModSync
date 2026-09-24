@@ -1,0 +1,98 @@
+param(
+    [Parameter(Mandatory=$true)]
+    [ValidateSet('PrepareClient','SeedOwnership','InspectClientUninstall','Cleanup')]
+    [string]$Action
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2.0
+
+# AutoModSync 2.6 isolated standalone-installer live gate.
+# Intent: creates a disposable fake Valheim root so the GUI installer/uninstaller can be exercised without mutating the maintainer's real game installation.
+
+$root = Join-Path $env:TEMP 'AMS26-Installer-Live'
+$bep = Join-Path $root 'BepInEx'
+$ams = Join-Path $bep 'AutoModSync'
+$pluginRoot = Join-Path $bep 'plugins'
+$fixtureRoot = Join-Path $pluginRoot '__AMS_INSTALLER_TEST__'
+$owned = Join-Path $fixtureRoot 'owned.txt'
+$modified = Join-Path $fixtureRoot 'modified.txt'
+$unrelated = Join-Path $pluginRoot 'UnrelatedLocalPlugin.dll'
+$ledgerDir = Join-Path $ams 'ownership'
+$fingerprint = ('a' * 64)
+
+function Get-Sha256([string]$Path) {
+    return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+switch ($Action) {
+    'PrepareClient' {
+        if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $root 'valheim.exe'),[byte[]]@(0))
+        Write-Host 'Prepared disposable installer test root:'
+        Write-Host ('  ' + $root)
+        Write-Host ''
+        Write-Host 'Open the freshly built ValheimAutoModSyncInstaller.exe, choose Client, Browse to this folder, and click Install.'
+        Write-Host 'After INSTALL COMPLETE, close the installer and run this script with -Action SeedOwnership.'
+    }
+
+    'SeedOwnership' {
+        $clientDll = Join-Path $pluginRoot 'ValheimAutoModSync.Client.dll'
+        $applyExe = Join-Path $ams 'ValheimAutoModSync.Apply.exe'
+        $bepDll = Join-Path $bep 'core\BepInEx.dll'
+        foreach ($required in @($clientDll,$applyExe,$bepDll)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+                throw ('Client install is incomplete; missing ' + $required)
+            }
+        }
+
+        New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+        New-Item -ItemType Directory -Path $ledgerDir -Force | Out-Null
+        [IO.File]::WriteAllText($owned,'owned-by-ams',[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($modified,'original-owned-by-ams',[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($unrelated,'unrelated-local-plugin',[Text.UTF8Encoding]::new($false))
+
+        $ownedSize = (Get-Item -LiteralPath $owned).Length
+        $ownedSha = Get-Sha256 $owned
+        $modifiedOriginalSize = (Get-Item -LiteralPath $modified).Length
+        $modifiedOriginalSha = Get-Sha256 $modified
+
+        $ownedRel = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('__AMS_INSTALLER_TEST__/owned.txt'))
+        $modifiedRel = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('__AMS_INSTALLER_TEST__/modified.txt'))
+        $ledger = @(
+            'AMSOWN1',
+            $fingerprint,
+            ('P|' + $ownedSize + '|' + $ownedSha + '|' + $ownedRel),
+            ('P|' + $modifiedOriginalSize + '|' + $modifiedOriginalSha + '|' + $modifiedRel)
+        )
+        [IO.File]::WriteAllLines((Join-Path $ledgerDir ($fingerprint + '.txt')),$ledger,[Text.UTF8Encoding]::new($false))
+
+        # Deliberately modify one AMS-owned file after the ownership record is written.
+        [IO.File]::WriteAllText($modified,'locally-modified-after-sync',[Text.UTF8Encoding]::new($false))
+
+        Write-Host 'Seeded ownership-safe uninstall fixtures.'
+        Write-Host 'Reopen the installer, choose Client, Browse to the same temp folder.'
+        Write-Host 'Expected: status says Installed, button says Repair / Update, and Uninstall is visible.'
+        Write-Host 'Click Uninstall and confirm. Then run -Action InspectClientUninstall.'
+    }
+
+    'InspectClientUninstall' {
+        $fail = $false
+        if (Test-Path -LiteralPath (Join-Path $pluginRoot 'ValheimAutoModSync.Client.dll')) { Write-Host 'FAIL client plugin still exists.'; $fail = $true } else { Write-Host 'PASS client plugin removed.' }
+        if (Test-Path -LiteralPath (Join-Path $ams 'ValheimAutoModSync.Apply.exe')) { Write-Host 'FAIL apply helper still exists.'; $fail = $true } else { Write-Host 'PASS apply helper removed.' }
+        if (Test-Path -LiteralPath $owned) { Write-Host 'FAIL exact AMS-owned fixture still exists.'; $fail = $true } else { Write-Host 'PASS exact AMS-owned fixture retired.' }
+        if (-not (Test-Path -LiteralPath $modified)) { Write-Host 'FAIL locally modified fixture was deleted.'; $fail = $true } else { Write-Host 'PASS locally modified fixture preserved.' }
+        if (-not (Test-Path -LiteralPath $unrelated)) { Write-Host 'FAIL unrelated local plugin was deleted.'; $fail = $true } else { Write-Host 'PASS unrelated local plugin preserved.' }
+        if (-not (Test-Path -LiteralPath (Join-Path $bep 'core\BepInEx.dll'))) { Write-Host 'FAIL shared BepInEx was removed.'; $fail = $true } else { Write-Host 'PASS shared BepInEx preserved.' }
+
+        if ($fail) { exit 1 }
+        Write-Host ''
+        Write-Host 'PASS: isolated installer client uninstall is ownership-safe and preserves shared/local content.'
+    }
+
+    'Cleanup' {
+        if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+        Write-Host ('Removed disposable installer test root: ' + $root)
+    }
+}
