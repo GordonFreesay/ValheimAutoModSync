@@ -39,6 +39,8 @@ Live fail-closed evidence, 2026-09-24: `bad-signature` passed. The client reject
 
 Live fail-closed evidence, 2026-09-24: `trust-decline` passed. The native first-contact trust prompt was forced for the already-pinned development server and the user explicitly declined it; the client rejected the protected join, no vanilla `ServerHandshake` replay was observed, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
 
+Live fail-closed evidence, 2026-09-24: `server-error` passed. The server injected `AMS4_Error` only after the AMS session had been recognized; the client rejected the protected join on that server-reported error, no vanilla `ServerHandshake` replay was observed, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
+
 ### Recognized AMS must fail closed
 
 For every case below, verify that no normal ServerHandshake is replayed and no live synchronized file is changed:
@@ -53,7 +55,7 @@ The development runtime now includes a guided live fault-injection suite in `tes
 - [x] Missing/out-of-order manifest part.
 - [x] Invalid RSA/SHA-256 manifest signature.
 - [x] User declines first-contact server trust.
-- [ ] Server-reported AMS error after recognition.
+- [x] Server-reported AMS error after recognition.
 - [ ] Invalid/oversized bundle header.
 - [ ] Out-of-order/oversized legacy bundle chunk.
 - [ ] Out-of-order/oversized binary bundle batch.
