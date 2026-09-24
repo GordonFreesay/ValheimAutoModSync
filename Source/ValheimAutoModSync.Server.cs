@@ -528,10 +528,11 @@ namespace ValheimAutoModSync
                 if (String.Equals(key, "P:ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)) continue;
 
                 FileRecord record = ResolveBundleRecord(key);
-                if (record.Size < 0 || record.Size > maxExpandedBytes - expandedBytes)
-                    throw new InvalidDataException("Fresh-client prewarm exceeds the configured expanded transfer limit.");
-
-                expandedBytes += record.Size;
+                expandedBytes = AutoModSyncServerResourceSafety.AddExpandedSource(
+                    record.Size,
+                    expandedBytes,
+                    maxExpandedBytes,
+                    "Fresh-client prewarm exceeds the configured expanded transfer limit.");
                 records.Add(record);
             }
 
@@ -796,9 +797,11 @@ namespace ValheimAutoModSync
                     FileRecord record = ResolveBundleRecord(requested);
                     string key = record.Kind + ":" + record.RelativePath;
                     if (!seen.Add(key)) throw new InvalidDataException("Duplicate file in AutoModSync bundle request.");
-                    if (record.Size < 0 || record.Size > maxExpandedBytes - expandedBytes)
-                        throw new InvalidDataException("Requested AutoModSync content exceeds the configured expanded transfer limit.");
-                    expandedBytes += record.Size;
+                    expandedBytes = AutoModSyncServerResourceSafety.AddExpandedSource(
+                        record.Size,
+                        expandedBytes,
+                        maxExpandedBytes,
+                        "Requested AutoModSync content exceeds the configured expanded transfer limit.");
                     records.Add(record);
                 }
 
@@ -1270,16 +1273,14 @@ namespace ValheimAutoModSync
                         {
                             CopyIntoBundleBounded(input, entryStream, output, maxBundleBytes, record.Sha256);
                         }
-                        if (output.Length > maxBundleBytes)
-                            throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
+                        AutoModSyncServerResourceSafety.EnsureCompressedWithinLimit(output.Length, maxBundleBytes);
                     }
                 }
                 zipWatch.Stop();
 
                 FileInfo fi = new FileInfo(tempPath);
                 long compressedBytes = fi.Length;
-                if (compressedBytes > maxBundleBytes)
-                    throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
+                AutoModSyncServerResourceSafety.EnsureCompressedWithinLimit(compressedBytes, maxBundleBytes);
 
                 hashWatch.Start();
                 string bundleSha256 = Sha256File(tempPath);
@@ -1311,7 +1312,7 @@ namespace ValheimAutoModSync
             }
             catch
             {
-                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                AutoModSyncServerResourceSafety.DeleteUnpublishedTemp(tempPath);
                 throw;
             }
         }
@@ -1433,8 +1434,7 @@ namespace ValheimAutoModSync
                     // HashAlgorithm permits the same array for input/output; this avoids a second full source-file read before cache publication.
                     sourceHash.TransformBlock(buffer, 0, read, buffer, 0);
                     entryStream.Write(buffer, 0, read);
-                    if (output.Length > maxBundleBytes)
-                        throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
+                    AutoModSyncServerResourceSafety.EnsureCompressedWithinLimit(output.Length, maxBundleBytes);
                 }
 
                 sourceHash.TransformFinalBlock(new byte[0], 0, 0);
