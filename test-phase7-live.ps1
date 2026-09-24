@@ -117,9 +117,38 @@ function Require-Clean-Apply-State {
     if (Test-Path -LiteralPath $clientTransaction) { throw "Existing AutoModSync apply transaction must be resolved first: $clientTransaction" }
 }
 
+function Require-Matching-Client-Payloads {
+    $clientPlugins = Join-Path $clientRoot 'plugins'
+    $installed = @(Get-ChildItem -LiteralPath $clientPlugins -Filter 'ValheimAutoModSync.Client.dll' -File -Recurse -ErrorAction SilentlyContinue)
+    if ($installed.Count -ne 1) {
+        throw ("Expected exactly one installed ValheimAutoModSync.Client.dll under " + $clientPlugins + "; found " + $installed.Count + ".")
+    }
+
+    $installedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installed[0].FullName).Hash.ToLowerInvariant()
+    $serverAms = Join-Path $serverRoot 'AutoModSync'
+    $payloads = @(
+        (Join-Path $serverAms 'ClientPayload\plugins\ValheimAutoModSync.Client.dll'),
+        (Join-Path $serverAms 'release\ValheimAutoModSync.Client.dll')
+    )
+
+    foreach ($payload in $payloads) {
+        if (-not (Test-Path -LiteralPath $payload -PathType Leaf)) { continue }
+        $payloadHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $payload).Hash.ToLowerInvariant()
+        if ($payloadHash -ne $installedHash) {
+            throw ("Installed AutoModSync client does not match the server-distributed client payload." + [Environment]::NewLine +
+                "  Installed: " + $installed[0].FullName + [Environment]::NewLine +
+                "  Server:    " + $payload + [Environment]::NewLine +
+                "Run build-dev.bat, then deploy-dev.ps1 with BOTH -ClientBepInEx and -ServerBepInEx before this live gate.")
+        }
+    }
+
+    Write-Host ('Verified client self-update parity: ' + $installedHash)
+}
+
 switch ($Action) {
     'Prepare' {
         Require-Clean-Apply-State
+        Require-Matching-Client-Payloads
         if (Test-Path -LiteralPath $statePath -PathType Leaf) { throw "A Phase 7 live state already exists: $statePath" }
         if (Test-Path -LiteralPath $serverFixture -PathType Leaf) { throw "Phase 7 server fixture already exists: $serverFixture" }
         if (Test-Path -LiteralPath $clientFixture -PathType Leaf) { throw "Phase 7 client fixture already exists; do not delete an owned client fixture manually: $clientFixture" }
