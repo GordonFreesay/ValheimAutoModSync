@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet('PrepareClient','SeedOwnership','InspectClientUninstall','Cleanup')]
+    [ValidateSet('PrepareClient','SeedOwnership','InspectClientUninstall','PrepareServer','SeedServerPreservation','InspectServerUninstall','Cleanup')]
     [string]$Action
 )
 
@@ -89,6 +89,91 @@ switch ($Action) {
         if ($fail) { exit 1 }
         Write-Host ''
         Write-Host 'PASS: isolated installer client uninstall is ownership-safe and preserves shared/local content.'
+    }
+
+    'PrepareServer' {
+        if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $root 'valheim_server.exe'),[byte[]]@(0))
+        Write-Host 'Prepared disposable dedicated-server installer test root:'
+        Write-Host ('  ' + $root)
+        Write-Host ''
+        Write-Host 'Open the freshly built ValheimAutoModSyncInstaller.exe, choose Dedicated Server, Browse to this folder, and click Install.'
+        Write-Host 'After INSTALL COMPLETE, close the installer and run this script with -Action SeedServerPreservation.'
+    }
+
+    'SeedServerPreservation' {
+        $serverDll = Join-Path $pluginRoot 'ValheimAutoModSync.Server.dll'
+        $releaseClient = Join-Path $ams 'release\ValheimAutoModSync.Client.dll'
+        $serverConfig = Join-Path $bep 'config\com.gordonfreesay.valheimautomodsync.server.cfg'
+        $privateKey = Join-Path $bep 'config\ValheimAutoModSync.private.xml'
+        $publicKey = Join-Path $bep 'config\ValheimAutoModSync.public.xml'
+        $bepDll = Join-Path $bep 'core\BepInEx.dll'
+        foreach ($required in @($serverDll,$releaseClient,$serverConfig,$privateKey,$publicKey,$bepDll)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+                throw ('Server install is incomplete; missing ' + $required)
+            }
+        }
+
+        $clientPayload = Join-Path $ams 'ClientPayload\plugins'
+        New-Item -ItemType Directory -Path $clientPayload -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $clientPayload 'operator-owned.txt'),'preserve-me',[Text.UTF8Encoding]::new($false))
+
+        $snapshot = @(
+            ('config=' + (Get-Sha256 $serverConfig)),
+            ('private=' + (Get-Sha256 $privateKey)),
+            ('public=' + (Get-Sha256 $publicKey))
+        )
+        [IO.File]::WriteAllLines((Join-Path $root 'server-preserve.sha256'),$snapshot,[Text.UTF8Encoding]::new($false))
+
+        Write-Host 'Seeded server preservation fixtures.'
+        Write-Host 'Reopen the installer, choose Dedicated Server, Browse to the same temp folder.'
+        Write-Host 'Expected: selected role is complete and Uninstall is visible.'
+        Write-Host 'LEAVE "Also remove server config + signing identity" UNCHECKED.'
+        Write-Host 'Click Uninstall and confirm. Then run -Action InspectServerUninstall.'
+    }
+
+    'InspectServerUninstall' {
+        $serverDll = Join-Path $pluginRoot 'ValheimAutoModSync.Server.dll'
+        $releaseClient = Join-Path $ams 'release\ValheimAutoModSync.Client.dll'
+        $serverConfig = Join-Path $bep 'config\com.gordonfreesay.valheimautomodsync.server.cfg'
+        $privateKey = Join-Path $bep 'config\ValheimAutoModSync.private.xml'
+        $publicKey = Join-Path $bep 'config\ValheimAutoModSync.public.xml'
+        $payload = Join-Path $ams 'ClientPayload\plugins\operator-owned.txt'
+        $snapshotPath = Join-Path $root 'server-preserve.sha256'
+        if (-not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) { throw 'Server preservation snapshot is missing.' }
+
+        $expected = @{}
+        foreach ($line in [IO.File]::ReadAllLines($snapshotPath)) {
+            $parts = $line.Split('=')
+            if ($parts.Length -eq 2) { $expected[$parts[0]] = $parts[1] }
+        }
+
+        $fail = $false
+        if (Test-Path -LiteralPath $serverDll) { Write-Host 'FAIL server plugin still exists.'; $fail = $true } else { Write-Host 'PASS server plugin removed.' }
+        if (Test-Path -LiteralPath $releaseClient) { Write-Host 'FAIL server release client payload still exists.'; $fail = $true } else { Write-Host 'PASS server release client payload removed.' }
+        if (-not (Test-Path -LiteralPath $payload)) { Write-Host 'FAIL operator-managed ClientPayload was removed.'; $fail = $true } else { Write-Host 'PASS operator-managed ClientPayload preserved.' }
+        if (-not (Test-Path -LiteralPath (Join-Path $bep 'core\BepInEx.dll'))) { Write-Host 'FAIL shared BepInEx was removed.'; $fail = $true } else { Write-Host 'PASS shared BepInEx preserved.' }
+
+        foreach ($item in @(@('config',$serverConfig),@('private',$privateKey),@('public',$publicKey))) {
+            $label = $item[0]
+            $file = $item[1]
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                Write-Host ('FAIL preserved server ' + $label + ' file is missing.')
+                $fail = $true
+            }
+            elseif (-not $expected.ContainsKey($label) -or (Get-Sha256 $file) -ne $expected[$label]) {
+                Write-Host ('FAIL preserved server ' + $label + ' file changed.')
+                $fail = $true
+            }
+            else {
+                Write-Host ('PASS server ' + $label + ' preserved byte-for-byte.')
+            }
+        }
+
+        if ($fail) { exit 1 }
+        Write-Host ''
+        Write-Host 'PASS: isolated installer server uninstall removes AMS runtime while preserving shared BepInEx, ClientPayload, config, and signing identity.'
     }
 
     'Cleanup' {
