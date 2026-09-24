@@ -40,7 +40,7 @@ if exist "%ROOT%verify-version.ps1" (
   if errorlevel 1 goto :FailNoWork
 )
 if exist "%ROOT%verify-no-pii.ps1" (
-  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -Root "%ROOT%"
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1"
   if errorlevel 1 goto :FailNoWork
 )
 
@@ -140,7 +140,7 @@ rem Sign AutoModSync-authored PE files before they are copied or packaged.
 call :SignReleaseBinaries
 if errorlevel 1 goto :Fail
 if exist "%ROOT%verify-no-pii.ps1" (
-  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -Root "%ROOT%" -ArtifactPaths "%CLIENTDLL%;%SERVERDLL%;%APPLYEXE%;%INSTALLEREXE%;%BUILDTOOL%"
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -ArtifactPaths "%CLIENTDLL%;%SERVERDLL%;%APPLYEXE%;%INSTALLEREXE%;%BUILDTOOL%"
   if errorlevel 1 goto :Fail
 )
 copy /y "%BUILDTOOL%" "%TOOLSDIR%\AutoModSync.BuildTool.exe" >nul
