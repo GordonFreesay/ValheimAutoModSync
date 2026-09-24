@@ -1,0 +1,27 @@
+name: Phase 1 Client Path Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+    paths:
+      - "Source/ValheimAutoModSync.Client.cs"
+      - "Source/AutoModSync.PathSafety.cs"
+      - "test-phase1-client-paths.ps1"
+      - ".github/workflows/phase1-client-path-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  client-paths:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run isolated client live-destination path harness
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase1-client-paths.ps1"
