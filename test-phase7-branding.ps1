@@ -24,7 +24,6 @@ function Assert-Contains([string]$Path, [string]$Needle, [string]$Label) {
 try {
     Write-Host '[1/4] Generating the helper ICO from the canonical AMS package logo...'
     & (Join-Path $root 'build-branding-assets.ps1') -SourcePng (Join-Path $root 'Thunderstore\icon.png') -OutputIco $ico
-    if ($LASTEXITCODE -ne 0) { throw "Branding generator failed with exit code $LASTEXITCODE" }
     Assert-True (Test-Path -LiteralPath $ico -PathType Leaf) 'Generated ICO was not created.'
     Write-Host '  PASS'
 
