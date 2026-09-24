@@ -92,6 +92,7 @@ namespace ValheimAutoModSync
         private static readonly HashSet<ZRpc> DevelopmentLegacyServerPeers = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> DevelopmentSuppressedAmsPeers = new HashSet<ZRpc>();
         private static readonly Dictionary<ZRpc, string> DevelopmentFailClosedModes = new Dictionary<ZRpc, string>();
+        private static int DevelopmentBundleCacheSecondsOverride = -1;
 #endif
         private static DateTime _nextTransferCleanupUtc = DateTime.MinValue;
 
@@ -210,6 +211,10 @@ namespace ValheimAutoModSync
             _schedulerGrantBytes = Config.Bind("Transfer", "SchedulerGrantBytes", 1048576, "Maximum raw bundle bytes one active client may receive per scheduler grant before round-robin advances. Values are bounded at runtime; individual Steam/RPC messages remain <=384 KiB.");
             _schedulerMaxSteamQueueMs = Config.Bind("Transfer", "SchedulerMaxSteamQueueMs", 200, "Pause new AutoModSync grants to a Steam connection when its pending+unacked reliable bytes exceed approximately this many milliseconds at Steam's current reported send rate. 0 disables this backpressure check.");
             _transferIdleTimeoutSeconds = Config.Bind("Transfer", "TransferIdleTimeoutSeconds", 60, "Release an active bundle-transfer slot if a connected client stops requesting bundle data for this many seconds. This prevents abandoned live peers from pinning the public-server queue.");
+
+#if AMS_DEV_TESTS
+            ConsumeDevelopmentPhase3ZeroTtlMarker();
+#endif
 
             _transferScheduler = new AutoModSyncTransferScheduler(
                 Math.Min(32, Math.Max(1, _maxActiveBundleTransfers.Value)),
@@ -581,6 +586,36 @@ namespace ValheimAutoModSync
                 if (artifact != null) ReleaseBundleArtifact(artifact);
             }
         }
+
+        // Intent: Returns the cache TTL used by production cache policy, with an optional development-only process override for deterministic live validation.
+        private static int GetEffectiveBundleCacheSeconds()
+        {
+#if AMS_DEV_TESTS
+            if (DevelopmentBundleCacheSecondsOverride >= 0) return DevelopmentBundleCacheSecondsOverride;
+#endif
+            return _bundleCacheSeconds == null ? 600 : Math.Max(0, _bundleCacheSeconds.Value);
+        }
+
+#if AMS_DEV_TESTS
+        // Intent: Forces BundleCacheSeconds=0 for one development server process without rewriting the administrator's persistent config file.
+        // Scope: the one-shot marker is consumed during server startup before prewarm/cache activity begins.
+        private static void ConsumeDevelopmentPhase3ZeroTtlMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-cache-seconds-zero.once");
+                if (!File.Exists(marker)) return;
+                try { File.Delete(marker); } catch { }
+                DevelopmentBundleCacheSecondsOverride = 0;
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST forcing effective BundleCacheSeconds=0 for this server process.");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV Phase 3 cache-TTL marker could not be consumed: " + ex.Message);
+            }
+        }
+#endif
 
         // Intent: Limits startup prewarming to the dedicated-server executable; Host & Play retains lazy cache behavior until it actually needs a bundle.
         private static bool IsDedicatedServerProcess()
@@ -1322,7 +1357,7 @@ namespace ValheimAutoModSync
 
                             bool wasStartupPinned = cached.StartupPinned;
                             double idleSeconds = Math.Max(0.0, (now - cached.LastUsedUtc).TotalSeconds);
-                            int ordinaryTtlSeconds = _bundleCacheSeconds == null ? 600 : Math.Max(0, _bundleCacheSeconds.Value);
+                            int ordinaryTtlSeconds = GetEffectiveBundleCacheSeconds();
 
                             cached.ActiveTransfers++;
                             cached.LastUsedUtc = now;
@@ -1503,7 +1538,7 @@ namespace ValheimAutoModSync
         // Budget eviction is least-recently-used among idle artifacts; active artifacts may temporarily exceed the configured retained-cache budget.
         private static void PruneBundleCacheLocked(DateTime now)
         {
-            int cacheSeconds = _bundleCacheSeconds == null ? 600 : Math.Max(0, _bundleCacheSeconds.Value);
+            int cacheSeconds = GetEffectiveBundleCacheSeconds();
             long maxCacheBytes = (long)(_bundleCacheMaxMiB == null ? 4096 : Math.Max(0, _bundleCacheMaxMiB.Value)) * 1024L * 1024L;
             List<string> removeKeys = new List<string>();
 
