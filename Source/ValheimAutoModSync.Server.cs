@@ -82,6 +82,7 @@ namespace ValheimAutoModSync
         private static Dictionary<string, FileRecord> _files = new Dictionary<string, FileRecord>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<ZRpc, string> ClientVersions = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, string> ClientCapabilities = new Dictionary<ZRpc, string>();
+        private static readonly HashSet<ZRpc> ManifestSentPeers = new HashSet<ZRpc>();
         private static readonly Dictionary<ZRpc, BundleTransfer> BundleTransfers = new Dictionary<ZRpc, BundleTransfer>();
         private static readonly Dictionary<ZRpc, PendingBundleRequest> PendingBundleRequests = new Dictionary<ZRpc, PendingBundleRequest>();
         private static readonly Dictionary<ZRpc, long> SchedulerPeerIds = new Dictionary<ZRpc, long>();
@@ -420,6 +421,7 @@ namespace ValheimAutoModSync
                 Registered.Remove(rpc);
                 ClientVersions.Remove(rpc);
                 ClientCapabilities.Remove(rpc);
+                ManifestSentPeers.Remove(rpc);
 #if AMS_DEV_TESTS
                 DevelopmentLegacyServerPeers.Remove(rpc);
                 DevelopmentSuppressedAmsPeers.Remove(rpc);
@@ -1113,6 +1115,11 @@ namespace ValheimAutoModSync
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                if (ManifestSentPeers.Contains(rpc))
+                {
+                    if (_instance != null) _instance.Logger.LogDebug("AutoModSync ignored a duplicate AMS4 preflight hello after this peer's manifest was already sent.");
+                    return;
+                }
 #if AMS_DEV_TESTS
                 // A one-shot marker selects the next peer, then every AMS4_Hello retry on that same connection stays silent.
                 if (DevelopmentSuppressedAmsPeers.Contains(rpc))
@@ -1259,6 +1266,7 @@ namespace ValheimAutoModSync
                 ZPackage end = new ZPackage();
                 end.Write(totalParts);
                 rpc.Invoke(RpcManifestEnd, new object[] { end });
+                ManifestSentPeers.Add(rpc);
             }
             catch (Exception ex)
             {
