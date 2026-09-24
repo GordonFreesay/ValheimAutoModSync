@@ -67,15 +67,45 @@ function Ensure-Roots {
     New-Item -ItemType Directory -Path $serverAms,$clientAms -Force | Out-Null
 }
 
+function Read-SharedLogLines([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+
+    # BepInEx keeps LogOutput.log open while the game/server is running. Open it with ReadWrite/Delete
+    # sharing so the live suite can inspect logs without requiring either process to stop.
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = New-Object System.IO.FileStream(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+        )
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8, $true, 4096, $false)
+        $lines = New-Object System.Collections.Generic.List[string]
+        while (-not $reader.EndOfStream) {
+            [void]$lines.Add($reader.ReadLine())
+        }
+        return @($lines.ToArray())
+    }
+    finally {
+        if ($reader -ne $null) { $reader.Dispose() }
+        elseif ($stream -ne $null) { $stream.Dispose() }
+    }
+}
+
 function Get-LineCount([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return 0 }
-    return @([IO.File]::ReadAllLines($Path)).Count
+    return @(Read-SharedLogLines $Path).Count
 }
 
 function Get-NewLines([string]$Path, [int]$StartCount) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
-    $all = [IO.File]::ReadAllLines($Path)
+    $all = @(Read-SharedLogLines $Path)
     if ($StartCount -lt 0) { $StartCount = 0 }
+
+    # StartSuite is intentionally armed while Valheim/server are stopped. BepInEx truncates LogOutput.log
+    # on the next launch, so an older baseline can be greater than the new live log. In that case the entire
+    # current log belongs to the newly launched test process and is safe to inspect.
+    if ($all.Length -lt $StartCount) { return $all }
     if ($StartCount -ge $all.Length) { return @() }
     return @($all[$StartCount..($all.Length - 1)])
 }
