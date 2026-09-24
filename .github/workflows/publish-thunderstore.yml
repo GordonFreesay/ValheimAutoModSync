@@ -11,6 +11,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 
 jobs:
   thunderstore:
@@ -42,6 +44,30 @@ jobs:
           AMS_NO_PAUSE: "1"
           AMS_REQUIRE_SIGNING: "0"
         run: ./build-thunderstore.ps1
+
+      - name: Write store package checksum
+        shell: pwsh
+        run: |
+          $file = Join-Path $PWD 'Dist/GordonFreesay-ValheimAutoModSync-\${{ env.AMS_VERSION }}.zip'
+          ./write-release-checksums.ps1 -Root $PWD -OutputPath 'Dist/SHA256SUMS-Thunderstore.txt' -Files @($file)
+
+      - name: Attest exact store package
+        uses: actions/attest@v4
+        with:
+          subject-path: Dist/GordonFreesay-ValheimAutoModSync-\${{ env.AMS_VERSION }}.zip
+
+      - name: Attest store checksum manifest
+        uses: actions/attest@v4
+        with:
+          subject-path: Dist/SHA256SUMS-Thunderstore.txt
+
+      - name: Upload store checksum artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ValheimAutoModSync-\${{ env.AMS_VERSION }}-Thunderstore-SHA256
+          path: Dist/SHA256SUMS-Thunderstore.txt
+          archive: false
+          if-no-files-found: error
 
       - name: Upload Thunderstore package artifact
         uses: actions/upload-artifact@v7
