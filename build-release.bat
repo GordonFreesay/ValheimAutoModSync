@@ -136,7 +136,7 @@ if errorlevel 1 goto :Fail
 if errorlevel 1 goto :Fail
 "%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /win32icon:"%APPLYICO%" /out:"%APPLYEXE%" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /out:"%INSTALLEREXE%" "%SOURCE%\ValheimAutoModSync.Installer.cs"
+"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /win32icon:"%APPLYICO%" /out:"%INSTALLEREXE%" "%SOURCE%\ValheimAutoModSync.Installer.cs"
 if errorlevel 1 goto :Fail
 
 rem Sign AutoModSync-authored PE files before they are copied or packaged.
@@ -172,6 +172,7 @@ copy /y "%ROOT%LICENSE" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\LICENSE" >nul
 copy /y "%ROOT%THIRD-PARTY-NOTICES.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD-PARTY-NOTICES.md" >nul
 copy /y "%ROOT%install.bat" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\install.bat" >nul
 copy /y "%INSTALLEREXE%" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\ValheimAutoModSyncInstaller.exe" >nul
+copy /y "%APPLYICO%" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\ValheimAutoModSyncInstaller.ico" >nul
 if errorlevel 1 goto :Fail
 copy /y "%BEPZIP%" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Bundled\BepInExPack_Valheim-%BEPINEX_VERSION%.zip" >nul
 if errorlevel 1 goto :Fail
