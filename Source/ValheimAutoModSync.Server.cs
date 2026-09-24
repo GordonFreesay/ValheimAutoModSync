@@ -767,7 +767,11 @@ namespace ValheimAutoModSync
 
                 ZPackage ack = new ZPackage();
                 ack.Write(ProtocolVersion);
+#if AMS_DEV_TESTS
+                ack.Write(emulateLegacyServer ? "2.5.0" : PluginVersion);
+#else
                 ack.Write(PluginVersion);
+#endif
                 ack.Write(ackCapabilities);
                 rpc.Invoke(RpcAck, new object[] { ack });
 
