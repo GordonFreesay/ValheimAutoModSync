@@ -117,5 +117,8 @@ echo.
 echo SUCCESS: development runtime built in:
 echo   %OUT%
 echo.
+echo IMPORTANT: build-dev.bat only compiles DevBuild; it does NOT install these binaries into Valheim.
+echo For live validation, close Valheim and stop the dedicated server, then run deploy-dev.ps1 with the client/server BepInEx roots.
+echo.
 echo No installer, release ZIP, store package, tag, or publication artifact was created.
 exit /b 0
