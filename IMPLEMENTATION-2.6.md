@@ -111,6 +111,23 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `Thunderstore/CHANGELOG.md` | Records Phase 4 development behavior without publishing a release. |
 | `IMPLEMENTATION-2.6.md` | Records the Phase 4 source/docs change set and keeps implementation separate from observed validation. |
 
+### Phase 5 — concurrent transfer scheduler / aggregate server budget
+
+| File | 2.6 reason |
+| --- | --- |
+| `Source/AutoModSync.TransferScheduler.cs` | Adds the pure FIFO admission + round-robin aggregate token-bucket policy used by the server. It limits active peers, preserves waiting order, meters raw payload bytes under one server-wide budget, and supports grant refunds when runtime backpressure prevents a send. |
+| `Source/ValheimAutoModSync.Server.cs` | Queues bundle requests before artifact acquisition, admits at most the configured active count, reuses one open sequential ZIP stream per active peer, schedules existing AMS4 chunk/batch responses in fair bounded grants, applies Steam reliable-queue backpressure, reclaims dead/idle slots, and sends optional queue position to capable clients. |
+| `Source/ValheimAutoModSync.Client.cs` | Advertises optional `bundle-scheduler1`, registers `AMS4_QueueStatus`, and shows a simple queued-for-synchronization state while preserving silent compatibility with older AMS4 peers. |
+| `Server/server-config-example.cfg` | Documents active-slot, aggregate-bandwidth, scheduler-grant, Steam-queue-envelope, and idle-timeout controls. |
+| `build-dev.bat` | Compiles the production scheduler source into the development server runtime. |
+| `build-release.bat` | Compiles the same production scheduler source into the release server path without adding any new release-only behavior. No release build has been authorized or run. |
+| `test-phase5-scheduler.ps1` | Compiles the production scheduler source into an isolated deterministic 8-peer harness covering admission, FIFO promotion, aggregate budget, fairness, refund/backpressure semantics, and queued removal. |
+| `.github/workflows/phase5-scheduler-validation.yml` | Runs the deterministic scheduler harness on Windows when the scheduler/harness/workflow changes. It produces no release artifact. |
+| `SOURCE-WALKTHROUGH.md` | Documents Phase 5 admission, token-bucket fairness, persistent per-transfer streams, queue backpressure, and AMS4 compatibility. |
+| `TESTING-2.6.md` | Adds the deterministic and live Phase 5 validation gates and records the CI-discovered fairness fix. |
+| `Thunderstore/CHANGELOG.md` | Records Phase 5 development behavior without publishing a release. |
+| `IMPLEMENTATION-2.6.md` | Records the complete Phase 5 source/docs change set and separates deterministic policy validation from live socket qualification. |
+
 ### Later phases
 
 Add each 2.6-modified file here in the same phase that introduces the change, with a concise audit reason.
@@ -121,6 +138,7 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Phase 1 implementation: **complete in source; partial functional validation recorded**
 - Phase 2 implementation and validation: **complete** — normal transactional apply, PREPARED interruption rollback/retry for originally-absent and pre-existing destinations, COMMITTED cleanup recovery, caught per-file failure rollback, malformed/version-mismatched journal rejection, fixed-root/protected-config rejection, and recovery reparse-point rejection have all passed observed validation. The isolated adversarial harness reported all four remaining error-path groups PASS without touching the real Valheim installation or server.
 - Phase 4 implementation and validation: **complete** — the deterministic resume harness passes all 7/7 cases, including wrong-change-set and distinct trusted-server-fingerprint isolation; a one-client live run forced a real mid-transfer disconnect, restored server Steam transport state and released the dead transfer, resumed the same 313.4 MB cached artifact at chunk 4096/13374 with 96.0 MB retained after a 1.340 s server prefix verification, completed synchronization, applied transactionally, restarted, auto-reconnected, and matched the trusted server; and separate live one-file delta tests passed in both pre-resume AMS4 compatibility directions. GitHub Actions independently reran the updated harness on Windows Server 2025 and passed all 7/7 cases. Phase 4 is closed.
+- Phase 5 implementation: **complete in source; deterministic scheduler policy passed, integrated runtime validation pending** — bundle requests are FIFO-admitted before artifact acquisition, at most four transfers are active by default, active peers share a 64 MiB/s aggregate raw-payload token bucket in round-robin grants, Steam reliable-queue pressure can refund/defer grants, each active peer retains one open sequential artifact stream, excess clients receive optional queue status, and dead/idle slots are reclaimed. The production scheduler class passes 6/6 Windows CI checks after CI exposed and drove a fix for a refill-boundary fairness bug. A local development build and one-client live scheduler transfer remain required; true 2/4/8-socket performance remains a later qualification gate because no second tester is currently available.
 - Functional 2.6 validation: **partial** — a real 313.4 MiB fresh-client sync/apply/restart/reconnect and matching second preflight passed on commit `37a4125f270a417489e9d620326c4f92e808bc26`; adversarial, resource-limit, fallback, and concurrency cases remain pending.
 - Transfer performance validation: **in progress** — the 16/64/32 MiB follow-up successfully moved Steam's live send-rate telemetry from the prior 8 MiB/s floor to exactly 16 MiB/s and restored the original connection settings afterward. End-to-end client payload timing for this run is still needed before treating the higher settings as a proven wall-clock improvement.
 - Restart reconnect validation: **passed for the observed regression** — the patched client completed exactly one automatic character-start/reconnect sequence, then completed trusted AMS preflight and downstream mod synchronization without dispatching a second reconnect.
