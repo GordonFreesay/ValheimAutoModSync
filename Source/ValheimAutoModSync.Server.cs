@@ -65,6 +65,7 @@ namespace ValheimAutoModSync
         private static ConfigEntry<int> _transferSendRateMin;
         private static ConfigEntry<int> _transferSendBufferBytes;
         private static ConfigEntry<int> _maxActiveBundleTransfers;
+        private static ConfigEntry<int> _maxQueuedBundleTransfers;
         private static ConfigEntry<int> _aggregateSendRateMax;
         private static ConfigEntry<int> _schedulerGrantBytes;
         private static ConfigEntry<int> _schedulerMaxSteamQueueMs;
@@ -198,14 +199,15 @@ namespace ValheimAutoModSync
             _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 67108864, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
             _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 16777216, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
             _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 33554432, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
-            _maxActiveBundleTransfers = Config.Bind("Transfer", "MaxActiveBundleTransfers", 4, "Maximum number of clients that may own an active AutoModSync bundle-transfer slot. Additional clients stay connected and queue FIFO until a slot opens.");
+            _maxActiveBundleTransfers = Config.Bind("Transfer", "MaxActiveBundleTransfers", 4, "Maximum number of clients that may own an active AutoModSync bundle-transfer slot. Runtime clamps this to 1..32. Additional clients stay connected and queue FIFO until a slot opens.");
+            _maxQueuedBundleTransfers = Config.Bind("Transfer", "MaxQueuedBundleTransfers", 32, "Maximum additional validated bundle requests retained while all active transfer slots are busy. Requests beyond this bounded queue fail closed for that join.");
             _aggregateSendRateMax = Config.Bind("Transfer", "AggregateSendRateMaxBytesPerSec", 67108864, "Server-wide raw AutoModSync bundle payload budget across all active clients. Round-robin grants share this token bucket; Steam framing overhead is not counted.");
             _schedulerGrantBytes = Config.Bind("Transfer", "SchedulerGrantBytes", 1048576, "Maximum raw bundle bytes one active client may receive per scheduler grant before round-robin advances. Values are bounded at runtime; individual Steam/RPC messages remain <=384 KiB.");
             _schedulerMaxSteamQueueMs = Config.Bind("Transfer", "SchedulerMaxSteamQueueMs", 200, "Pause new AutoModSync grants to a Steam connection when its pending+unacked reliable bytes exceed approximately this many milliseconds at Steam's current reported send rate. 0 disables this backpressure check.");
             _transferIdleTimeoutSeconds = Config.Bind("Transfer", "TransferIdleTimeoutSeconds", 60, "Release an active bundle-transfer slot if a connected client stops requesting bundle data for this many seconds. This prevents abandoned live peers from pinning the public-server queue.");
 
             _transferScheduler = new AutoModSyncTransferScheduler(
-                Math.Max(1, _maxActiveBundleTransfers.Value),
+                Math.Min(32, Math.Max(1, _maxActiveBundleTransfers.Value)),
                 Math.Max(1024L * 1024L, (long)_aggregateSendRateMax.Value),
                 Math.Max(65536, Math.Min(4 * 1024 * 1024, _schedulerGrantBytes.Value)),
                 0.25);
@@ -839,6 +841,11 @@ namespace ValheimAutoModSync
                 });
 
                 CancelScheduledTransferState(rpc);
+
+                int maxQueued = _maxQueuedBundleTransfers == null ? 32 : Math.Max(0, Math.Min(1024, _maxQueuedBundleTransfers.Value));
+                int totalAdmissionCapacity = _transferScheduler.MaxActive + maxQueued;
+                if (PendingBundleRequests.Count + BundleTransfers.Count >= totalAdmissionCapacity)
+                    throw new InvalidDataException("AutoModSync synchronization queue is full; retry after an active transfer finishes.");
 
                 long schedulerPeerId = GetOrCreateSchedulerPeerId(rpc);
                 PendingBundleRequest request = new PendingBundleRequest();
