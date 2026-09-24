@@ -28,14 +28,16 @@ namespace ValheimAutoModSync
             if (String.IsNullOrEmpty(root) || !Directory.Exists(root)) return result;
 
             string rootFull = Path.GetFullPath(root);
-            AutoModSyncPathSafety.EnsureNoReparsePoints(rootFull, rootFull, true);
+            if (AutoModSyncPathSafety.IsReparsePoint(rootFull))
+                throw new InvalidDataException("AutoModSync refuses a reparse-point ClientPayload root.");
 
             Stack<string> pending = new Stack<string>();
             pending.Push(rootFull);
             while (pending.Count > 0)
             {
                 string current = pending.Pop();
-                AutoModSyncPathSafety.EnsureNoReparsePoints(rootFull, current, true);
+                if (!String.Equals(current, rootFull, StringComparison.OrdinalIgnoreCase))
+                    AutoModSyncPathSafety.EnsureNoReparsePoints(rootFull, current, true);
 
                 string[] files = Directory.GetFiles(current, "*", SearchOption.TopDirectoryOnly);
                 int i;
