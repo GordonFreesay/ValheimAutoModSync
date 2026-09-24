@@ -17,6 +17,7 @@ on:
       - "install.bat"
       - "test-phase7-branding.ps1"
       - "test-phase7-ui-preview.ps1"
+      - "test-phase7-live.ps1"
       - ".github/workflows/phase7-branding-validation.yml"
   workflow_dispatch:
 
@@ -38,6 +39,14 @@ jobs:
       - name: Run deterministic Phase 7 UI-state harness
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase7-ui-state.ps1"
+
+      - name: Parse guided Phase 7 live harness
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\test-phase7-live.ps1"), [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Host; throw "Phase 7 live harness has PowerShell parse errors." }
 
       - name: Run deterministic Phase 7 branding/package harness
         shell: powershell
