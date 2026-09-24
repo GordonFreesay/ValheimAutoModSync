@@ -815,6 +815,12 @@ namespace ValheimAutoModSync
             DesiredOwnershipEntries.Clear();
             _ownershipLedgerChanged = false;
 
+#if AMS_DEV_TESTS
+            bool devEmulateNearlyBareClient = ConsumeDevelopmentNearlyBareClientMarker();
+#else
+            bool devEmulateNearlyBareClient = false;
+#endif
+
             string amsRoot = GetAutoModSyncRoot();
             bool sameAsImmediatelyPriorSuccessfulServer = AutoModSyncOwnershipState.WasLastSuccessfulServer(amsRoot, _serverFingerprint);
             List<AutoModSyncOwnershipEntry> owned = AutoModSyncOwnershipState.ReadLedger(amsRoot, _serverFingerprint);
@@ -872,6 +878,11 @@ namespace ValheimAutoModSync
                     FileInfo localInfo = new FileInfo(local);
                     needed = localInfo.Length != e.Size || !ConstantEquals(Sha256File(local), e.Sha256);
                 }
+#if AMS_DEV_TESTS
+                if (devEmulateNearlyBareClient
+                    && !(kind == 'P' && String.Equals(Path.GetFileName(rel), "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)))
+                    needed = true;
+#endif
 
                 AutoModSyncOwnershipEntry previousOwned;
                 bool wasOwned = ownedByKey.TryGetValue(destinationKey, out previousOwned);
@@ -2780,6 +2791,25 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV apply-preparation marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
+        // Intent: Forces one trusted-manifest comparison to request the same nearly-bare-client file set used by dedicated-server startup prewarm.
+        // Scope: existing live files are only treated as missing for request construction; the installed AutoModSync client DLL is excluded so the request key matches the startup baseline exactly.
+        private static bool ConsumeDevelopmentNearlyBareClientMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase3-test-emulate-nearly-bare.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST emulating a nearly-bare client for Phase 3 startup-prewarm validation; all signed files except the installed client DLL will be requested.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV nearly-bare marker could not be consumed: " + ex.Message);
                 return false;
             }
         }
