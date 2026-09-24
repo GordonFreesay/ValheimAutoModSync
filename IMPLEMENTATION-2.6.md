@@ -151,7 +151,14 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `Thunderstore/CHANGELOG.md` | Records Phase 6 development behavior without publishing a release. |
 | `IMPLEMENTATION-2.6.md` | Records the Phase 6 implementation/trust-boundary change set and validation status. |
 
-### Phase 7 — telemetry / branded in-game product UI
+### Installer polish / uninstall
+
+| File | Purpose |
+| --- | --- |
+| `Source/ValheimAutoModSync.Installer.cs` | Polishes the standalone Windows installer with embedded AMS branding, live complete/partial install detection, `Repair / Update`, and a role-aware `Uninstall` button that appears only for complete selected-role installs. Client uninstall uses strict ownership metadata + live SHA-256 before retiring synchronized files, blocks on pending apply recovery, preserves changed/local files and shared BepInEx; server uninstall preserves operator ClientPayload and signing identity/config by default, with explicit opt-in identity removal. |
+| `test-installer-contract.ps1` / `.github/workflows/installer-validation.yml` | Compile the production installer with the shared identity/path/ownership helpers, enforce the branded/uninstall contract, run the source documentation gate, and PII-scan the compiled installer artifact. |
+
+## Phase 7 — telemetry / branded in-game product UI
 
 | File | 2.6 reason |
 | --- | --- |
