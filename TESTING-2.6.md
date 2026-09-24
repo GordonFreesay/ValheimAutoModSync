@@ -8,7 +8,7 @@ Installer client-uninstall live evidence, 2026-09-24: the branded installer dete
 - [x] Server uninstall contract preserves shared BepInEx, unrelated mods, operator-managed `ClientPayload`, and server config/signing identity by default; identity removal requires explicit opt-in.
 - [x] Installer normal identity output uses the short verification code rather than the full fingerprint.
 - [x] Compiled installer artifact passes the first-party PII guard.
-- [x] Live visual check: embedded logo, dark/orange layout, complete/partial status, Repair/Update and Uninstall controls render correctly at normal Windows scaling; one final width/mnemonic polish pass followed from the screenshot.
+- [ ] Final visual recheck after polish: embedded logo/dark-orange layout remain clean, `Host & Play` renders literally, and the widened `Repair / Update` label is no longer clipped at normal Windows scaling. The preceding live screenshot passed the overall layout/branding check and exposed only those two text-polish issues.
 - [x] Isolated live uninstall check: complete Client install exposes Uninstall, exact AMS-owned fixture is retired, locally changed fixture is preserved, BepInEx/unrelated mod remain, and disposable test state cleans up successfully.
 - [ ] Isolated server uninstall check: server plugin/cache/release payload are removed while config/key/ClientPayload remain; explicit identity-removal option deletes only the documented server config/key files.
 
