@@ -18,13 +18,14 @@ if (-not $SkipStandaloneBuild) {
 $ClientDll = Join-Path $Root "Client\ValheimAutoModSync.Client.dll"
 $ServerDll = Join-Path $Root "Server\ValheimAutoModSync.Server.dll"
 $ApplyExe = Join-Path $Root "Client\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe"
+$ApplyIco = Join-Path $Root "Client\BepInEx\AutoModSync\ValheimAutoModSync.Apply.ico"
 $TsRoot = Join-Path $Root "Thunderstore"
 $Dist = Join-Path $Root "Dist"
 $Package = Join-Path $Dist ("Thunderstore-" + $Version)
 $Plugins = Join-Path $Package "plugins"
 
 foreach ($p in @(
-    $ClientDll,$ServerDll,$ApplyExe,
+    $ClientDll,$ServerDll,$ApplyExe,$ApplyIco,
     (Join-Path $TsRoot "icon.png"),
     (Join-Path $TsRoot "README.md"),
     (Join-Path $TsRoot "CHANGELOG.md"),
@@ -40,6 +41,7 @@ New-Item -ItemType Directory -Force -Path $Plugins | Out-Null
 Copy-Item $ClientDll (Join-Path $Plugins "ValheimAutoModSync.Client.dll")
 Copy-Item $ServerDll (Join-Path $Plugins "ValheimAutoModSync.Server.dll")
 Copy-Item $ApplyExe (Join-Path $Plugins "ValheimAutoModSync.Apply.exe")
+Copy-Item $ApplyIco (Join-Path $Plugins "ValheimAutoModSync.Apply.ico")
 Copy-Item (Join-Path $TsRoot "icon.png") (Join-Path $Package "icon.png")
 Copy-Item (Join-Path $TsRoot "README.md") (Join-Path $Package "README.md")
 Copy-Item (Join-Path $TsRoot "CHANGELOG.md") (Join-Path $Package "CHANGELOG.md")
