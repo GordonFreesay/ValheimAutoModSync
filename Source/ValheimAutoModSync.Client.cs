@@ -122,16 +122,11 @@ namespace ValheimAutoModSync
         private static bool _restartRequested;
         private static DateTime _quitAfterUtc = DateTime.MinValue;
         private static bool _quitIssued;
+        private static readonly AutoModSyncUiState _uiState = new AutoModSyncUiState();
         private static bool _overlayVisible;
-        private static string _overlayStatus = "";
-        private static string _overlayCurrentFile = "";
-        private static int _overlayTotalFiles;
-        private static int _overlayCompletedFiles;
-        private static float _overlayFileProgress;
-        private static bool _overlayBundleMode;
-        private static long _overlayBytesReceived;
-        private static long _overlayBytesTotal;
         private static DateTime _overlayHideUtc = DateTime.MinValue;
+        private static Texture2D _uiLogoTexture;
+        private static bool _uiLogoLoadAttempted;
         private static string _startupReconnectTarget = "";
         private static DateTime _startupReconnectNextUtc = DateTime.MinValue;
         private static int _startupReconnectAttempts;
@@ -321,124 +316,343 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Draws the small in-game synchronization overlay and progress bar without depending on another UI framework.
+        // Intent: Renders the Phase 7 state model as a branded gray/orange AutoModSync panel without owning synchronization policy.
         private void OnGUI()
         {
-            if (!_overlayVisible) return;
+            if (!_overlayVisible || _uiState.Phase == AutoModSyncUiPhase.Hidden) return;
 
-            float width = Mathf.Min(620f, Mathf.Max(320f, Screen.width - 40f));
-            float height = _trustPromptPending ? 235f : (_overlayTotalFiles > 0 ? 190f : 135f);
+            EnsureUiLogoTexture();
+
+            float width = Mathf.Min(720f, Mathf.Max(360f, Screen.width - 32f));
+            float height = UiPanelHeight(_uiState.Phase);
+            height = Mathf.Min(height, Mathf.Max(280f, Screen.height - 24f));
             float left = (Screen.width - width) * 0.5f;
             float top = (Screen.height - height) * 0.5f;
             Rect panel = new Rect(left, top, width, height);
 
             GUI.depth = -1000;
             Color previousColor = GUI.color;
-            Color previousBackground = GUI.backgroundColor;
-            GUI.backgroundColor = new Color(0.08f, 0.08f, 0.08f, 0.96f);
-            GUI.Box(panel, GUIContent.none);
-            GUI.backgroundColor = previousBackground;
 
-            GUIStyle titleStyle = new GUIStyle(GUI.skin.label);
-            titleStyle.alignment = TextAnchor.MiddleCenter;
-            titleStyle.fontSize = 22;
-            titleStyle.fontStyle = FontStyle.Bold;
-            titleStyle.normal.textColor = Color.white;
+            Color charcoal = new Color(0.075f, 0.082f, 0.094f, 0.985f);
+            Color slate = new Color(0.115f, 0.125f, 0.145f, 0.98f);
+            Color orange = new Color(1.00f, 0.36f, 0.055f, 1f);
+            Color ember = new Color(1.00f, 0.56f, 0.12f, 1f);
+            Color text = new Color(0.95f, 0.96f, 0.97f, 1f);
+            Color muted = new Color(0.66f, 0.69f, 0.73f, 1f);
+            Color danger = new Color(1.00f, 0.23f, 0.10f, 1f);
+            Color phaseAccent = _uiState.Phase == AutoModSyncUiPhase.Failed ? danger : orange;
+
+            float pulse = 0.32f + (0.18f * Mathf.PingPong(Time.realtimeSinceStartup * 0.8f, 1f));
+            DrawSolidRect(new Rect(panel.x - 4f, panel.y - 4f, panel.width + 8f, panel.height + 8f),
+                new Color(phaseAccent.r, phaseAccent.g, phaseAccent.b, pulse));
+            DrawSolidRect(panel, charcoal);
+            DrawOutlinedRect(panel, phaseAccent, 2f);
+            DrawSolidRect(new Rect(panel.x + 2f, panel.y + 2f, panel.width - 4f, 4f), ember);
+
+            GUIStyle brandStyle = new GUIStyle(GUI.skin.label);
+            brandStyle.fontSize = 23;
+            brandStyle.fontStyle = FontStyle.Bold;
+            brandStyle.alignment = TextAnchor.MiddleLeft;
+            brandStyle.normal.textColor = text;
+
+            GUIStyle brandSubStyle = new GUIStyle(GUI.skin.label);
+            brandSubStyle.fontSize = 11;
+            brandSubStyle.fontStyle = FontStyle.Bold;
+            brandSubStyle.alignment = TextAnchor.UpperLeft;
+            brandSubStyle.normal.textColor = orange;
 
             GUIStyle statusStyle = new GUIStyle(GUI.skin.label);
+            statusStyle.fontSize = 20;
+            statusStyle.fontStyle = FontStyle.Bold;
             statusStyle.alignment = TextAnchor.MiddleCenter;
-            statusStyle.fontSize = 16;
             statusStyle.wordWrap = true;
-            statusStyle.normal.textColor = Color.white;
+            statusStyle.normal.textColor = text;
 
             GUIStyle detailStyle = new GUIStyle(GUI.skin.label);
-            detailStyle.alignment = TextAnchor.MiddleCenter;
             detailStyle.fontSize = 13;
+            detailStyle.alignment = TextAnchor.UpperCenter;
             detailStyle.wordWrap = true;
-            detailStyle.normal.textColor = new Color(0.86f, 0.86f, 0.86f, 1f);
+            detailStyle.normal.textColor = muted;
 
-            GUI.Label(new Rect(left + 20f, top + 14f, width - 40f, 32f), "AutoModSync", titleStyle);
+            GUIStyle smallStyle = new GUIStyle(GUI.skin.label);
+            smallStyle.fontSize = 11;
+            smallStyle.alignment = TextAnchor.MiddleCenter;
+            smallStyle.wordWrap = true;
+            smallStyle.normal.textColor = muted;
 
-            if (_trustPromptPending)
+            GUIStyle valueStyle = new GUIStyle(GUI.skin.label);
+            valueStyle.fontSize = 17;
+            valueStyle.fontStyle = FontStyle.Bold;
+            valueStyle.alignment = TextAnchor.MiddleCenter;
+            valueStyle.normal.textColor = text;
+
+            float headerY = top + 18f;
+            if (_uiLogoTexture != null)
+                GUI.DrawTexture(new Rect(left + 24f, headerY, 66f, 66f), _uiLogoTexture, ScaleMode.ScaleToFit, true);
+
+            float titleLeft = left + (_uiLogoTexture != null ? 104f : 28f);
+            GUI.Label(new Rect(titleLeft, headerY + 4f, width - (titleLeft - left) - 24f, 32f), "AUTOMODSYNC", brandStyle);
+            GUI.Label(new Rect(titleLeft + 1f, headerY + 38f, width - (titleLeft - left) - 24f, 22f),
+                "VALHEIM  •  VERIFIED MOD SYNCHRONIZATION", brandSubStyle);
+            DrawSolidRect(new Rect(left + 24f, top + 96f, width - 48f, 1f), new Color(1f, 0.36f, 0.055f, 0.38f));
+
+            GUI.Label(new Rect(left + 28f, top + 107f, width - 56f, 36f), _uiState.Status ?? "", statusStyle);
+            GUI.Label(new Rect(left + 42f, top + 145f, width - 84f, 43f), _uiState.Detail ?? "", detailStyle);
+
+            float y = top + 195f;
+
+            if (_uiState.Phase == AutoModSyncUiPhase.Trust)
             {
-                // Trust is collected in a native Windows dialog running on a background thread.
-                // That leaves Unity/ZRpc processing live and avoids fighting Valheim for cursor ownership.
-                GUI.Label(new Rect(left + 25f, top + 50f, width - 50f, 34f), "Trust this server?", statusStyle);
-                GUI.Label(new Rect(left + 35f, top + 88f, width - 70f, 36f),
-                    "A Windows confirmation dialog is open. Use its Yes/No buttons to continue or cancel.", detailStyle);
-                GUI.Label(new Rect(left + 35f, top + 128f, width - 70f, 20f), "Server fingerprint:", detailStyle);
-                GUI.Label(new Rect(left + 35f, top + 150f, width - 70f, 46f),
-                    FormatFingerprint(_trustPromptFingerprint), detailStyle);
-
-                GUI.color = previousColor;
-                return;
+                Rect trustBox = new Rect(left + 40f, y, width - 80f, 90f);
+                DrawSolidRect(trustBox, slate);
+                DrawOutlinedRect(trustBox, new Color(1f, 0.36f, 0.055f, 0.55f), 1f);
+                GUI.Label(new Rect(trustBox.x + 10f, trustBox.y + 8f, trustBox.width - 20f, 18f), "SERVER FINGERPRINT", smallStyle);
+                GUIStyle fingerprintStyle = new GUIStyle(detailStyle);
+                fingerprintStyle.fontSize = 12;
+                fingerprintStyle.fontStyle = FontStyle.Bold;
+                fingerprintStyle.normal.textColor = text;
+                GUI.Label(new Rect(trustBox.x + 12f, trustBox.y + 30f, trustBox.width - 24f, 52f),
+                    FormatFingerprint(_uiState.ServerFingerprint), fingerprintStyle);
+                y += 104f;
+            }
+            else if (_uiState.ManifestFiles > 0)
+            {
+                float gap = 8f;
+                float innerWidth = width - 64f;
+                float tileWidth = (innerWidth - (gap * 3f)) / 4f;
+                DrawStatTile(new Rect(left + 32f, y, tileWidth, 64f), "MATCHED",
+                    _uiState.MatchedFiles.ToString(CultureInfo.InvariantCulture), slate, muted, text);
+                DrawStatTile(new Rect(left + 32f + tileWidth + gap, y, tileWidth, 64f), "CHANGED",
+                    _uiState.ChangedFiles.ToString(CultureInfo.InvariantCulture), slate, muted, orange);
+                DrawStatTile(new Rect(left + 32f + ((tileWidth + gap) * 2f), y, tileWidth, 64f), "REMOVED",
+                    _uiState.RemovedFiles.ToString(CultureInfo.InvariantCulture), slate, muted, text);
+                DrawStatTile(new Rect(left + 32f + ((tileWidth + gap) * 3f), y, tileWidth, 64f), "REQUIRED",
+                    FormatBytes(_uiState.RequiredExpandedBytes), slate, muted, text);
+                y += 78f;
             }
 
-            GUI.Label(new Rect(left + 25f, top + 50f, width - 50f, 48f), _overlayStatus ?? "", statusStyle);
-
-            if (_overlayTotalFiles > 0)
+            if (_uiState.Phase == AutoModSyncUiPhase.Queued)
             {
-                string detail;
-                float overall;
-                if (_overlayBundleMode)
-                {
-                    detail = _overlayTotalFiles.ToString(CultureInfo.InvariantCulture) + " changed file(s)  •  " + FormatBytes(_overlayBytesReceived) + " / " + FormatBytes(_overlayBytesTotal);
-                    overall = _overlayBytesTotal <= 0 ? 0f : Mathf.Clamp01((float)(_overlayBytesReceived / (double)_overlayBytesTotal));
-                }
-                else
-                {
-                    int displayFile = Math.Min(_overlayCompletedFiles + 1, _overlayTotalFiles);
-                    detail = _overlayCurrentFile.Length > 0
-                        ? "File " + displayFile.ToString(CultureInfo.InvariantCulture) + " of " + _overlayTotalFiles.ToString(CultureInfo.InvariantCulture) + ": " + _overlayCurrentFile
-                        : _overlayCompletedFiles.ToString(CultureInfo.InvariantCulture) + " of " + _overlayTotalFiles.ToString(CultureInfo.InvariantCulture) + " files complete";
-                    overall = (_overlayCompletedFiles + Mathf.Clamp01(_overlayFileProgress)) / (float)_overlayTotalFiles;
-                    overall = Mathf.Clamp01(overall);
-                }
-                GUI.Label(new Rect(left + 25f, top + 99f, width - 50f, 34f), detail, detailStyle);
-                Rect bar = new Rect(left + 35f, top + 145f, width - 70f, 18f);
-                GUI.color = new Color(0.20f, 0.20f, 0.20f, 1f);
-                GUI.DrawTexture(bar, Texture2D.whiteTexture);
-                if (overall > 0f)
-                {
-                    GUI.color = new Color(0.72f, 0.72f, 0.72f, 1f);
-                    GUI.DrawTexture(new Rect(bar.x, bar.y, bar.width * overall, bar.height), Texture2D.whiteTexture);
-                }
-                GUI.color = previousColor;
-                GUI.Label(new Rect(left + 35f, top + 164f, width - 70f, 20f), Math.Round(overall * 100f).ToString(CultureInfo.InvariantCulture) + "%", detailStyle);
+                Rect queueBox = new Rect(left + 42f, y, width - 84f, 58f);
+                DrawSolidRect(queueBox, slate);
+                DrawOutlinedRect(queueBox, new Color(1f, 0.36f, 0.055f, 0.42f), 1f);
+                GUI.Label(new Rect(queueBox.x + 10f, queueBox.y + 6f, queueBox.width * 0.5f - 10f, 22f), "QUEUE POSITION", smallStyle);
+                GUI.Label(new Rect(queueBox.x + 10f, queueBox.y + 25f, queueBox.width * 0.5f - 10f, 27f),
+                    _uiState.QueuePosition.ToString(CultureInfo.InvariantCulture), valueStyle);
+                GUI.Label(new Rect(queueBox.x + queueBox.width * 0.5f, queueBox.y + 6f, queueBox.width * 0.5f - 10f, 22f), "ACTIVE TRANSFERS", smallStyle);
+                GUI.Label(new Rect(queueBox.x + queueBox.width * 0.5f, queueBox.y + 25f, queueBox.width * 0.5f - 10f, 27f),
+                    _uiState.QueueActive.ToString(CultureInfo.InvariantCulture) + " / " + _uiState.QueueMaxActive.ToString(CultureInfo.InvariantCulture), valueStyle);
+                y += 70f;
             }
+            else if (_uiState.Phase == AutoModSyncUiPhase.Downloading)
+            {
+                float progress = (float)_uiState.TransferProgress();
+                GUI.Label(new Rect(left + 42f, y, width - 84f, 18f),
+                    FormatBytes(_uiState.BytesReceived) + " / " + FormatBytes(_uiState.BundleBytes), smallStyle);
+                y += 21f;
+                DrawProgressBar(new Rect(left + 42f, y, width - 84f, 20f), progress, orange, ember);
+                GUI.Label(new Rect(left + 42f, y, width - 84f, 20f),
+                    Math.Round(progress * 100.0).ToString(CultureInfo.InvariantCulture) + "%", smallStyle);
+                y += 31f;
+
+                float metricWidth = (width - 100f) / 3f;
+                DrawStatTile(new Rect(left + 42f, y, metricWidth, 54f), "CURRENT",
+                    FormatRate(_uiState.CurrentBytesPerSecond), slate, muted, text);
+                DrawStatTile(new Rect(left + 50f + metricWidth, y, metricWidth, 54f), "AVERAGE",
+                    FormatRate(_uiState.AverageBytesPerSecond), slate, muted, text);
+                DrawStatTile(new Rect(left + 58f + (metricWidth * 2f), y, metricWidth, 54f), "ETA",
+                    FormatEta(_uiState.TransferEtaSeconds()), slate, muted, text);
+                y += 63f;
+
+                if (_uiState.SessionStartBytes > 0L)
+                {
+                    GUIStyle resumedStyle = new GUIStyle(smallStyle);
+                    resumedStyle.fontStyle = FontStyle.Bold;
+                    resumedStyle.normal.textColor = orange;
+                    GUI.Label(new Rect(left + 42f, y, width - 84f, 20f),
+                        "RESUMED  •  " + FormatBytes(_uiState.SessionStartBytes) + " retained from verified package data", resumedStyle);
+                    y += 22f;
+                }
+            }
+            else if (_uiState.Phase == AutoModSyncUiPhase.Verifying)
+            {
+                float verifyProgress = _uiState.VerificationTotal <= 0 ? 0f :
+                    Mathf.Clamp01(_uiState.VerificationCompleted / (float)_uiState.VerificationTotal);
+                GUI.Label(new Rect(left + 42f, y, width - 84f, 18f),
+                    _uiState.VerificationCompleted.ToString(CultureInfo.InvariantCulture) + " / " +
+                    _uiState.VerificationTotal.ToString(CultureInfo.InvariantCulture) + " files verified", smallStyle);
+                y += 21f;
+                DrawProgressBar(new Rect(left + 42f, y, width - 84f, 20f), verifyProgress, orange, ember);
+                y += 31f;
+            }
+            else if (_uiState.Phase == AutoModSyncUiPhase.Applying ||
+                     _uiState.Phase == AutoModSyncUiPhase.Restarting ||
+                     _uiState.Phase == AutoModSyncUiPhase.Reconnecting ||
+                     _uiState.Phase == AutoModSyncUiPhase.Checking ||
+                     _uiState.Phase == AutoModSyncUiPhase.Comparing)
+            {
+                float activity = Mathf.PingPong(Time.realtimeSinceStartup * 0.55f, 1f);
+                Rect track = new Rect(left + 50f, y + 8f, width - 100f, 5f);
+                DrawSolidRect(track, new Color(0.22f, 0.23f, 0.25f, 1f));
+                float segment = Mathf.Max(48f, track.width * 0.22f);
+                float travel = Mathf.Max(0f, track.width - segment);
+                DrawSolidRect(new Rect(track.x + (travel * activity), track.y, segment, track.height), orange);
+                y += 28f;
+            }
+
+            string footer = "AMS " + PluginVersion + "  •  VALHEIM";
+            if (!String.IsNullOrEmpty(_uiState.ServerFingerprint))
+                footer += "  •  SERVER " + ShortFingerprint(_uiState.ServerFingerprint);
+            GUI.Label(new Rect(left + 28f, top + height - 29f, width - 56f, 18f), footer, smallStyle);
 
             GUI.color = previousColor;
         }
 
-        // Intent: Sets the current synchronization status/detail text and marks the overlay visible.
-        private static void ShowSyncOverlay(string status, string currentFile)
+        // Intent: Chooses a stable panel height for each presentation phase so telemetry remains readable without affecting synchronization behavior.
+        private static float UiPanelHeight(AutoModSyncUiPhase phase)
         {
-            _overlayStatus = status ?? "";
-            _overlayCurrentFile = currentFile ?? "";
-            _overlayHideUtc = DateTime.MinValue;
-            _overlayVisible = true;
+            if (phase == AutoModSyncUiPhase.Downloading) return 438f;
+            if (phase == AutoModSyncUiPhase.Queued) return 392f;
+            if (phase == AutoModSyncUiPhase.Trust) return 365f;
+            if (phase == AutoModSyncUiPhase.Verifying) return 382f;
+            if (phase == AutoModSyncUiPhase.Comparing || phase == AutoModSyncUiPhase.Checking) return 350f;
+            if (phase == AutoModSyncUiPhase.Applying || phase == AutoModSyncUiPhase.Restarting) return 360f;
+            if (phase == AutoModSyncUiPhase.Complete) return 342f;
+            if (phase == AutoModSyncUiPhase.Failed) return 325f;
+            if (phase == AutoModSyncUiPhase.Reconnecting) return 305f;
+            return 300f;
         }
 
-        // Intent: Shows a failure/status banner briefly, then relinquishes the menu UI automatically.
-        private static void ShowTransientSyncOverlay(string status, double seconds)
+        // Intent: Draws a solid IMGUI rectangle using Unity's built-in white texture so no UI texture allocation is needed.
+        private static void DrawSolidRect(Rect rect, Color color)
         {
-            ShowSyncOverlay(status, "");
+            Color previous = GUI.color;
+            GUI.color = color;
+            GUI.DrawTexture(rect, Texture2D.whiteTexture);
+            GUI.color = previous;
+        }
+
+        // Intent: Draws a thin rectangular border for the branded synchronization panel and stat tiles.
+        private static void DrawOutlinedRect(Rect rect, Color color, float thickness)
+        {
+            DrawSolidRect(new Rect(rect.x, rect.y, rect.width, thickness), color);
+            DrawSolidRect(new Rect(rect.x, rect.yMax - thickness, rect.width, thickness), color);
+            DrawSolidRect(new Rect(rect.x, rect.y, thickness, rect.height), color);
+            DrawSolidRect(new Rect(rect.xMax - thickness, rect.y, thickness, rect.height), color);
+        }
+
+        // Intent: Draws one compact comparison/telemetry tile with muted label text and a prominent value.
+        private static void DrawStatTile(Rect rect, string label, string value, Color background, Color labelColor, Color valueColor)
+        {
+            DrawSolidRect(rect, background);
+            GUIStyle labelStyle = new GUIStyle(GUI.skin.label);
+            labelStyle.fontSize = 10;
+            labelStyle.fontStyle = FontStyle.Bold;
+            labelStyle.alignment = TextAnchor.MiddleCenter;
+            labelStyle.normal.textColor = labelColor;
+            GUIStyle valueStyle = new GUIStyle(GUI.skin.label);
+            valueStyle.fontSize = 15;
+            valueStyle.fontStyle = FontStyle.Bold;
+            valueStyle.alignment = TextAnchor.MiddleCenter;
+            valueStyle.normal.textColor = valueColor;
+            GUI.Label(new Rect(rect.x + 4f, rect.y + 5f, rect.width - 8f, 18f), label, labelStyle);
+            GUI.Label(new Rect(rect.x + 4f, rect.y + 24f, rect.width - 8f, rect.height - 27f), value, valueStyle);
+        }
+
+        // Intent: Draws a dark transfer/verification track with an orange-to-ember two-layer fill derived only from state-model progress.
+        private static void DrawProgressBar(Rect rect, float progress, Color orange, Color ember)
+        {
+            progress = Mathf.Clamp01(progress);
+            DrawSolidRect(rect, new Color(0.18f, 0.19f, 0.21f, 1f));
+            DrawOutlinedRect(rect, new Color(1f, 1f, 1f, 0.08f), 1f);
+            if (progress <= 0f) return;
+            Rect fill = new Rect(rect.x + 2f, rect.y + 2f, (rect.width - 4f) * progress, rect.height - 4f);
+            DrawSolidRect(fill, orange);
+            if (fill.width > 8f)
+                DrawSolidRect(new Rect(fill.x, fill.y, fill.width, Mathf.Max(2f, fill.height * 0.28f)), ember);
+        }
+
+        // Intent: Lazily loads the packaged AMS logo embedded in the client DLL; a missing/corrupt image degrades to text branding without breaking synchronization.
+        private static void EnsureUiLogoTexture()
+        {
+            if (_uiLogoLoadAttempted) return;
+            _uiLogoLoadAttempted = true;
+            try
+            {
+                Assembly assembly = typeof(ClientPlugin).Assembly;
+                using (Stream input = assembly.GetManifestResourceStream("ValheimAutoModSync.Branding.Logo.png"))
+                {
+                    if (input == null) throw new FileNotFoundException("Embedded AutoModSync logo resource was not found.");
+                    byte[] bytes;
+                    using (MemoryStream memory = new MemoryStream())
+                    {
+                        input.CopyTo(memory);
+                        bytes = memory.ToArray();
+                    }
+
+                    Texture2D texture = new Texture2D(2, 2, TextureFormat.ARGB32, false);
+                    if (!ImageConversion.LoadImage(texture, bytes))
+                        throw new InvalidDataException("Embedded AutoModSync logo PNG could not be decoded.");
+                    texture.wrapMode = TextureWrapMode.Clamp;
+                    _uiLogoTexture = texture;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync UI logo unavailable; using text branding only: " + ex.Message);
+            }
+        }
+
+        // Intent: Formats bytes-per-second telemetry as a compact player-facing transfer rate while preserving unknown rates as a dash.
+        private static string FormatRate(double bytesPerSecond)
+        {
+            if (bytesPerSecond <= 1.0) return "—";
+            return FormatBytes((long)Math.Round(bytesPerSecond)) + "/s";
+        }
+
+        // Intent: Formats ETA telemetry without inventing precision when the transfer model has not observed a usable rate.
+        private static string FormatEta(double seconds)
+        {
+            if (seconds < 0.0 || Double.IsNaN(seconds) || Double.IsInfinity(seconds)) return "CALCULATING";
+            if (seconds < 1.0) return "<1s";
+            int whole = (int)Math.Ceiling(seconds);
+            if (whole < 60) return whole.ToString(CultureInfo.InvariantCulture) + "s";
+            int minutes = whole / 60;
+            int remaining = whole % 60;
+            if (minutes < 60) return minutes.ToString(CultureInfo.InvariantCulture) + "m " + remaining.ToString("00", CultureInfo.InvariantCulture) + "s";
+            int hours = minutes / 60;
+            return hours.ToString(CultureInfo.InvariantCulture) + "h " + (minutes % 60).ToString("00", CultureInfo.InvariantCulture) + "m";
+        }
+
+        // Intent: Produces a compact non-authoritative server identity label for the footer while trust decisions continue using the full fingerprint.
+        private static string ShortFingerprint(string fingerprint)
+        {
+            if (String.IsNullOrEmpty(fingerprint)) return "UNKNOWN";
+            if (fingerprint.Length <= 16) return fingerprint.ToUpperInvariant();
+            return fingerprint.Substring(0, 8).ToUpperInvariant() + "…" + fingerprint.Substring(fingerprint.Length - 8).ToUpperInvariant();
+        }
+
+        // Intent: Publishes an already-decided lifecycle phase into the policy-free UI model and makes the overlay visible.
+        private static void ShowSyncOverlay(AutoModSyncUiPhase phase, string status, string detail)
+        {
+            _uiState.SetPhase(phase, status, detail);
+            _overlayHideUtc = DateTime.MinValue;
+            _overlayVisible = phase != AutoModSyncUiPhase.Hidden;
+        }
+
+        // Intent: Shows a terminal or success state briefly, then relinquishes the menu/game UI automatically.
+        private static void ShowTransientSyncOverlay(AutoModSyncUiPhase phase, string status, string detail, double seconds)
+        {
+            ShowSyncOverlay(phase, status, detail);
             _overlayHideUtc = DateTime.UtcNow.AddSeconds(Math.Max(0.5, seconds));
         }
 
-        // Intent: Clears all overlay/progress state when synchronization is finished or the normal handshake is resumed.
+        // Intent: Clears all presentation state when synchronization is finished, abandoned, or a normal non-AMS handshake resumes.
         private static void HideSyncOverlay()
         {
             _overlayVisible = false;
-            _overlayStatus = "";
-            _overlayCurrentFile = "";
-            _overlayTotalFiles = 0;
-            _overlayCompletedFiles = 0;
-            _overlayFileProgress = 0f;
-            _overlayBundleMode = false;
-            _overlayBytesReceived = 0L;
-            _overlayBytesTotal = 0L;
             _overlayHideUtc = DateTime.MinValue;
+            _uiState.Reset();
         }
 
         [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
@@ -654,6 +868,8 @@ namespace ValheimAutoModSync
                 _serverSupportsBundlePipeline = capabilities.IndexOf("bundle-pipeline1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleResume = capabilities.IndexOf("bundle-resume1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleScheduler = capabilities.IndexOf("bundle-scheduler1", StringComparison.Ordinal) >= 0;
+                ShowSyncOverlay(AutoModSyncUiPhase.Checking, "AutoModSync server detected.",
+                    "Waiting for the signed server manifest...");
 #if AMS_DEV_TESTS
                 if (_devEmulateLegacyClient)
                 {
@@ -720,7 +936,9 @@ namespace ValheimAutoModSync
                 _manifestSignature = signature;
                 _serverFingerprint = Fingerprint(publicKeyXml);
                 ManifestParts.Clear();
-                ShowSyncOverlay("Checking server mods...", "");
+                _uiState.SetServerFingerprint(_serverFingerprint);
+                ShowSyncOverlay(AutoModSyncUiPhase.Checking, "Checking server mods...",
+                    "Validating the signed manifest for this AutoModSync server.");
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync server detected; checking required mods before joining.");
             }
             catch (Exception ex)
@@ -798,16 +1016,15 @@ namespace ValheimAutoModSync
                     return;
                 }
 
+                ShowSyncOverlay(AutoModSyncUiPhase.Comparing, "Comparing server mods...",
+                    "Signed manifest verified. Comparing required files with this client.");
                 BuildNeededList(manifest);
                 if (NeededFiles.Count == 0)
                 {
                     if (PendingRelativePaths.Count > 0)
                     {
-                        _overlayTotalFiles = PendingRelativePaths.Count;
-                        _overlayCompletedFiles = 0;
-                        _overlayFileProgress = 0f;
-                        _overlayBundleMode = false;
-                        ShowSyncOverlay("Removing stale server-managed mods...", "");
+                        ShowSyncOverlay(AutoModSyncUiPhase.Applying, "Preparing synchronized changes...",
+                            "Removing " + PendingRelativePaths.Count.ToString(CultureInfo.InvariantCulture) + " stale server-managed file(s) transactionally.");
                         if (_instance != null)
                             _instance.Logger.LogInfo("AutoModSync: " + PendingRelativePaths.Count.ToString(CultureInfo.InvariantCulture) + " stale owned file(s) require transactional removal.");
                         BeginApplyAndRestart();
@@ -822,19 +1039,17 @@ namespace ValheimAutoModSync
                     }
 
                     AutoModSyncOwnershipState.WriteLastSuccessfulServerDurable(GetAutoModSyncRoot(), _serverFingerprint);
-                    HideSyncOverlay();
+                    ShowTransientSyncOverlay(AutoModSyncUiPhase.Complete, "Already synchronized.",
+                        "Required mods match this trusted server. Joining normally...", 1.5);
                     if (_instance != null) _instance.Logger.LogInfo("AutoModSync: client mods already match the trusted server.");
                     ResumeNormalHandshake();
                 }
                 else
                 {
-                    _overlayTotalFiles = NeededFiles.Count + PendingRelativePaths.Count;
-                    _overlayCompletedFiles = 0;
-                    _overlayFileProgress = 0f;
-                    _overlayBundleMode = true;
-                    _overlayBytesReceived = 0L;
-                    _overlayBytesTotal = 0L;
-                    ShowSyncOverlay("Preparing compressed mod package...", "");
+                    ShowSyncOverlay(AutoModSyncUiPhase.Comparing, "Mod comparison complete.",
+                        NeededFiles.Count.ToString(CultureInfo.InvariantCulture) + " changed file(s)" +
+                        (PendingRelativePaths.Count > 0 ? " and " + PendingRelativePaths.Count.ToString(CultureInfo.InvariantCulture) + " stale removal(s)" : "") +
+                        " require synchronization. Preparing the verified package...");
                     if (_instance != null)
                         _instance.Logger.LogInfo("AutoModSync: requesting one compressed package containing " + NeededFiles.Count +
                             " missing/changed file(s)" + (PendingRelativePaths.Count > 0 ? " plus " + PendingRelativePaths.Count + " stale owned removal(s)." : "."));
@@ -983,6 +1198,12 @@ namespace ValheimAutoModSync
             }
 
             _ownershipLedgerChanged = !AutoModSyncOwnershipState.Equivalent(owned, DesiredOwnershipEntries);
+            _uiState.SetComparison(
+                manifestByKey.Count,
+                Math.Max(0, manifestByKey.Count - NeededFiles.Count),
+                NeededFiles.Count,
+                PendingRelativePaths.Count,
+                expandedNeededBytes);
         }
 
         // Intent: Detects whether AutoModSync is running from a package-manager subdirectory rather than directly at BepInEx/plugins.
@@ -1226,15 +1447,15 @@ namespace ValheimAutoModSync
                 _bundleTotalChunks = chunks;
                 _bundleChunkBytes = chunkBytes;
                 _bundleWindowEndExclusive = resumeStartChunk;
-                _overlayBundleMode = true;
-                _overlayBytesReceived = resumeBytes;
-                _overlayBytesTotal = size;
+                _uiState.BeginTransfer(size, resumeBytes, _bundleStartedUtc);
 
 #if AMS_DEV_TESTS
                 _devDisconnectAfterChunk = ReadDevelopmentResumeDisconnectMarker(chunks);
 #endif
 
-                ShowSyncOverlay(resumed ? "Resuming compressed mod package..." : "Downloading compressed mod package...", "");
+                ShowSyncOverlay(AutoModSyncUiPhase.Downloading,
+                    resumed ? "Resuming required mods..." : "Downloading required mods...",
+                    resumed ? "Verified package data was retained from the previous interrupted transfer." : "Receiving the server's verified compressed mod package.");
                 if (resumed && _instance != null)
                     _instance.Logger.LogInfo("AutoModSync exact-artifact resume accepted at chunk " + resumeStartChunk.ToString(CultureInfo.InvariantCulture) + "/" + chunks.ToString(CultureInfo.InvariantCulture) + " (" + FormatBytes(resumeBytes) + " retained).");
 
@@ -1268,8 +1489,7 @@ namespace ValheimAutoModSync
                 _bundleStream.Write(data, 0, data.Length);
                 _bundleBytesReceived += data.Length;
                 _bundleNextChunk++;
-                _overlayBytesReceived = _bundleBytesReceived;
-                _overlayFileProgress = _bundleTotalChunks <= 0 ? 1f : Mathf.Clamp01(_bundleNextChunk / (float)_bundleTotalChunks);
+                _uiState.UpdateTransfer(_bundleBytesReceived, DateTime.UtcNow);
 #if AMS_DEV_TESTS
                 if (DevelopmentDisconnectForResumeIfArmed(rpc)) return;
 #endif
@@ -1310,8 +1530,7 @@ namespace ValheimAutoModSync
 #endif
                 }
 
-                _overlayBytesReceived = _bundleBytesReceived;
-                _overlayFileProgress = _bundleTotalChunks <= 0 ? 1f : Mathf.Clamp01(_bundleNextChunk / (float)_bundleTotalChunks);
+                _uiState.UpdateTransfer(_bundleBytesReceived, DateTime.UtcNow);
                 if (_bundleNextChunk >= _bundleTotalChunks || _bundleNextChunk >= _bundleWindowEndExclusive)
                     RequestBundleChunk();
             }
@@ -1362,8 +1581,10 @@ namespace ValheimAutoModSync
                 if (!fi.Exists || fi.Length != _bundleSize || !ConstantEquals(Sha256File(_bundlePath), _bundleSha256))
                     throw new InvalidDataException("Compressed package failed SHA-256 verification.");
 
-                _overlayBytesReceived = _bundleSize;
-                ShowSyncOverlay("Verifying and unpacking required mods...", "");
+                _uiState.UpdateTransfer(_bundleSize, DateTime.UtcNow);
+                _uiState.BeginVerification(NeededFiles.Count);
+                ShowSyncOverlay(AutoModSyncUiPhase.Verifying, "Verifying synchronized files...",
+                    "Checking extracted file sizes and SHA-256 hashes before anything can be applied.");
                 ExtractBundleToStaging();
                 if (_bundleResumeSlotActive)
                 {
@@ -1374,9 +1595,6 @@ namespace ValheimAutoModSync
                 {
                     try { File.Delete(_bundlePath); } catch { }
                 }
-                _overlayCompletedFiles = _overlayTotalFiles;
-                _overlayFileProgress = 1f;
-                _overlayBundleMode = false;
                 if (_instance != null)
                 {
                     double elapsedSeconds = _bundleStartedUtc == DateTime.MinValue ? 0.0 : Math.Max(0.001, (DateTime.UtcNow - _bundleStartedUtc).TotalSeconds);
@@ -1447,6 +1665,7 @@ namespace ValheimAutoModSync
 
                     // Pending apply acceptance occurs only after the extracted staging file has passed size/SHA-256 verification.
                     PendingRelativePaths.Add(MakePendingWriteEntry(expectedEntry));
+                    _uiState.MarkVerified();
                 }
             }
 
@@ -1490,10 +1709,9 @@ namespace ValheimAutoModSync
                 if (position < 1 || position > 100000 || active < 0 || maxActive < 1 || active > maxActive)
                     throw new InvalidDataException("Invalid AutoModSync synchronization queue status.");
 
-                ShowSyncOverlay("Queued for synchronization...",
-                    "Position " + position.ToString(CultureInfo.InvariantCulture) +
-                    " · " + active.ToString(CultureInfo.InvariantCulture) +
-                    "/" + maxActive.ToString(CultureInfo.InvariantCulture) + " transfer slots active");
+                _uiState.SetQueue(position, active, maxActive);
+                ShowSyncOverlay(AutoModSyncUiPhase.Queued, "Queued for synchronization...",
+                    "The server is limiting simultaneous fresh-client transfers. Your place is reserved.");
                 if (_instance != null)
                     _instance.Logger.LogInfo("AutoModSync synchronization queue: position " + position.ToString(CultureInfo.InvariantCulture) +
                         ", active=" + active.ToString(CultureInfo.InvariantCulture) + "/" + maxActive.ToString(CultureInfo.InvariantCulture) + ".");
@@ -1519,6 +1737,8 @@ namespace ValheimAutoModSync
         {
             if (_restartRequested) return;
             _restartRequested = true;
+            ShowSyncOverlay(AutoModSyncUiPhase.Applying, "Preparing synchronized changes...",
+                "Verified files are ready. Preparing a crash-safe apply transaction before Valheim restarts.");
             try
             {
                 string amsRoot = GetAutoModSyncRoot();
@@ -1562,9 +1782,9 @@ namespace ValheimAutoModSync
                 psi.WindowStyle = ProcessWindowStyle.Hidden;
                 Process.Start(psi);
 
-                _overlayCompletedFiles = _overlayTotalFiles;
-                _overlayFileProgress = 1f;
-                ShowSyncOverlay(reconnectAvailable ? "Sync complete. Restarting Valheim and reconnecting to server..." : "Sync complete. Restarting Valheim...", "");
+                ShowSyncOverlay(AutoModSyncUiPhase.Restarting,
+                    reconnectAvailable ? "Sync complete. Restarting Valheim..." : "Sync complete. Restarting Valheim...",
+                    reconnectAvailable ? "Verified changes will be applied out-of-process, then AutoModSync will reconnect automatically." : "Verified changes will be applied out-of-process before Valheim relaunches.");
                 if (_instance != null) _instance.Logger.LogInfo("Mods synchronized. Closing this Valheim instance cleanly before applying updates and relaunching.");
                 try
                 {
@@ -1743,6 +1963,8 @@ namespace ValheimAutoModSync
             _lastHelloAttemptUtc = DateTime.MinValue;
             _helloAttemptCount = 0;
             ResetManifestState();
+            if (_uiState.Phase != AutoModSyncUiPhase.Reconnecting)
+                HideSyncOverlay();
 
             _reconnectHost = GetReconnectTarget(rpc);
             _reconnectBackend = _capturedServerBackend >= 0 ? _capturedServerBackend : GetCurrentOnlineBackend();
@@ -1814,7 +2036,7 @@ namespace ValheimAutoModSync
                 _helloSentUtc = DateTime.MinValue;
                 _lastHelloAttemptUtc = DateTime.MinValue;
                 _helloAttemptCount = 0;
-                if (!_restartRequested) HideSyncOverlay();
+                if (!_restartRequested && _uiState.Phase != AutoModSyncUiPhase.Complete) HideSyncOverlay();
                 ResetManifestState();
 
                 if (rpc != null) PreflightComplete.Add(rpc);
@@ -1854,7 +2076,7 @@ namespace ValheimAutoModSync
             _serverSupportsBundleResume = false;
             _serverSupportsBundleScheduler = false;
             _pendingRpc = null;
-            if (!_restartRequested) HideSyncOverlay();
+            if (!_restartRequested && _uiState.Phase != AutoModSyncUiPhase.Complete) HideSyncOverlay();
             ResetManifestState();
             if (rpc == null || ZNet.instance == null) return;
             try
@@ -1905,7 +2127,8 @@ namespace ValheimAutoModSync
             _heldServerHandshakeParameters = new object[0];
 
             ResetManifestState();
-            ShowTransientSyncOverlay("AutoModSync blocked this join.\n" + (reason ?? "Synchronization failed."), 4.0);
+            ShowTransientSyncOverlay(AutoModSyncUiPhase.Failed, "AutoModSync blocked this join.",
+                reason ?? "Synchronization failed.", 4.0);
             if (_instance != null) _instance.Logger.LogError((reason ?? "AutoModSync synchronization failed.") + " The recognized AutoModSync join was aborted.");
 
             if (rpc == null) return;
@@ -2011,6 +2234,8 @@ namespace ValheimAutoModSync
                 _startupReconnectDispatched = false;
                 _startupReconnectCharacterStartPending = false;
                 _startupReconnectNextUtc = DateTime.UtcNow.AddSeconds(1.5);
+                ShowSyncOverlay(AutoModSyncUiPhase.Reconnecting, "Reconnecting to synchronized server...",
+                    "Valheim restarted successfully. Waiting for the main menu network stack to become ready.");
                 Logger.LogInfo("AutoModSync queued one-shot in-game reconnect to " + target + " (backend " + _startupReconnectBackend.ToString(CultureInfo.InvariantCulture) + ").");
             }
             catch (Exception ex)
@@ -2029,6 +2254,8 @@ namespace ValheimAutoModSync
                 _startupReconnectFinished = true;
                 DeleteReconnectToken();
                 Logger.LogWarning("AutoModSync automatic reconnect timed out; leaving the player at the main menu.");
+                ShowTransientSyncOverlay(AutoModSyncUiPhase.Failed, "Automatic reconnect timed out.",
+                    "Synchronization is already applied. Join the server again manually.", 5.0);
                 return;
             }
 
@@ -2046,6 +2273,8 @@ namespace ValheimAutoModSync
                 _startupReconnectFinished = true;
                 DeleteReconnectToken();
                 Logger.LogWarning("AutoModSync automatic reconnect target was invalid: " + _startupReconnectTarget);
+                ShowTransientSyncOverlay(AutoModSyncUiPhase.Failed, "Automatic reconnect could not continue.",
+                    "The saved server endpoint was invalid. Join the server again manually.", 5.0);
                 return;
             }
 
@@ -2064,6 +2293,8 @@ namespace ValheimAutoModSync
                 {
                     _startupReconnectDispatched = true;
                     _startupReconnectForceBackend = _startupReconnectBackend >= 0;
+                    ShowSyncOverlay(AutoModSyncUiPhase.Reconnecting, "Opening synchronized server connection...",
+                        "AutoModSync is handing the saved endpoint back to Valheim.");
                     proceed.Invoke(startup, new object[] { joinData });
                     Logger.LogInfo("AutoModSync dispatched reconnect through FejdStartup.ProceedJoinRequest to " + _startupReconnectTarget + ".");
                     return;
@@ -2624,7 +2855,9 @@ namespace ValheimAutoModSync
             _trustPromptDecision = 0;
             int generation = ++_trustPromptGeneration;
             _trustPromptPending = true;
-            ShowSyncOverlay("", "");
+            _uiState.SetServerFingerprint(fingerprint);
+            ShowSyncOverlay(AutoModSyncUiPhase.Trust, "Trust this server?",
+                "A Windows confirmation dialog is open. Choose Yes only if you intended to join this server.");
 
             StartNativeTrustPrompt(fingerprint, generation);
 
@@ -2852,8 +3085,12 @@ namespace ValheimAutoModSync
             _lastHelloAttemptUtc = DateTime.MinValue;
             _helloAttemptCount = 0;
 
-            HideSyncOverlay();
             ResetManifestState();
+            ShowTransientSyncOverlay(AutoModSyncUiPhase.Failed, "Synchronization interrupted.",
+                preservedResume
+                    ? "Connection lost. " + FormatBytes(preservedBytes) + " of verified package data was retained and can resume on the next join."
+                    : "Connection lost before synchronization completed. Reconnect to try again.",
+                5.0);
 
             if (_instance != null)
             {
