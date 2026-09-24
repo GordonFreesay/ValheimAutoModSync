@@ -112,15 +112,35 @@ function Inspect-Test {
     if($hasMiss-and$hasBuild-and$hasHash){Write-Host '  PASS startup build logged ZIP-build and SHA-256 preparation timings.'}
     else{Write-Host '  FAIL missing ZIP build/SHA-256 timing evidence.';$ok=$false}
 
-    $configText=[IO.File]::ReadAllText($serverConfig)
-    $configTtlMatch=[regex]::Match($configText,'(?mi)^\s*BundleCacheSeconds\s*=\s*(\d+)\s*
-
     $matchingHit=$false
     foreach($m in [regex]::Matches($serverText,'AutoModSync bundle ready: cache=HIT, key=([0-9a-fA-F]+)')){
         if(($key.Length-eq 0)-or($m.Groups[1].Value.ToLowerInvariant()-eq$key)){$matchingHit=$true;break}
     }
     if($matchingHit){Write-Host '  PASS first real nearly-bare request reused the same startup artifact with cache=HIT.'}
     else{Write-Host '  FAIL no matching cache=HIT for the startup baseline was observed.';$ok=$false}
+
+    $configText=[IO.File]::ReadAllText($serverConfig)
+    $configTtlMatch=[regex]::Match($configText,'(?mi)^\s*BundleCacheSeconds\s*=\s*(\d+)\s*$')
+    $configuredTtl=if($configTtlMatch.Success){[int]$configTtlMatch.Groups[1].Value}else{-1}
+
+    $ttlMatch=[regex]::Match($serverText,'AutoModSync startup-pinned bundle survived ordinary cache TTL until first real client use: idle=([0-9.]+) s, BundleCacheSeconds=(\d+), key=([0-9a-fA-F]+)')
+    if($ttlMatch.Success){
+        $idle=[double]::Parse($ttlMatch.Groups[1].Value,[Globalization.CultureInfo]::InvariantCulture)
+        $ttl=[int]$ttlMatch.Groups[2].Value
+        $ttlKey=$ttlMatch.Groups[3].Value.ToLowerInvariant()
+        if((($ttl-eq 0)-or($idle-gt$ttl))-and(($key.Length-eq 0)-or($ttlKey-eq$key))){
+            if($ttl-eq 0){Write-Host("  PASS startup pin retained baseline with BundleCacheSeconds=0: idle={0:0.000}s."-f$idle)}
+            else{Write-Host("  PASS startup pin retained baseline beyond ordinary TTL: idle={0:0.000}s > TTL={1}s."-f$idle,$ttl)}
+        }else{
+            Write-Host '  FAIL TTL-retention evidence did not exceed TTL or key did not match.'
+            $ok=$false
+        }
+    }elseif(($configuredTtl-eq 0)-and$matchingHit){
+        Write-Host '  PASS startup pin retention proved structurally: BundleCacheSeconds=0 was active and the first real request still returned the matching cache=HIT after pre-lookup pruning.'
+    }else{
+        Write-Host("  FAIL missing startup-pinned TTL-retention evidence (configured BundleCacheSeconds={0})."-f$configuredTtl)
+        $ok=$false
+    }
 
     if($key.Length-gt 0){
         $missCount=[regex]::Matches($serverText,('AutoModSync bundle cache MISS key='+[regex]::Escape($key))).Count
