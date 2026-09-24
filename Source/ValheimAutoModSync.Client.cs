@@ -93,6 +93,10 @@ namespace ValheimAutoModSync
         private static ZRpc _trustPromptRpc;
         private static volatile int _trustPromptDecision;
         private static volatile int _trustPromptGeneration;
+        private static volatile int _trustPromptNativeThreadId;
+        private static int _staleTrustPromptThreadId;
+        private static DateTime _staleTrustPromptDismissUntilUtc = DateTime.MinValue;
+        private static DateTime _staleTrustPromptNextDismissUtc = DateTime.MinValue;
         private static readonly Dictionary<int, string> ManifestParts = new Dictionary<int, string>();
         private static readonly List<ManifestEntry> NeededFiles = new List<ManifestEntry>();
         private static FileStream _bundleStream;
@@ -234,6 +238,22 @@ namespace ValheimAutoModSync
             if (_overlayVisible && _overlayHideUtc != DateTime.MinValue && DateTime.UtcNow >= _overlayHideUtc)
             {
                 HideSyncOverlay();
+            }
+
+            if (_staleTrustPromptThreadId != 0 && _staleTrustPromptDismissUntilUtc != DateTime.MinValue)
+            {
+                DateTime dismissNow = DateTime.UtcNow;
+                if (dismissNow > _staleTrustPromptDismissUntilUtc)
+                {
+                    _staleTrustPromptThreadId = 0;
+                    _staleTrustPromptDismissUntilUtc = DateTime.MinValue;
+                    _staleTrustPromptNextDismissUtc = DateTime.MinValue;
+                }
+                else if (_staleTrustPromptNextDismissUtc == DateTime.MinValue || dismissNow >= _staleTrustPromptNextDismissUtc)
+                {
+                    CloseNativeTrustPromptWindow(_staleTrustPromptThreadId, false);
+                    _staleTrustPromptNextDismissUtc = dismissNow.AddMilliseconds(100.0);
+                }
             }
 
 #if AMS_DEV_TESTS
@@ -2635,6 +2655,9 @@ namespace ValheimAutoModSync
             Thread thread = new Thread(delegate()
             {
                 int decision;
+                int nativeThreadId = unchecked((int)GetCurrentThreadId());
+                if (generation == _trustPromptGeneration)
+                    _trustPromptNativeThreadId = nativeThreadId;
                 try
                 {
                     const uint MB_YESNO = 0x00000004u;
@@ -2664,6 +2687,14 @@ namespace ValheimAutoModSync
                         _trustPromptGeneration.ToString(CultureInfo.InvariantCulture) + ".");
                 }
 #endif
+                if (_trustPromptNativeThreadId == nativeThreadId)
+                    _trustPromptNativeThreadId = 0;
+                if (_staleTrustPromptThreadId == nativeThreadId)
+                {
+                    _staleTrustPromptThreadId = 0;
+                    _staleTrustPromptDismissUntilUtc = DateTime.MinValue;
+                    _staleTrustPromptNextDismissUtc = DateTime.MinValue;
+                }
             });
 
             thread.IsBackground = true;
@@ -2672,14 +2703,34 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Best-effort dismissal when a protected connection dies while the native trust dialog is still open.
-        private static void CloseNativeTrustPromptWindow()
+        // Reliability: targets the exact native thread that owns this MessageBox and retries briefly so a late-created dialog cannot survive generation invalidation.
+        private static bool CloseNativeTrustPromptWindow(int nativeThreadId, bool allowCaptionFallback)
         {
+            bool found = false;
             try
             {
-                IntPtr hwnd = FindWindow(null, TrustPromptCaption);
-                if (hwnd != IntPtr.Zero) PostMessage(hwnd, 0x0010u, IntPtr.Zero, IntPtr.Zero);
+                if (nativeThreadId != 0)
+                {
+                    EnumThreadWindows(unchecked((uint)nativeThreadId), delegate(IntPtr hwnd, IntPtr lParam)
+                    {
+                        found = true;
+                        try { PostMessage(hwnd, 0x0010u, IntPtr.Zero, IntPtr.Zero); } catch { }
+                        return true;
+                    }, IntPtr.Zero);
+                }
+
+                if (!found && allowCaptionFallback)
+                {
+                    IntPtr hwnd = FindWindow(null, TrustPromptCaption);
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        found = true;
+                        PostMessage(hwnd, 0x0010u, IntPtr.Zero, IntPtr.Zero);
+                    }
+                }
             }
             catch { }
+            return found;
         }
 
         // Intent: Persists an explicitly accepted fingerprint and resumes only the same still-connected, signature-verified AMS session that opened the prompt.
@@ -2731,6 +2782,7 @@ namespace ValheimAutoModSync
         private static void ClearPendingTrustPrompt()
         {
             bool hadPrompt = _trustPromptPending;
+            int nativeThreadId = _trustPromptNativeThreadId;
 
             _trustPromptPending = false;
             _trustPromptFingerprint = "";
@@ -2738,12 +2790,22 @@ namespace ValheimAutoModSync
             _trustPromptRpc = null;
             _trustPromptDecision = 0;
             _trustPromptGeneration++;
+            _trustPromptNativeThreadId = 0;
 #if AMS_DEV_TESTS
             _devTrustDisconnectGeneration = 0;
             _devTrustDisconnectUtc = DateTime.MinValue;
 #endif
 
-            if (hadPrompt) CloseNativeTrustPromptWindow();
+            if (hadPrompt)
+            {
+                _staleTrustPromptThreadId = nativeThreadId;
+                _staleTrustPromptDismissUntilUtc = DateTime.UtcNow.AddSeconds(3.0);
+                _staleTrustPromptNextDismissUtc = DateTime.MinValue;
+                bool found = CloseNativeTrustPromptWindow(nativeThreadId, true);
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync invalidated the native trust prompt and requested dismissal" +
+                        (found ? "." : "; the client will retry briefly in case the native window is still materializing."));
+            }
         }
 
         // Intent: Produces a readable two-line fingerprint without changing the exact 64-hex value that is pinned and compared.
@@ -3005,8 +3067,18 @@ namespace ValheimAutoModSync
         private static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        // Intent: Locates the transient native trust prompt for best-effort dismissal on connection loss.
+        // Intent: Locates the transient native trust prompt as a fallback when its owning native thread has not been recorded yet.
         private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+
+        private delegate bool EnumThreadWindowsCallback(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        // Intent: Enumerates top-level windows owned by the exact background thread that created the current native trust prompt.
+        private static extern bool EnumThreadWindows(uint dwThreadId, EnumThreadWindowsCallback lpfn, IntPtr lParam);
+
+        [DllImport("kernel32.dll")]
+        // Intent: Captures the native Windows thread id of the background trust-prompt thread for precise stale-dialog dismissal.
+        private static extern uint GetCurrentThreadId();
 
         [DllImport("user32.dll")]
         // Intent: Posts WM_CLOSE to a stale native trust prompt without blocking the Unity thread.
