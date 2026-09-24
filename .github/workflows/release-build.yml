@@ -9,6 +9,8 @@ on:
 permissions:
   contents: read
   actions: read
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -52,6 +54,24 @@ jobs:
           if (-not (Test-Path -LiteralPath $release)) { throw "Standalone release ZIP was not produced: $release" }
           "RELEASE_ZIP=$release" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Unsigned standalone release artifact: $release"
+
+      - name: Attest canonical standalone package
+        uses: actions/attest@v4
+        with:
+          subject-path: Dist/ValheimAutoModSync-${{ env.AMS_VERSION }}.zip
+
+      - name: Attest release checksum manifest
+        uses: actions/attest@v4
+        with:
+          subject-path: Dist/SHA256SUMS.txt
+
+      - name: Upload release checksum manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: ValheimAutoModSync-${{ env.AMS_VERSION }}-SHA256SUMS
+          path: Dist/SHA256SUMS.txt
+          archive: false
+          if-no-files-found: error
 
       - name: Upload unsigned artifact for origin verification
         id: upload_unsigned
