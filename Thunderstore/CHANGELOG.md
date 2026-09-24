@@ -2,6 +2,7 @@
 
 ## 2.6.0 (development)
 
+- Official GitHub-built standalone and store packages now generate SHA-256 manifests plus GitHub/Sigstore build-provenance attestations. Users can verify exact downloaded bytes with `gh attestation verify <artifact> -R GordonFreesay/ValheimAutoModSync`; this provenance is separate from Authenticode/SmartScreen trust.
 - The standalone installer now uses the AMS charcoal/orange branding and embedded logo, reports complete/partial install state, exposes Repair/Update for complete installs, and shows Uninstall only when the selected role is complete.
 - Client uninstall is ownership-safe: exact still-owned synchronized files are removed only when their current size/SHA-256 still match AMS records; locally changed files, unrelated mods, and shared BepInEx are preserved. Server uninstall preserves ClientPayload plus signing identity/config by default, with explicit opt-in identity removal.
 
