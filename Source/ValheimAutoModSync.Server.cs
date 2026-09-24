@@ -104,6 +104,8 @@ namespace ValheimAutoModSync
         private static readonly object BundleCacheLock = new object();
         private static readonly Dictionary<string, BundleArtifact> BundleArtifactCache = new Dictionary<string, BundleArtifact>(StringComparer.Ordinal);
         private static readonly Dictionary<string, BundleBuildState> BundleBuilds = new Dictionary<string, BundleBuildState>(StringComparer.Ordinal);
+        private static readonly object PreparedBundleResultsLock = new object();
+        private static readonly Queue<PreparedBundleResult> PreparedBundleResults = new Queue<PreparedBundleResult>();
         
         private sealed class FileRecord
         {
@@ -145,6 +147,18 @@ namespace ValheimAutoModSync
             public bool ResumeNegotiated;
             public AutoModSyncResumeCandidate ResumeCandidate;
             public DateTime QueuedUtc;
+            public bool PreparationStarted;
+        }
+
+        private sealed class PreparedBundleResult
+        {
+            public ZRpc Rpc;
+            public PendingBundleRequest Request;
+            public BundleArtifact Artifact;
+            public string CacheStatus;
+            public double WaitSeconds;
+            public double PrepareSeconds;
+            public Exception Error;
         }
 
         private sealed class ScheduledChunkRequest
@@ -249,6 +263,7 @@ namespace ValheimAutoModSync
         private void Update()
         {
             DateTime now = DateTime.UtcNow;
+            DrainPreparedBundleResults();
             ServiceTransferScheduler(now);
 
             if (_nextTransferCleanupUtc != DateTime.MinValue && now < _nextTransferCleanupUtc) return;
@@ -654,6 +669,24 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV Phase 3 disable-prewarm marker could not be consumed: " + ex.Message);
+            }
+        }
+
+        // Intent: Gives two real development clients a deterministic window to overlap one production bundle build without creating any synthetic follower.
+        // Scope: the one-shot marker affects only the next development bundle build; production builds contain no artificial delay.
+        private static void ArmDevelopmentTwoClientBuildDelayIfRequested()
+        {
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-two-client-delay.once");
+                if (!File.Exists(marker)) return;
+                try { File.Delete(marker); } catch { }
+                Interlocked.Exchange(ref DevelopmentDelayNextBundleBuildMs, 5000);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST armed a 5000 ms background bundle-build delay for real two-client overlap validation.");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV real two-client delay marker could not be consumed: " + ex.Message);
             }
         }
 
@@ -1352,27 +1385,109 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Converts one admitted FIFO request into an active immutable-artifact transfer only after the scheduler grants a slot.
-        // Resource control: queued peers do not build/acquire bundle artifacts or receive enlarged Steam transport settings until this method runs.
+        // Intent: Starts immutable bundle acquisition/build on a worker after the scheduler grants a slot, keeping Unity/ZRpc responsive so other real clients can enter the same single-flight build.
+        // Threading: the worker performs only cache/file preparation; all ZRpc, Steam transport, and transfer-state publication happens later on the Unity thread.
         private static void StartScheduledBundleTransfer(ZRpc rpc, PendingBundleRequest request)
         {
-            if (rpc == null || request == null) return;
+            if (rpc == null || request == null || request.PreparationStarted) return;
+            request.PreparationStarted = true;
 
-            BundleArtifact artifact = null;
+            long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
+#if AMS_DEV_TESTS
+            ArmDevelopmentTwoClientBuildDelayIfRequested();
+            StartDevelopmentSingleFlightFollowerIfArmed(request, maxBundleBytes);
+#endif
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                PreparedBundleResult result = new PreparedBundleResult();
+                result.Rpc = rpc;
+                result.Request = request;
+                Stopwatch prepareWatch = Stopwatch.StartNew();
+                try
+                {
+                    string cacheStatus;
+                    double waitSeconds;
+                    result.Artifact = AcquireBundleArtifact(request.Records, request.ExpandedBytes, maxBundleBytes, out cacheStatus, out waitSeconds);
+                    result.CacheStatus = cacheStatus;
+                    result.WaitSeconds = waitSeconds;
+                }
+                catch (Exception ex)
+                {
+                    result.Error = ex;
+                }
+                finally
+                {
+                    prepareWatch.Stop();
+                    result.PrepareSeconds = prepareWatch.Elapsed.TotalSeconds;
+                    lock (PreparedBundleResultsLock)
+                    {
+                        PreparedBundleResults.Enqueue(result);
+                    }
+                }
+            });
+        }
+
+        // Intent: Drains completed background bundle preparations on the Unity thread before normal scheduler work.
+        // Safety: disconnected/cancelled peers release their prepared artifact without invoking ZRpc or publishing active transfer state.
+        private static void DrainPreparedBundleResults()
+        {
+            while (true)
+            {
+                PreparedBundleResult result = null;
+                lock (PreparedBundleResultsLock)
+                {
+                    if (PreparedBundleResults.Count == 0) return;
+                    result = PreparedBundleResults.Dequeue();
+                }
+
+                CompleteScheduledBundlePreparation(result);
+            }
+        }
+
+        // Intent: Publishes one completed background bundle preparation into the existing active-transfer path on the Unity thread.
+        // Threading: every ZRpc call, transport tune, scheduler mutation, and BundleTransfers mutation remains confined to the Unity thread.
+        private static void CompleteScheduledBundlePreparation(PreparedBundleResult result)
+        {
+            if (result == null || result.Rpc == null || result.Request == null)
+            {
+                if (result != null && result.Artifact != null) ReleaseBundleArtifact(result.Artifact);
+                return;
+            }
+
+            ZRpc rpc = result.Rpc;
+            PendingBundleRequest request = result.Request;
+            BundleArtifact artifact = result.Artifact;
+
+            bool connected = false;
+            try { connected = rpc.IsConnected(); } catch { connected = false; }
+
+            PendingBundleRequest currentRequest;
+            bool stillPending = PendingBundleRequests.TryGetValue(rpc, out currentRequest) && Object.ReferenceEquals(currentRequest, request);
+            if (!connected || !stillPending)
+            {
+                if (artifact != null) ReleaseBundleArtifact(artifact);
+                PendingBundleRequests.Remove(rpc);
+                if (_transferScheduler != null) _transferScheduler.Remove(request.SchedulerPeerId);
+                SendAllQueueStatuses();
+                return;
+            }
+
+            if (result.Error != null)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Scheduled bundle preparation failed: " + result.Error);
+                if (artifact != null) ReleaseBundleArtifact(artifact);
+                PendingBundleRequests.Remove(rpc);
+                if (_transferScheduler != null) _transferScheduler.Remove(request.SchedulerPeerId);
+                SendError(rpc, "Server failed while preparing the scheduled AutoModSync package: " + result.Error.Message);
+                SendAllQueueStatuses();
+                return;
+            }
+
             FileStream readStream = null;
             bool transferStored = false;
             try
             {
-                long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
-                string cacheStatus;
-                double waitSeconds;
-#if AMS_DEV_TESTS
-                StartDevelopmentSingleFlightFollowerIfArmed(request, maxBundleBytes);
-#endif
-                Stopwatch prepareWatch = Stopwatch.StartNew();
-                artifact = AcquireBundleArtifact(request.Records, request.ExpandedBytes, maxBundleBytes, out cacheStatus, out waitSeconds);
-                prepareWatch.Stop();
-
                 int rawChunk = Math.Max(4096, Math.Min(49152, _chunkBytes.Value));
                 BundleTransfer transfer = new BundleTransfer();
                 transfer.SchedulerPeerId = request.SchedulerPeerId;
@@ -1459,21 +1574,21 @@ namespace ValheimAutoModSync
                 if (_instance != null)
                 {
                     double queueSeconds = Math.Max(0.0, (DateTime.UtcNow - request.QueuedUtc).TotalSeconds);
-                    _instance.Logger.LogInfo("AutoModSync bundle ready: cache=" + cacheStatus +
+                    _instance.Logger.LogInfo("AutoModSync bundle ready: cache=" + result.CacheStatus +
                         ", key=" + ShortCacheKey(artifact.CacheKey) +
                         ", sha256=" + artifact.Sha256 +
                         ", compressedBytes=" + artifact.Size.ToString(CultureInfo.InvariantCulture) +
                         ", files=" + artifact.FileCount.ToString(CultureInfo.InvariantCulture) +
                         ", compressed=" + FormatBytes(artifact.Size) +
                         ", expanded=" + FormatBytes(artifact.ExpandedBytes) +
-                        ", prepare=" + prepareWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
-                        (waitSeconds > 0.0005 ? ", singleFlightWait=" + waitSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" : "") +
+                        ", prepare=" + result.PrepareSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                        (result.WaitSeconds > 0.0005 ? ", singleFlightWait=" + result.WaitSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" : "") +
                         (queueSeconds > 0.0005 ? ", schedulerQueue=" + queueSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" : "") + ".");
                 }
             }
             catch (Exception ex)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Scheduled bundle preparation failed: " + ex);
+                if (_instance != null) _instance.Logger.LogWarning("Scheduled bundle publication failed: " + ex);
 
                 if (transferStored)
                 {
@@ -1487,7 +1602,7 @@ namespace ValheimAutoModSync
                 }
 
                 PendingBundleRequests.Remove(rpc);
-                SendError(rpc, "Server failed while preparing the scheduled AutoModSync package: " + ex.Message);
+                SendError(rpc, "Server failed while publishing the scheduled AutoModSync package: " + ex.Message);
                 SendAllQueueStatuses();
             }
         }
