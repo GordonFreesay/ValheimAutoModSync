@@ -21,6 +21,8 @@ Release builds/publication remain deferred until the maintainer has functionally
 - [x] Restart reconnect remains one-shot: after the first outgoing reconnect is created, later character-selection callbacks do not dispatch a second connection.
 - [ ] 2.6 client can still use the existing AMS4 transfer fallbacks with a 2.5 server.
 
+Development-only non-AMS discovery validation can be performed against the normal test server without uninstalling AMS: create `BepInEx/AutoModSync/preflight-test-suppress-response.once` on the dedicated server before one connection. A dev server consumes the marker on the next `AMS4_Hello` and sends no AMS acknowledgement/manifest/error for that probe. The client must retry discovery, then after approximately 3.25 seconds log that no AMS response was received and replay the original held `ServerHandshake` unchanged. This marker is compiled only under `AMS_DEV_TESTS`; release binaries do not contain it.
+
 ### Recognized AMS must fail closed
 
 For every case below, verify that no normal ServerHandshake is replayed and no live synchronized file is changed:
