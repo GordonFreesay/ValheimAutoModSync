@@ -1,0 +1,30 @@
+name: First-Party Privacy Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify C# intent comments
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\verify-source-docs.ps1"
+
+      - name: Scan first-party source for PII
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\verify-no-pii.ps1" -Root "."
+
+      - name: Validate server identity display
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase7-identity-display.ps1"
