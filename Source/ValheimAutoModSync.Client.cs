@@ -765,6 +765,7 @@ namespace ValheimAutoModSync
                             _instance.Logger.LogInfo("AutoModSync ownership metadata updated without live file changes.");
                     }
 
+                    AutoModSyncOwnershipState.WriteLastSuccessfulServerDurable(GetAutoModSyncRoot(), _serverFingerprint);
                     HideSyncOverlay();
                     if (_instance != null) _instance.Logger.LogInfo("AutoModSync: client mods already match the trusted server.");
                     ResumeNormalHandshake();
@@ -800,6 +801,7 @@ namespace ValheimAutoModSync
             _ownershipLedgerChanged = false;
 
             string amsRoot = GetAutoModSyncRoot();
+            bool sameAsImmediatelyPriorSuccessfulServer = AutoModSyncOwnershipState.WasLastSuccessfulServer(amsRoot, _serverFingerprint);
             List<AutoModSyncOwnershipEntry> owned = AutoModSyncOwnershipState.ReadLedger(amsRoot, _serverFingerprint);
             Dictionary<string, AutoModSyncOwnershipEntry> ownedByKey = new Dictionary<string, AutoModSyncOwnershipEntry>(StringComparer.OrdinalIgnoreCase);
             int oi;
@@ -888,9 +890,17 @@ namespace ValheimAutoModSync
                 {
                     FileInfo info = new FileInfo(local);
                     bool exactOwnedBytes = info.Length == prior.Size && ConstantEquals(Sha256File(local), prior.Sha256);
-                    if (exactOwnedBytes)
+                    if (exactOwnedBytes && sameAsImmediatelyPriorSuccessfulServer)
                     {
                         PendingRelativePaths.Add(MakePendingDeleteEntry(prior));
+                    }
+                    else if (exactOwnedBytes)
+                    {
+                        // A server switch must never make one server clean up another server's/client's current payload.
+                        // Retain this server's ownership record and defer deletion until two consecutive successful AMS reconciliations target this same fingerprint.
+                        AddDesiredOwnership(prior.Kind, prior.RelativePath, prior.Size, prior.Sha256);
+                        if (_instance != null)
+                            _instance.Logger.LogInfo("AutoModSync deferred stale owned deletion because the immediately prior successful sync used a different server: " + prior.Kind + ":" + prior.RelativePath);
                     }
                     else if (_instance != null)
                     {
