@@ -706,6 +706,10 @@ namespace ValheimAutoModSync
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+#if AMS_DEV_TESTS
+                // A one-shot silent peer lets live testing exercise the exact client behavior of a server that provides no AMS response.
+                if (ConsumeDevelopmentSuppressAmsResponseMarker()) return;
+#endif
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync received AMS4 preflight hello.");
                 int protocol = pkg.ReadInt();
                 string clientVersion = "";
@@ -1520,6 +1524,25 @@ namespace ValheimAutoModSync
         }
 
 #if AMS_DEV_TESTS
+        // Intent: Consumes a one-shot marker that makes the next AMS4_Hello receive no AutoModSync response at all.
+        // Scope: this emulates the client-visible discovery behavior of a non-AutoModSync server while retaining the same local dedicated server for controlled live validation.
+        private static bool ConsumeDevelopmentSuppressAmsResponseMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "preflight-test-suppress-response.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST suppressing all AMS responses for this one preflight hello.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV preflight-suppression marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
         // Intent: Consumes a one-shot server marker during AMS4_Hello and pins that peer to the pre-resume AMS4 wire shape for the life of the connection.
         // Scope: the emulated server still supports roots1/batch/pipeline exactly as 2.5 did; bundle-resume1 and bundle-scheduler1 are withheld, and no 2.6 resume/queue extension fields are emitted.
         private static bool ArmDevelopmentLegacyServerPeer(ZRpc rpc)
