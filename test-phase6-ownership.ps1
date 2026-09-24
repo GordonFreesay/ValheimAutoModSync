@@ -28,6 +28,8 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $crlf = [Environment]::NewLine
 $sandbox = Join-Path $env:TEMP ('AMS26-Phase6-Ownership-' + $PID)
 $helper = Join-Path $sandbox 'ValheimAutoModSync.Apply.exe'
+$pathSmokeSource = Join-Path $sandbox 'PathSafetySmoke.cs'
+$pathSmokeExe = Join-Path $sandbox 'PathSafetySmoke.exe'
 $gameRoot = Join-Path $sandbox 'Game'
 $bepInExRoot = Join-Path $gameRoot 'BepInEx'
 $amsRoot = Join-Path $bepInExRoot 'AutoModSync'
@@ -43,6 +45,31 @@ New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
 & $csc /nologo /optimize+ /langversion:5 /target:winexe /define:AMS_DEV_TESTS /out:$helper $applySource $pathSource $ownershipSource
 if ($LASTEXITCODE -ne 0) {
     Write-Host "FAIL: Phase 6 helper compilation failed. Sandbox retained: $sandbox"
+    exit $LASTEXITCODE
+}
+
+$smokeCode = @'
+using System;
+using System.IO;
+namespace ValheimAutoModSync
+{
+    internal static class PathSafetySmoke
+    {
+        private static int Main(string[] args)
+        {
+            if (args.Length != 1) return 2;
+            string root = Path.GetFullPath(args[0]);
+            Directory.CreateDirectory(root);
+            AutoModSyncPathSafety.EnsureNoReparsePoints(root, root, true);
+            return 0;
+        }
+    }
+}
+'@
+[IO.File]::WriteAllText($pathSmokeSource, $smokeCode, $utf8NoBom)
+& $csc /nologo /optimize+ /langversion:5 /target:exe /out:$pathSmokeExe $pathSource $pathSmokeSource
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "FAIL: Phase 6 exact-root path-safety smoke compilation failed. Sandbox retained: $sandbox"
     exit $LASTEXITCODE
 }
 
@@ -153,6 +180,12 @@ Write-Host "Sandbox: $sandbox"
 Write-Host ''
 
 try {
+    Write-Host '[0/7] Exact trusted root is valid for reparse checking...'
+    New-Item -ItemType Directory -Path $amsRoot -Force | Out-Null
+    & $pathSmokeExe $amsRoot
+    Assert-True ($LASTEXITCODE -eq 0) "Exact-root path-safety smoke test returned unexpected exit code $LASTEXITCODE."
+    Write-Host '  PASS'
+
     Write-Host '[1/7] Verified write acquires ownership only after COMMITTED...'
     Reset-Sandbox
     Write-Utf8 $staged $ownedText
