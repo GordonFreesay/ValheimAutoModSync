@@ -626,6 +626,14 @@ namespace ValheimAutoModSync
                     && _instance != null)
                 {
                     _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: 2.5 AMS4 capability set accepted; resume/scheduler extensions remain disabled.");
+                    if (_serverSupportsBundlePipeline)
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: using the 2.5 pipelined binary bundle transfer fallback.");
+                    else if (_serverSupportsBundleBatch)
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: using the 2.5 binary batch bundle transfer fallback.");
+                    else if (_serverSupportsBundleWindow)
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: using the 2.5 windowed bundle transfer fallback.");
+                    else
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: using the original single-chunk AMS4 transfer fallback.");
                 }
 #endif
                 if (_instance != null)
