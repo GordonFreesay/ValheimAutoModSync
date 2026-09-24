@@ -244,7 +244,7 @@ Development-only compatibility emulation is available without a second tester. C
 - [x] First-contact branded UI and native trust prompt show only the 64-bit security code; the complete/partial fingerprint is absent from normal player presentation and normal client/server logs.
 - [x] Already-trusted compare/download/reconnect UI footer says `TRUSTED SERVER` without a stable fingerprint fragment.
 - [x] Local 2026-09-24 dev build PII guard passed before compilation over first-party tracked text and again after compilation over the authored Client DLL, Server DLL, and Apply EXE; source documentation validation also passed all 15 C# files before the build.
-- [ ] Dedicated Steam server publishes `automodsync=<version>` and `automodsync_protocol=<protocol>` as passive server rules when `Discovery.AdvertiseAutoModSync=true`.
+- [x] Dedicated Steam server publishes `automodsync=<version>` and `automodsync_protocol=<protocol>` as passive server rules when `Discovery.AdvertiseAutoModSync=true`.
 - [ ] Development server-browser probe captures the exact Valheim 1.0 `ServerListGui` row hierarchy/field layout for Favorite/Recent/Friends/Community without mutating UI or issuing network discovery requests.
 - [ ] AMS-aware client renders a small logo badge beside each positively identified AMS server row without altering the advertised server name; Steam-rule discovery is passive and no fingerprint/PII is exposed.
 - [ ] `verify-no-pii.ps1` passes over tracked first-party text and the current AutoModSync-authored dev binaries.
@@ -253,6 +253,8 @@ Development-only compatibility emulation is available without a second tester. C
 - [ ] Failure/connection-loss presentation self-clears and never changes the established fail-open/fail-closed policy.
 
 The development-only visual preview is presentation-only: it does not open an AutoModSync connection, alter trust, request a bundle, write synchronized files, or change scheduler/transfer policy. A real connection immediately disables the preview. Release builds do not compile the marker path.
+
+Steam browser presence evidence, 2026-09-24: the dedicated server published `automodsync=2.6.0` and `automodsync_protocol=4` successfully through Steam server rules. The validation harness confirmed that no signing fingerprint is part of the advertised marker. This closes the server-side passive presence publication gate; client-side row identification/badge rendering remains pending.
 
 First-contact privacy evidence, 2026-09-24: the development-only forced-trust marker showed only security code `D22C-57F8-588F-8B0E`; the client logged waiting/trusted messages with that short code only, and the dedicated server logged only the matching identity verification code. The maintainer observed no full fingerprint in the player-facing flow. This closes the normal trust/privacy presentation gate; complete fingerprints remain internal for pinning and explicit admin tooling only.
 
