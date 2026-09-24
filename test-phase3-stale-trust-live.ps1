@@ -95,11 +95,13 @@ function Next-Test {
     $stage=[int]$state.stage
 
     if($stage-eq 1){
-        $deadline=[DateTime]::UtcNow.AddSeconds(3)
+        $deadline=[DateTime]::UtcNow.AddSeconds(6)
         do{
             $newClient=@(Get-NewLines $clientLog ([int]$state.clientLogLines))
             $clientText=$newClient-join[Environment]::NewLine
-            if($clientText.IndexOf('The protected join was discarded; reconnect to try again.',[StringComparison]::OrdinalIgnoreCase)-ge 0){break}
+            $discarded=$clientText.IndexOf('The protected join was discarded; reconnect to try again.',[StringComparison]::OrdinalIgnoreCase)-ge 0
+            $staleReturned=$clientText.IndexOf('AutoModSync DEV TEST ignored stale native trust-dialog result from generation ',[StringComparison]::OrdinalIgnoreCase)-ge 0
+            if($discarded-and$staleReturned){break}
             Start-Sleep -Milliseconds 200
         }while([DateTime]::UtcNow-lt$deadline)
 
@@ -112,7 +114,9 @@ function Next-Test {
             @('AutoModSync DEV TEST armed protected-socket loss while the native trust dialog remains open.','armed socket loss only after the trust prompt was started'),
             @('AutoModSync is waiting for first-contact trust confirmation for server fingerprint','native trust session reached the pending state'),
             @('AutoModSync DEV TEST closing the protected socket while the native trust dialog is still open.','closed the recognized socket while trust was still pending'),
-            @('The protected join was discarded; reconnect to try again.','recognized connection loss discarded the protected join')
+            @('The protected join was discarded; reconnect to try again.','recognized connection loss discarded the protected join'),
+            @('AutoModSync invalidated the native trust prompt and requested dismissal','connection loss invalidated the prompt and requested native dismissal'),
+            @('AutoModSync DEV TEST ignored stale native trust-dialog result from generation ','the old MessageBox actually returned and its stale result was generation-rejected')
         )
         foreach($check in $checks){
             if($clientText.IndexOf($check[0],[StringComparison]::OrdinalIgnoreCase)-ge 0){
@@ -141,7 +145,7 @@ function Next-Test {
             Write-Host '  FAIL the stale native trust dialog is still open.'
             $ok=$false
         }else{
-            Write-Host '  PASS the stale native trust dialog was dismissed after connection loss.'
+            Write-Host '  PASS no native trust window with the expected caption remains visible.'
         }
 
         if(Test-Path -LiteralPath $forceTrustMarker){
@@ -172,6 +176,7 @@ function Next-Test {
 
         Write-Host ''
         Write-Host 'PASS stage 1/2.'
+        Write-Host 'IMPORTANT: visually confirm the old trust dialog is gone before reconnecting. If any old Trust Server box is still visible, stop here and report it as a failure.'
         Write-Host 'ARMED [2/2]: later connection isolation.'
         Write-Host 'Join the same server again. A NEW native trust dialog should open.'
         Write-Host 'Do NOT click anything in it. Leave it open for at least 3 seconds, then run -Action Next again.'
