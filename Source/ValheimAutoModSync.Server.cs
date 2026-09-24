@@ -90,6 +90,7 @@ namespace ValheimAutoModSync
         private static AutoModSyncTransferScheduler _transferScheduler;
 #if AMS_DEV_TESTS
         private static readonly HashSet<ZRpc> DevelopmentLegacyServerPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> DevelopmentSuppressedAmsPeers = new HashSet<ZRpc>();
 #endif
         private static DateTime _nextTransferCleanupUtc = DateTime.MinValue;
 
@@ -348,6 +349,9 @@ namespace ValheimAutoModSync
             HashSet<ZRpc> candidates = new HashSet<ZRpc>();
             foreach (ZRpc rpc in PendingBundleRequests.Keys) candidates.Add(rpc);
             foreach (ZRpc rpc in BundleTransfers.Keys) candidates.Add(rpc);
+#if AMS_DEV_TESTS
+            foreach (ZRpc rpc in DevelopmentSuppressedAmsPeers) candidates.Add(rpc);
+#endif
 
             List<ZRpc> remove = new List<ZRpc>();
             List<ZRpc> idle = new List<ZRpc>();
@@ -392,6 +396,7 @@ namespace ValheimAutoModSync
                 ClientCapabilities.Remove(rpc);
 #if AMS_DEV_TESTS
                 DevelopmentLegacyServerPeers.Remove(rpc);
+                DevelopmentSuppressedAmsPeers.Remove(rpc);
 #endif
                 RemoveSchedulerPeerIdentity(rpc);
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync released an interrupted/queued transfer after peer disconnect.");
@@ -707,8 +712,13 @@ namespace ValheimAutoModSync
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
 #if AMS_DEV_TESTS
-                // A one-shot silent peer lets live testing exercise the exact client behavior of a server that provides no AMS response.
-                if (ConsumeDevelopmentSuppressAmsResponseMarker()) return;
+                // A one-shot marker selects the next peer, then every AMS4_Hello retry on that same connection stays silent.
+                if (DevelopmentSuppressedAmsPeers.Contains(rpc))
+                {
+                    if (_instance != null) _instance.Logger.LogDebug("AutoModSync DEV TEST continuing to suppress AMS response for the selected peer retry.");
+                    return;
+                }
+                if (ConsumeDevelopmentSuppressAmsResponseMarker(rpc)) return;
 #endif
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync received AMS4 preflight hello.");
                 int protocol = pkg.ReadInt();
@@ -1526,14 +1536,16 @@ namespace ValheimAutoModSync
 #if AMS_DEV_TESTS
         // Intent: Consumes a one-shot marker that makes the next AMS4_Hello receive no AutoModSync response at all.
         // Scope: this emulates the client-visible discovery behavior of a non-AutoModSync server while retaining the same local dedicated server for controlled live validation.
-        private static bool ConsumeDevelopmentSuppressAmsResponseMarker()
+        private static bool ConsumeDevelopmentSuppressAmsResponseMarker(ZRpc rpc)
         {
             try
             {
                 string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "preflight-test-suppress-response.once");
                 if (!File.Exists(marker)) return false;
                 try { File.Delete(marker); } catch { }
-                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST suppressing all AMS responses for this one preflight hello.");
+                if (rpc == null) return false;
+                DevelopmentSuppressedAmsPeers.Add(rpc);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST suppressing all AMS responses for this peer until it disconnects.");
                 return true;
             }
             catch (Exception ex)
