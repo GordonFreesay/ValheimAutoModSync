@@ -520,7 +520,7 @@ namespace ValheimAutoModSync
         // Intent: Chooses a stable panel height for each presentation phase so telemetry remains readable without affecting synchronization behavior.
         private static float UiPanelHeight(AutoModSyncUiPhase phase)
         {
-            if (phase == AutoModSyncUiPhase.Downloading) return 438f;
+            if (phase == AutoModSyncUiPhase.Downloading) return 462f;
             if (phase == AutoModSyncUiPhase.Queued) return 392f;
             if (phase == AutoModSyncUiPhase.Trust) return 365f;
             if (phase == AutoModSyncUiPhase.Verifying) return 382f;
