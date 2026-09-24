@@ -33,6 +33,8 @@ Live fail-closed evidence, 2026-09-24: `ack-no-manifest` passed. The server sent
 
 Live fail-closed evidence, 2026-09-24: `bad-manifest-header` passed. The client rejected the injected invalid manifest header, the server consumed the intended fault mode, no vanilla `ServerHandshake` replay was observed for that session, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
 
+Live fail-closed evidence, 2026-09-24: `missing-manifest-part` passed. The client rejected the intentionally incomplete multi-part manifest during verification, the server consumed the intended fault mode, no vanilla `ServerHandshake` replay was observed, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
+
 ### Recognized AMS must fail closed
 
 For every case below, verify that no normal ServerHandshake is replayed and no live synchronized file is changed:
@@ -44,7 +46,7 @@ The development runtime now includes a guided live fault-injection suite in `tes
 - [x] Invalid/malformed `AMS4_Ack`.
 - [x] Server acknowledges AMS but never begins a manifest.
 - [x] Invalid manifest header.
-- [ ] Missing/out-of-order manifest part.
+- [x] Missing/out-of-order manifest part.
 - [ ] Invalid RSA/SHA-256 manifest signature.
 - [ ] User declines first-contact server trust.
 - [ ] Server-reported AMS error after recognition.
