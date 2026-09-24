@@ -3070,6 +3070,7 @@ namespace ValheimAutoModSync
         // Intent: Locates the transient native trust prompt as a fallback when its owning native thread has not been recorded yet.
         private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
 
+        // Intent: Callback signature used by EnumThreadWindows while targeting the exact native thread that owns a stale trust prompt.
         private delegate bool EnumThreadWindowsCallback(IntPtr hWnd, IntPtr lParam);
 
         [DllImport("user32.dll")]
