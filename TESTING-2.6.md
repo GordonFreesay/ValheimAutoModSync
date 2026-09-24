@@ -142,8 +142,29 @@ Development-only compatibility emulation is available without a second tester. C
 - [x] Older AMS4 peers still transfer successfully without `bundle-scheduler1`; a live emulated pre-scheduler client completed a one-file transfer through the new scheduler and received no synchronization-queue UI.
 - [x] Real 2/4/8-client socket qualification is explicitly deferred to Phase 9 until multiple independent clients are available. Phase 5 closes on deterministic 8-peer policy coverage plus live single-client scheduler/cap/backpressure/compatibility validation; this does not claim real multi-socket throughput has been measured.
 
+## Phase 6 — trusted-server content ownership / stale payload lifecycle
+
+- [x] `test-phase6-ownership.ps1` compiles the production Apply helper + ownership/path-safety sources and passes all isolated ownership/apply cases without touching the real Valheim install, trust store, or server.
+- [x] A verified write acquires ownership only after COMMITTED; ownership is not published while the transaction is merely PREPARED.
+- [x] Exact stale bytes previously owned by the same trusted server can be deleted transactionally and removed from that server's ledger.
+- [x] A stale deletion whose live digest no longer matches the last-owned digest is rejected without changing the live file or ownership ledger.
+- [x] A different trusted server fingerprint cannot use its manifest/ownership transition to delete another server's owned path.
+- [x] Killing the helper after a stale deletion but before COMMITTED restores the deleted file and old ownership during rollback, then a later retry can commit the removal.
+- [x] Killing the helper after COMMITTED but before ownership publication preserves the winning new live state and publishes the new ledger during COMMITTED recovery.
+- [x] The helper reads legacy `AMSTXN1` journals for interrupted pre-Phase-6 recovery while new transactions write operation-aware `AMSTXN2`.
+- [ ] `build-dev.bat` compiles the integrated client/apply runtime with `AutoModSync.OwnershipState.cs`.
+- [ ] Live client installs a previously absent server file, restarts/reconnects, and the current server fingerprint ledger records exactly that installed path/digest.
+- [ ] Removing that same file from the server causes a delete-only transactional restart; the client removes the exact owned bytes and the next reconnect is zero-delta.
+- [ ] Renaming/moving a server-owned file results in one transactional old-path delete plus one verified new-path write, followed by a zero-delta reconnect.
+- [ ] If a formerly owned stale file is locally modified before the server removes it, the client preserves the file, relinquishes ownership metadata without a live delete, and continues the trusted join.
+- [ ] A pre-existing local file that already matches the signed server manifest is never claimed merely because it matches; later server omission does not delete it.
+- [ ] Plugin, patcher, and explicitly allowlisted config ownership remain confined to their existing fixed roots, and protected config names remain unownable/undeletable.
+- [ ] Switching to another trusted server never consults or deletes the first server's fingerprint-scoped ownership ledger.
+- [ ] Ownership lifecycle adds no network protocol break: server manifest signing/trust remains the deletion authorization input and AMS stays protocol 4.
+
 ## Runtime evidence — 2026-09-23
 
+- Phase 6 isolated Windows CI passed all 6/6 ownership/apply checks at commit `2ad713d5dcefef09294b505226f6fb6e0545d82f`: verified write ownership publication, exact same-server stale deletion, wrong-digest rejection, cross-server deletion rejection, PREPARED deletion rollback/retry, and COMMITTED ownership-publication recovery. The harness compiled the production Apply/ownership/path-safety sources and modified only a temporary BepInEx sandbox.
 - Phase 5 integrated development build passed locally after the scheduler integration was added. `build-dev.bat` reported `SUCCESS: development runtime built in: C:\Users\billy\source\repos\oG1337\ValheimAutoModSync\DevBuild` and explicitly produced no installer, release ZIP, store package, tag, or publication artifact.
 - Phase 5 one-client live scheduler integration passed on 2026-09-23 with a one-file delta. The server logged scheduler admission (`queuePosition=1, active=0/4`), built the 4.0 KB bundle, applied temporary Steam transport tuning, published `bundle ready` with `schedulerQueue=0.018 s`, emitted transfer telemetry, and restored the exact Steam bundle transport settings after synchronization. The restarted client then executed its one-shot reconnect, reported that its mods already matched the trusted server, and released the held Valheim ServerHandshake. This closes the basic integrated admission -> transfer -> apply/restart/reconnect path for one client.
 - Phase 5 aggregate-cap/backpressure live validation passed on 2026-09-23 using the 313.4 MB / 60-file cached bundle with `AggregateSendRateMaxBytesPerSec=4194304` and `SchedulerMaxSteamQueueMs=1`. The server repeatedly logged scheduler backpressure while Steam reliable queue time was approximately 13-62 ms, then completed normally instead of disconnecting/failing. Completion telemetry reported `rawPayload=313.4 MB, elapsed=83.383 s, avgRawPayload=3.76 MiB/s, aggregateCap=4.0 MB/s`, and the original Steam transport settings were restored afterward. The normal 64 MiB/s aggregate configuration was subsequently restored, as confirmed by the following compatibility run's `aggregateCap=64.0 MB/s` completion telemetry.
