@@ -53,6 +53,8 @@ Phase 4 adds optional `bundle-resume1` without changing protocol version 4. Duri
 
 Compatibility remains capability-negotiated within AMS4. A 2.6 client talking to a pre-resume AMS4 server never sees `bundle-resume1`, so it sends the original bundle request and reads the original bundle header. A pre-resume AMS4 client talking to a 2.6 server never advertises `bundle-resume1`, so the server neither reads a resume extension nor writes resume header fields. Development-only one-shot markers can emulate each side independently for live one-client testing; release builds contain neither emulator.
 
+The deterministic resume-state harness is also wired to a Windows GitHub Actions validation workflow. It compiles and exercises the production resume/path-safety sources directly, including cross-server fingerprint isolation, without building or publishing a release.
+
 For Steam-backed dedicated-server peers, the server resolves the transport directly from the active `ZRpc` (rather than depending on an early pre-handshake peer already appearing in `ZNet.GetPeers()`). During the bundle it temporarily tunes that exact Steam connection's send-rate maximum, bounded send-rate minimum, and reliable send buffer, then restores the exact previous values it changed. This keeps the acceleration scoped to synchronization instead of permanently rewriting gameplay networking.
 
 The client hello also advertises `roots1`. That capability means the client/apply helper understand the fixed `P`/ `R`/ `C` destinations. A server only requires it when its signed manifest actually contains patcher or config entries, so ordinary plugin-only AMS4 compatibility remains available.
