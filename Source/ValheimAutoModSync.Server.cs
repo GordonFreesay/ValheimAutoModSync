@@ -103,6 +103,7 @@ namespace ValheimAutoModSync
         {
             public string RelativePath;
             public string FullPath;
+            public string SourceLabel;
             public long Size;
             public string Sha256;
             public char Kind;
@@ -1886,6 +1887,11 @@ namespace ValheimAutoModSync
                 List<FileRecord> records = new List<FileRecord>();
                 AddManifestRoot(records, 'P', Paths.PluginPath, false);
 
+                // Phase 6 client-only payload lives outside BepInEx/plugins, so the dedicated server never loads it.
+                // Files still map to ordinary signed P:<relative> client destinations and therefore need no new AMS wire kind.
+                string clientPayloadPluginRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "ClientPayload", "plugins");
+                AddClientPayloadPluginRoot(records, clientPayloadPluginRoot);
+
                 string patcherRoot = Path.Combine(Paths.BepInExRootPath, "patchers");
                 if (_syncPatchers == null || _syncPatchers.Value) AddManifestRoot(records, 'R', patcherRoot, false);
 
@@ -1906,6 +1912,7 @@ namespace ValheimAutoModSync
                     cr.Kind = 'P';
                     cr.RelativePath = "ValheimAutoModSync.Client.dll";
                     cr.FullPath = releaseClientPlugin;
+                    cr.SourceLabel = "BepInEx/AutoModSync/release";
                     cr.Size = cfi.Length;
                     cr.Sha256 = Sha256File(releaseClientPlugin);
                     records.Add(cr);
@@ -1923,7 +1930,13 @@ namespace ValheimAutoModSync
                 {
                     FileRecord r = records[j];
                     if (r.RelativePath.IndexOf('\t') >= 0 || r.RelativePath.IndexOf('\r') >= 0 || r.RelativePath.IndexOf('\n') >= 0) continue;
-                    map[r.Kind + ":" + r.RelativePath] = r;
+                    string destinationKey = r.Kind + ":" + r.RelativePath;
+                    FileRecord collision;
+                    if (map.TryGetValue(destinationKey, out collision))
+                        throw new InvalidDataException("AutoModSync manifest destination collision for " + destinationKey +
+                            " between " + (collision.SourceLabel ?? collision.FullPath) + " and " + (r.SourceLabel ?? r.FullPath) +
+                            ". ClientPayload must not shadow a normal synchronized destination.");
+                    map.Add(destinationKey, r);
                     sb.Append(r.Kind).Append('\t').Append(r.Sha256).Append('\t').Append(r.Size.ToString(CultureInfo.InvariantCulture)).Append('\t').Append(r.RelativePath).Append('\n');
                 }
 
@@ -1975,9 +1988,43 @@ namespace ValheimAutoModSync
                 r.Kind = kind;
                 r.RelativePath = rel;
                 r.FullPath = full;
+                r.SourceLabel = kind == 'P' ? "BepInEx/plugins" : (kind == 'R' ? "BepInEx/patchers" : "BepInEx/config");
                 r.Size = fi.Length;
                 r.Sha256 = Sha256File(full);
                 records.Add(r);
+            }
+        }
+
+        // Intent: Adds recursively packaged client-only plugin payload without placing it in the dedicated server's loadable plugin directory.
+        // Policy: every safe non-excluded file under ClientPayload/plugins is implicitly client-required; ServerOnlyPatterns/ClientRequiredPatterns do not reclassify this explicit client-only tree.
+        // Security: paths remain ordinary P destinations, source recursion does not follow reparses, and final manifest construction rejects case-insensitive collisions with normal plugin sources.
+        private static void AddClientPayloadPluginRoot(List<FileRecord> records, string root)
+        {
+            if (records == null || String.IsNullOrEmpty(root) || !Directory.Exists(root)) return;
+            List<string> files = EnumerateManifestFiles(root);
+            int i;
+            for (i = 0; i < files.Count; i++)
+            {
+                string full = files[i];
+                string rel = NormalizeRelative(MakeRelative(root, full));
+                string name = Path.GetFileName(full);
+                if (rel.Length == 0)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync skipped an unsafe ClientPayload path: " + full);
+                    continue;
+                }
+                if (IsExcluded(rel, name)) continue;
+
+                full = AutoModSyncPathSafety.SafeUnderRoot(root, rel, true);
+                FileInfo fi = new FileInfo(full);
+                FileRecord record = new FileRecord();
+                record.Kind = 'P';
+                record.RelativePath = rel;
+                record.FullPath = full;
+                record.SourceLabel = "BepInEx/AutoModSync/ClientPayload/plugins";
+                record.Size = fi.Length;
+                record.Sha256 = Sha256File(full);
+                records.Add(record);
             }
         }
 
