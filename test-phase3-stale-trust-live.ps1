@@ -201,7 +201,6 @@ function Next-Test {
         }
 
         if($forcedPromptSeen-and$pendingPromptSeen){
-           $clientText.IndexOf('AutoModSync is waiting for first-contact trust confirmation for server fingerprint',[StringComparison]::OrdinalIgnoreCase)-ge 0){
             Write-Host '  PASS the later connection independently reached a new pending trust generation.'
         }else{
             Write-Host '  FAIL the later connection did not reach a new forced trust prompt.'
