@@ -169,11 +169,11 @@ namespace ValheimAutoModSync
                 Console.WriteLine("  PASS");
 
                 Console.WriteLine("[8/8] Idle expiry never fires while scheduler demand is outstanding...");
-                long nowTicks = DateTime.UtcNow.Ticks;
-                long oldTicks = nowTicks - 30L * TimeSpan.TicksPerSecond;
-                Assert(!AutoModSyncTransferScheduler.ShouldExpireActivePeer(oldTicks, nowTicks, 10, true), "outstanding demand was incorrectly expired");
-                Assert(AutoModSyncTransferScheduler.ShouldExpireActivePeer(oldTicks, nowTicks, 10, false), "idle no-demand peer was not expired");
-                Assert(!AutoModSyncTransferScheduler.ShouldExpireActivePeer(nowTicks, nowTicks, 10, false), "fresh activity was incorrectly expired");
+                long idleNowTicks = DateTime.UtcNow.Ticks;
+                long oldTicks = idleNowTicks - 30L * TimeSpan.TicksPerSecond;
+                Assert(!AutoModSyncTransferScheduler.ShouldExpireActivePeer(oldTicks, idleNowTicks, 10, true), "outstanding demand was incorrectly expired");
+                Assert(AutoModSyncTransferScheduler.ShouldExpireActivePeer(oldTicks, idleNowTicks, 10, false), "idle no-demand peer was not expired");
+                Assert(!AutoModSyncTransferScheduler.ShouldExpireActivePeer(idleNowTicks, idleNowTicks, 10, false), "fresh activity was incorrectly expired");
                 Console.WriteLine("  PASS");
 
                 Console.WriteLine();
