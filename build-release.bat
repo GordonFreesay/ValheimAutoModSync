@@ -193,6 +193,13 @@ set "AMS_ZIP_SOURCE="
 set "AMS_ZIP_DEST="
 if errorlevel 1 goto :Fail
 
+if not exist "%ROOT%write-release-checksums.ps1" (
+  echo ERROR: write-release-checksums.ps1 is missing.
+  goto :Fail
+)
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%write-release-checksums.ps1" -OutputPath "%DIST%\SHA256SUMS.txt" -Files "%DIST%\ValheimAutoModSync-%AMS_VERSION%.zip"
+if errorlevel 1 goto :Fail
+
 echo.
 echo ============================================================
 echo   BUILD COMPLETE
@@ -201,6 +208,10 @@ echo Release ZIP:
 echo   "%DIST%\ValheimAutoModSync-%AMS_VERSION%.zip"
 echo.
 echo Authenticode status: %SIGNING_STATUS%
+echo SHA-256 manifest:
+echo   "%DIST%\SHA256SUMS.txt"
+echo GitHub/Sigstore provenance is generated only by official GitHub Actions workflows.
+echo This local build is NOT GitHub-attested.
 echo This build contains no packed AutoModSync version.dll.
 rmdir /s /q "%WORK%" >nul 2>&1
 if not defined AMS_NO_PAUSE pause
