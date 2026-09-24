@@ -289,20 +289,41 @@ internal static class Program
             string dstRoot;
             ResolveRoots(item.Kind, stagingRoot, pluginRoot, patcherRoot, configRoot, out srcRoot, out dstRoot);
 
-            string src = SafeUnder(srcRoot, item.RelativePath) + ".amsnew";
             string dst = SafeUnder(dstRoot, item.RelativePath);
-            AutoModSyncPathSafety.EnsureNoReparsePoints(srcRoot, src, true);
             AutoModSyncPathSafety.EnsureNoReparsePoints(dstRoot, dst, true);
+            if (Directory.Exists(dst))
+                throw new InvalidDataException("AutoModSync destination is unexpectedly a directory: " + item.RelativePath);
 
-            if (!File.Exists(src)) throw new FileNotFoundException("Verified staged AutoModSync file is missing.", src);
-            if (Directory.Exists(dst)) throw new InvalidDataException("AutoModSync destination is unexpectedly a directory: " + item.RelativePath);
-
-            FileDigest newDigest = HashFile(src);
-            item.NewSize = newDigest.Size;
-            item.NewSha256 = newDigest.Sha256;
             item.OldExists = File.Exists(dst);
             item.OldSize = -1L;
             item.OldSha256 = "";
+
+            if (item.Operation == 'W')
+            {
+                string src = SafeUnder(srcRoot, item.RelativePath) + ".amsnew";
+                AutoModSyncPathSafety.EnsureNoReparsePoints(srcRoot, src, true);
+                if (!File.Exists(src)) throw new FileNotFoundException("Verified staged AutoModSync file is missing.", src);
+
+                FileDigest newDigest = HashFile(src);
+                item.NewSize = newDigest.Size;
+                item.NewSha256 = newDigest.Sha256;
+            }
+            else if (item.Operation == 'D')
+            {
+                item.NewSize = -1L;
+                item.NewSha256 = "";
+
+                if (item.OldExists)
+                {
+                    FileDigest live = HashFile(dst);
+                    if (live.Size != item.ExpectedDeleteSize || !ConstantEquals(live.Sha256, item.ExpectedDeleteSha256))
+                        throw new IOException("AutoModSync stale owned file changed after ownership comparison; refusing deletion: " + item.RelativePath);
+                }
+            }
+            else
+            {
+                throw new InvalidDataException("Unsupported AutoModSync transaction operation.");
+            }
 
             if (item.OldExists)
             {
@@ -318,8 +339,6 @@ internal static class Program
                 VerifyFile(backup, item.OldSize, item.OldSha256, "transaction backup");
             }
         }
-
-        WriteTransactionManifest(txRoot, items);
     }
 
     // Intent: Applies one new file without consuming its verified staging copy, allowing a later rollback/retry after interruption.
@@ -330,11 +349,30 @@ internal static class Program
         string dstRoot;
         ResolveRoots(item.Kind, stagingRoot, pluginRoot, patcherRoot, configRoot, out srcRoot, out dstRoot);
 
-        string src = SafeUnder(srcRoot, item.RelativePath) + ".amsnew";
         string dst = SafeUnder(dstRoot, item.RelativePath);
-        AutoModSyncPathSafety.EnsureNoReparsePoints(srcRoot, src, true);
         AutoModSyncPathSafety.EnsureNoReparsePoints(dstRoot, dst, true);
 
+        if (item.Operation == 'D')
+        {
+            if (item.OldExists)
+            {
+                if (!File.Exists(dst)) throw new IOException("AutoModSync stale owned destination disappeared after transaction preparation: " + item.RelativePath);
+                VerifyFile(dst, item.OldSize, item.OldSha256, "live pre-delete file");
+                File.Delete(dst);
+                if (File.Exists(dst) || Directory.Exists(dst))
+                    throw new IOException("AutoModSync stale owned destination still exists after deletion: " + item.RelativePath);
+            }
+            else if (File.Exists(dst) || Directory.Exists(dst))
+            {
+                throw new IOException("AutoModSync stale owned destination appeared after transaction preparation: " + item.RelativePath);
+            }
+            return;
+        }
+
+        if (item.Operation != 'W') throw new InvalidDataException("Unsupported AutoModSync transaction operation.");
+
+        string src = SafeUnder(srcRoot, item.RelativePath) + ".amsnew";
+        AutoModSyncPathSafety.EnsureNoReparsePoints(srcRoot, src, true);
         VerifyFile(src, item.NewSize, item.NewSha256, "staged replacement");
 
         if (item.OldExists)
@@ -379,7 +417,9 @@ internal static class Program
 
         if (!item.OldExists)
         {
-            if (File.Exists(dst)) File.Delete(dst);
+            // A write to a previously-absent destination must be removed on rollback. A no-op delete of an
+            // already-absent destination made no live mutation, so an external file that appeared later is preserved.
+            if (item.Operation == 'W' && File.Exists(dst)) File.Delete(dst);
             return;
         }
 
