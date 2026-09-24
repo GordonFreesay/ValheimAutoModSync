@@ -26,7 +26,7 @@ foreach ($path in @($srcClient,$srcServer,$srcApply)) {
 }
 
 function Normalize-Root([string]$Path,[string]$Label) {
-    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\\','/')
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\','/')
     if (-not (Test-Path -LiteralPath $full -PathType Container)) { throw ($Label + " not found: " + $full) }
     return $full
 }
