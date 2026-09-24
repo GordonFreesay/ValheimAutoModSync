@@ -91,6 +91,7 @@ namespace ValheimAutoModSync
 #if AMS_DEV_TESTS
         private static readonly HashSet<ZRpc> DevelopmentLegacyServerPeers = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> DevelopmentSuppressedAmsPeers = new HashSet<ZRpc>();
+        private static readonly Dictionary<ZRpc, string> DevelopmentFailClosedModes = new Dictionary<ZRpc, string>();
 #endif
         private static DateTime _nextTransferCleanupUtc = DateTime.MinValue;
 
@@ -351,6 +352,7 @@ namespace ValheimAutoModSync
             foreach (ZRpc rpc in BundleTransfers.Keys) candidates.Add(rpc);
 #if AMS_DEV_TESTS
             foreach (ZRpc rpc in DevelopmentSuppressedAmsPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in DevelopmentFailClosedModes.Keys) candidates.Add(rpc);
 #endif
 
             List<ZRpc> remove = new List<ZRpc>();
@@ -397,6 +399,7 @@ namespace ValheimAutoModSync
 #if AMS_DEV_TESTS
                 DevelopmentLegacyServerPeers.Remove(rpc);
                 DevelopmentSuppressedAmsPeers.Remove(rpc);
+                DevelopmentFailClosedModes.Remove(rpc);
 #endif
                 RemoveSchedulerPeerIdentity(rpc);
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync released an interrupted/queued transfer after peer disconnect.");
@@ -730,8 +733,10 @@ namespace ValheimAutoModSync
                 ClientCapabilities[rpc] = clientCapabilities ?? "";
 #if AMS_DEV_TESTS
                 bool emulateLegacyServer = ArmDevelopmentLegacyServerPeer(rpc);
+                string failClosedMode = ArmDevelopmentFailClosedMode(rpc);
 #else
                 bool emulateLegacyServer = false;
+                string failClosedMode = "";
 #endif
                 if (protocol != ProtocolVersion)
                 {
@@ -739,13 +744,54 @@ namespace ValheimAutoModSync
                     return;
                 }
 
+#if AMS_DEV_TESTS
+                if (String.Equals(failClosedMode, "bad-ack", StringComparison.Ordinal))
+                {
+                    ZPackage badAck = new ZPackage();
+                    badAck.Write(ProtocolVersion + 1);
+                    badAck.Write("DEV-INVALID");
+                    badAck.Write("");
+                    rpc.Invoke(RpcAck, new object[] { badAck });
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected malformed/protocol-mismatched AMS4_Ack.");
+                    return;
+                }
+#endif
+
+                string ackCapabilities = emulateLegacyServer
+                    ? "bundle-window1;bundle-batch1;bundle-pipeline1"
+                    : "bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1;bundle-scheduler1";
+#if AMS_DEV_TESTS
+                if (String.Equals(failClosedMode, "bad-legacy-chunk", StringComparison.Ordinal))
+                    ackCapabilities = "";
+#endif
+
                 ZPackage ack = new ZPackage();
                 ack.Write(ProtocolVersion);
                 ack.Write(PluginVersion);
-                ack.Write(emulateLegacyServer
-                    ? "bundle-window1;bundle-batch1;bundle-pipeline1"
-                    : "bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1;bundle-scheduler1");
+                ack.Write(ackCapabilities);
                 rpc.Invoke(RpcAck, new object[] { ack });
+
+#if AMS_DEV_TESTS
+                if (String.Equals(failClosedMode, "ack-no-manifest", StringComparison.Ordinal))
+                {
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED sent a valid AMS4_Ack and intentionally withheld the manifest.");
+                    return;
+                }
+
+                if (String.Equals(failClosedMode, "bad-manifest-header", StringComparison.Ordinal))
+                {
+                    ZPackage badBegin = new ZPackage();
+                    badBegin.Write(ProtocolVersion + 1);
+                    badBegin.Write(0);
+                    badBegin.Write("0");
+                    badBegin.Write(_publicKeyXml);
+                    badBegin.Write("AAAA");
+                    badBegin.Write("bundle1");
+                    rpc.Invoke(RpcManifestBegin, new object[] { badBegin });
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an invalid manifest header.");
+                    return;
+                }
+#endif
 
                 EnsureManifest(false);
                 if (ManifestRequiresRootSync() && clientCapabilities.IndexOf("roots1", StringComparison.Ordinal) < 0)
@@ -756,15 +802,44 @@ namespace ValheimAutoModSync
                 byte[] bytes = Encoding.UTF8.GetBytes(_manifestText);
                 int partChars = 24000;
                 int totalParts = Math.Max(1, (_manifestText.Length + partChars - 1) / partChars);
+                string manifestSignature = _manifestSignature;
+#if AMS_DEV_TESTS
+                if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
+                    totalParts = 2;
+                else if (String.Equals(failClosedMode, "bad-signature", StringComparison.Ordinal))
+                    manifestSignature = "AAAA";
+#endif
 
                 ZPackage begin = new ZPackage();
                 begin.Write(ProtocolVersion);
                 begin.Write(totalParts);
                 begin.Write(bytes.Length.ToString(CultureInfo.InvariantCulture));
                 begin.Write(_publicKeyXml);
-                begin.Write(_manifestSignature);
+                begin.Write(manifestSignature);
                 begin.Write("bundle1");
                 rpc.Invoke(RpcManifestBegin, new object[] { begin });
+
+#if AMS_DEV_TESTS
+                if (String.Equals(failClosedMode, "server-error", StringComparison.Ordinal))
+                {
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injecting AMS4_Error after manifest recognition.");
+                    SendError(rpc, "DEV TEST server-reported AMS error after recognition.");
+                    return;
+                }
+
+                if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
+                {
+                    ZPackage partial = new ZPackage();
+                    partial.Write(0);
+                    partial.Write(_manifestText);
+                    rpc.Invoke(RpcManifestChunk, new object[] { partial });
+                    ZPackage incompleteEnd = new ZPackage();
+                    incompleteEnd.Write(2);
+                    rpc.Invoke(RpcManifestEnd, new object[] { incompleteEnd });
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an incomplete two-part manifest.");
+                    return;
+                }
+#endif
 
                 int part;
                 for (part = 0; part < totalParts; part++)
@@ -971,7 +1046,16 @@ namespace ValheimAutoModSync
                 TryTuneTransferTransport(rpc, transfer);
 
                 ZPackage begin = new ZPackage();
+#if AMS_DEV_TESTS
+                string bundleFailMode = GetDevelopmentFailClosedMode(rpc);
+                bool injectBadBundleHeader = String.Equals(bundleFailMode, "bad-bundle-header", StringComparison.Ordinal);
+                begin.Write(injectBadBundleHeader
+                    ? (2048L * 1024L * 1024L + 1L).ToString(CultureInfo.InvariantCulture)
+                    : transfer.Size.ToString(CultureInfo.InvariantCulture));
+#else
+                bool injectBadBundleHeader = false;
                 begin.Write(transfer.Size.ToString(CultureInfo.InvariantCulture));
+#endif
                 begin.Write(transfer.Sha256);
                 begin.Write(transfer.TotalChunks);
                 begin.Write(transfer.FileCount);
@@ -981,6 +1065,15 @@ namespace ValheimAutoModSync
                     begin.Write(resumeStartChunk);
                 }
                 rpc.Invoke(RpcBundleBegin, new object[] { begin });
+#if AMS_DEV_TESTS
+                if (injectBadBundleHeader)
+                {
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an oversized bundle header.");
+                    CleanupBundle(rpc);
+                    SendAllQueueStatuses();
+                    return;
+                }
+#endif
 
                 if (_instance != null && request.ResumeCandidate != null)
                 {
@@ -1095,7 +1188,13 @@ namespace ValheimAutoModSync
                     if (chunks.Count == 0) break;
 
                     ZPackage batch = new ZPackage();
+#if AMS_DEV_TESTS
+                    bool injectBadBatch = String.Equals(GetDevelopmentFailClosedMode(rpc), "bad-binary-batch", StringComparison.Ordinal);
+                    batch.Write(injectBadBatch ? batchStart + 1 : batchStart);
+#else
+                    bool injectBadBatch = false;
                     batch.Write(batchStart);
+#endif
                     batch.Write(chunks.Count);
                     int i;
                     for (i = 0; i < chunks.Count; i++)
@@ -1104,15 +1203,29 @@ namespace ValheimAutoModSync
                         batch.Write(chunks[i]);
                     }
                     rpc.Invoke(RpcBundleBatch, new object[] { batch });
+#if AMS_DEV_TESTS
+                    if (injectBadBatch && _instance != null)
+                        _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an out-of-order binary bundle batch.");
+#endif
                     actual += batchRawBytes;
                 }
                 else
                 {
                     byte[] data = ReadTransferChunk(transfer, request.Cursor, nextLength);
                     ZPackage chunk = new ZPackage();
+#if AMS_DEV_TESTS
+                    bool injectBadLegacyChunk = String.Equals(GetDevelopmentFailClosedMode(rpc), "bad-legacy-chunk", StringComparison.Ordinal);
+                    chunk.Write(injectBadLegacyChunk ? request.Cursor + 1 : request.Cursor);
+#else
+                    bool injectBadLegacyChunk = false;
                     chunk.Write(request.Cursor);
+#endif
                     chunk.Write(Convert.ToBase64String(data));
                     rpc.Invoke(RpcBundleChunk, new object[] { chunk });
+#if AMS_DEV_TESTS
+                    if (injectBadLegacyChunk && _instance != null)
+                        _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an out-of-order legacy bundle chunk.");
+#endif
                     request.Cursor++;
                     request.RemainingChunks--;
                     actual += data.Length;
@@ -1146,9 +1259,20 @@ namespace ValheimAutoModSync
         private static void SendBundleEndAndCleanup(ZRpc rpc, BundleTransfer transfer)
         {
             ZPackage end = new ZPackage();
+#if AMS_DEV_TESTS
+            bool injectBadEnd = String.Equals(GetDevelopmentFailClosedMode(rpc), "bad-bundle-end", StringComparison.Ordinal);
+            end.Write(injectBadEnd ? new string('0', 64) : transfer.Sha256);
+            end.Write(injectBadEnd ? transfer.FileCount + 1 : transfer.FileCount);
+#else
+            bool injectBadEnd = false;
             end.Write(transfer.Sha256);
             end.Write(transfer.FileCount);
+#endif
             rpc.Invoke(RpcBundleEnd, new object[] { end });
+#if AMS_DEV_TESTS
+            if (injectBadEnd && _instance != null)
+                _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected a mismatched final bundle SHA-256/file count.");
+#endif
 
             if (_instance != null && transfer != null)
             {
@@ -1534,6 +1658,48 @@ namespace ValheimAutoModSync
         }
 
 #if AMS_DEV_TESTS
+        // Intent: Binds one requested Phase 1 fail-closed fault mode to the next peer and keeps it for that connection.
+        // Scope: the marker is development-only; release builds contain none of these protocol fault injections.
+        private static string ArmDevelopmentFailClosedMode(ZRpc rpc)
+        {
+            if (rpc == null) return "";
+            string existing;
+            if (DevelopmentFailClosedModes.TryGetValue(rpc, out existing)) return existing ?? "";
+
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase1-failclosed-mode.once");
+                if (!File.Exists(marker)) return "";
+                string mode = "";
+                try { mode = (File.ReadAllText(marker) ?? "").Trim().ToLowerInvariant(); }
+                finally { try { File.Delete(marker); } catch { } }
+
+                string allowed = "|bad-ack|ack-no-manifest|bad-manifest-header|missing-manifest-part|bad-signature|trust-decline|server-error|bad-bundle-header|bad-legacy-chunk|bad-binary-batch|bad-bundle-end|apply-prep-failure|";
+                if (mode.Length == 0 || allowed.IndexOf("|" + mode + "|", StringComparison.Ordinal) < 0)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV fail-closed marker contained an unknown mode: " + mode);
+                    return "";
+                }
+
+                DevelopmentFailClosedModes[rpc] = mode;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED armed mode '" + mode + "' for this peer.");
+                return mode;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV fail-closed marker could not be consumed: " + ex.Message);
+                return "";
+            }
+        }
+
+        // Intent: Returns the Phase 1 protocol fault mode bound to this development peer, or an empty string for normal behavior.
+        private static string GetDevelopmentFailClosedMode(ZRpc rpc)
+        {
+            if (rpc == null) return "";
+            string mode;
+            return DevelopmentFailClosedModes.TryGetValue(rpc, out mode) ? (mode ?? "") : "";
+        }
+
         // Intent: Consumes a one-shot marker that makes the next AMS4_Hello receive no AutoModSync response at all.
         // Scope: this emulates the client-visible discovery behavior of a non-AutoModSync server while retaining the same local dedicated server for controlled live validation.
         private static bool ConsumeDevelopmentSuppressAmsResponseMarker(ZRpc rpc)
