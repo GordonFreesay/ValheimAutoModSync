@@ -239,6 +239,245 @@ namespace ValheimAutoModSync
             CleanupDisconnectedOrIdleTransfers(now);
         }
 
+        // Intent: Runs one bounded admission step and one round-robin grant per active peer each Unity frame.
+        // Aggregate control: raw payload reservations come from the server-wide token bucket; Steam queue backpressure can refund a grant before any bytes are framed.
+        private static void ServiceTransferScheduler(DateTime now)
+        {
+            if (_transferScheduler == null) return;
+
+            bool queueChanged = false;
+            long admittedId;
+            while (_transferScheduler.TryActivate(out admittedId))
+            {
+                ZRpc admittedRpc;
+                PendingBundleRequest request;
+                if (!SchedulerPeers.TryGetValue(admittedId, out admittedRpc)
+                    || admittedRpc == null
+                    || !PendingBundleRequests.TryGetValue(admittedRpc, out request))
+                {
+                    _transferScheduler.Remove(admittedId);
+                    queueChanged = true;
+                    continue;
+                }
+
+                bool connected = false;
+                try { connected = admittedRpc.IsConnected(); } catch { connected = false; }
+                if (!connected)
+                {
+                    PendingBundleRequests.Remove(admittedRpc);
+                    _transferScheduler.Remove(admittedId);
+                    RemoveSchedulerPeerIdentity(admittedRpc);
+                    queueChanged = true;
+                    continue;
+                }
+
+                StartScheduledBundleTransfer(admittedRpc, request);
+                queueChanged = true;
+                // At most one potentially expensive bundle acquisition/build begins per frame.
+                break;
+            }
+
+            int grantsThisFrame = _transferScheduler.ActiveCount;
+            int g;
+            for (g = 0; g < grantsThisFrame; g++)
+            {
+                long peerId;
+                int reservedBytes;
+                if (!_transferScheduler.TryTakeGrant(now.Ticks, out peerId, out reservedBytes)) break;
+
+                ZRpc rpc;
+                BundleTransfer transfer;
+                if (!SchedulerPeers.TryGetValue(peerId, out rpc)
+                    || rpc == null
+                    || !BundleTransfers.TryGetValue(rpc, out transfer)
+                    || transfer == null
+                    || transfer.PendingRequest == null)
+                {
+                    _transferScheduler.RefundGrant(peerId, reservedBytes);
+                    continue;
+                }
+
+                double queueMs;
+                if (IsSteamTransferBackpressured(transfer, out queueMs))
+                {
+                    _transferScheduler.RefundGrant(peerId, reservedBytes);
+                    if (_instance != null && (transfer.LastBackpressureLogUtc == DateTime.MinValue || (now - transfer.LastBackpressureLogUtc).TotalSeconds >= 5.0))
+                    {
+                        transfer.LastBackpressureLogUtc = now;
+                        _instance.Logger.LogInfo("AutoModSync scheduler backpressure: Steam reliable queue ~= " +
+                            queueMs.ToString("0", CultureInfo.InvariantCulture) + " ms; deferring peer grant.");
+                    }
+                    continue;
+                }
+
+                int actualBytes = 0;
+                try
+                {
+                    actualBytes = SendScheduledChunkGrant(rpc, transfer, reservedBytes);
+                }
+                catch (Exception ex)
+                {
+                    _transferScheduler.RefundGrant(peerId, reservedBytes);
+                    if (_instance != null) _instance.Logger.LogWarning("Scheduled bundle grant failed: " + ex);
+                    CleanupBundle(rpc);
+                    SendError(rpc, "Server failed while transferring the scheduled AutoModSync package: " + ex.Message);
+                    queueChanged = true;
+                    continue;
+                }
+
+                if (actualBytes < reservedBytes)
+                    _transferScheduler.RefundGrant(peerId, reservedBytes - Math.Max(0, actualBytes));
+
+                transfer.LastActivityUtc = now;
+                LogTransferSteamTelemetry(transfer);
+            }
+
+            if (queueChanged) SendAllQueueStatuses();
+        }
+
+        // Intent: Reclaims disconnected queued/active peers and active slots whose connected clients stopped requesting data.
+        private static void CleanupDisconnectedOrIdleTransfers(DateTime now)
+        {
+            HashSet<ZRpc> candidates = new HashSet<ZRpc>();
+            foreach (ZRpc rpc in PendingBundleRequests.Keys) candidates.Add(rpc);
+            foreach (ZRpc rpc in BundleTransfers.Keys) candidates.Add(rpc);
+
+            List<ZRpc> remove = new List<ZRpc>();
+            List<ZRpc> idle = new List<ZRpc>();
+            foreach (ZRpc rpc in candidates)
+            {
+                bool connected = false;
+                try { connected = rpc != null && rpc.IsConnected(); } catch { connected = false; }
+                if (!connected)
+                {
+                    remove.Add(rpc);
+                    continue;
+                }
+
+                BundleTransfer transfer;
+                if (BundleTransfers.TryGetValue(rpc, out transfer) && transfer != null && transfer.LastActivityUtc != DateTime.MinValue)
+                {
+                    int timeout = _transferIdleTimeoutSeconds == null ? 60 : Math.Max(10, _transferIdleTimeoutSeconds.Value);
+                    if ((now - transfer.LastActivityUtc).TotalSeconds >= timeout) idle.Add(rpc);
+                }
+            }
+
+            int i;
+            for (i = 0; i < idle.Count; i++)
+            {
+                ZRpc rpc = idle[i];
+                SendError(rpc, "AutoModSync transfer slot expired because no bundle data was requested before the idle timeout.");
+                CancelScheduledTransferState(rpc);
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync released an idle bundle transfer slot.");
+            }
+
+            for (i = 0; i < remove.Count; i++)
+            {
+                ZRpc rpc = remove[i];
+                CancelScheduledTransferState(rpc);
+                Registered.Remove(rpc);
+                ClientVersions.Remove(rpc);
+                ClientCapabilities.Remove(rpc);
+#if AMS_DEV_TESTS
+                DevelopmentLegacyServerPeers.Remove(rpc);
+#endif
+                RemoveSchedulerPeerIdentity(rpc);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync released an interrupted/queued transfer after peer disconnect.");
+            }
+
+            if (idle.Count > 0 || remove.Count > 0) SendAllQueueStatuses();
+        }
+
+        // Intent: Assigns one process-local opaque scheduler id to a live ZRpc without using Steam ids or other player identity as a scheduling key.
+        private static long GetOrCreateSchedulerPeerId(ZRpc rpc)
+        {
+            if (rpc == null) throw new ArgumentNullException("rpc");
+            long id;
+            if (SchedulerPeerIds.TryGetValue(rpc, out id)) return id;
+
+            do { id = ++_nextSchedulerPeerId; } while (id <= 0L || SchedulerPeers.ContainsKey(id));
+            SchedulerPeerIds[rpc] = id;
+            SchedulerPeers[id] = rpc;
+            return id;
+        }
+
+        // Intent: Removes the process-local scheduler-id mapping after a peer disconnects; normal transfer completion may reuse the id on a later request over the same connection.
+        private static void RemoveSchedulerPeerIdentity(ZRpc rpc)
+        {
+            if (rpc == null) return;
+            long id;
+            if (!SchedulerPeerIds.TryGetValue(rpc, out id)) return;
+            SchedulerPeerIds.Remove(rpc);
+            SchedulerPeers.Remove(id);
+        }
+
+        // Intent: Cancels queued or active scheduler state for one peer while leaving signed client partial data entirely client-owned.
+        private static void CancelScheduledTransferState(ZRpc rpc)
+        {
+            if (rpc == null) return;
+            PendingBundleRequests.Remove(rpc);
+            CleanupBundle(rpc);
+
+            long id;
+            if (SchedulerPeerIds.TryGetValue(rpc, out id) && _transferScheduler != null)
+                _transferScheduler.Remove(id);
+        }
+
+        // Intent: Sends queue position only to peers that explicitly negotiated the Phase 5 scheduler-status capability.
+        private static void SendQueueStatus(ZRpc rpc)
+        {
+            if (rpc == null || _transferScheduler == null || !ClientSupportsCapability(rpc, "bundle-scheduler1")) return;
+            long id;
+            if (!SchedulerPeerIds.TryGetValue(rpc, out id)) return;
+            int position = _transferScheduler.QueuePosition(id);
+            if (position <= 0) return;
+
+            try
+            {
+                ZPackage status = new ZPackage();
+                status.Write(position);
+                status.Write(_transferScheduler.ActiveCount);
+                status.Write(_transferScheduler.MaxActive);
+                rpc.Invoke(RpcQueueStatus, new object[] { status });
+            }
+            catch { }
+        }
+
+        // Intent: Refreshes all waiting clients after admission/completion/disconnect changes FIFO positions.
+        private static void SendAllQueueStatuses()
+        {
+            if (_transferScheduler == null || PendingBundleRequests.Count == 0) return;
+            List<ZRpc> peers = new List<ZRpc>(PendingBundleRequests.Keys);
+            int i;
+            for (i = 0; i < peers.Count; i++) SendQueueStatus(peers[i]);
+        }
+
+        // Intent: Estimates Steam reliable queue time from current pending+unacked bytes and reported send rate, pausing new application writes above the configured envelope.
+        private static bool IsSteamTransferBackpressured(BundleTransfer transfer, out double queueMs)
+        {
+            queueMs = 0.0;
+            if (transfer == null || transfer.SteamConnectionHandle == 0u) return false;
+            int maxQueueMs = _schedulerMaxSteamQueueMs == null ? 200 : Math.Max(0, _schedulerMaxSteamQueueMs.Value);
+            if (maxQueueMs <= 0) return false;
+
+            try
+            {
+                HSteamNetConnection connection = new HSteamNetConnection(transfer.SteamConnectionHandle);
+                SteamNetConnectionRealTimeStatus_t status = default(SteamNetConnectionRealTimeStatus_t);
+                SteamNetConnectionRealTimeLaneStatus_t lane = default(SteamNetConnectionRealTimeLaneStatus_t);
+                EResult result = SteamGameServerNetworkingSockets.GetConnectionRealTimeStatus(connection, ref status, 0, ref lane);
+                if (result != EResult.k_EResultOK || status.m_nSendRateBytesPerSecond <= 0) return false;
+
+                long queued = Math.Max(0L, (long)status.m_cbPendingReliable) + Math.Max(0L, (long)status.m_cbSentUnackedReliable);
+                queueMs = queued * 1000.0 / status.m_nSendRateBytesPerSecond;
+                return queueMs >= maxQueueMs;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         // Intent: Moves the dominant public-server fresh-client ZIP cost into dedicated-server startup instead of the first player's join.
         // Scope: prewarms the exact signed set a current AutoModSync-only client is expected to need: every distributable manifest record except the client plugin that must already be installed to initiate AMS.
         // Compatibility: arbitrary partial/delta clients still use the normal content-keyed lazy cache; Host & Play remains lazy so opening Valheim does not incur dedicated-server prewarm cost.
@@ -750,6 +989,135 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Registers one outstanding sequential chunk-window demand with the aggregate scheduler; duplicate overlapping requests fail closed.
+        private static void ScheduleChunkRequest(BundleTransfer transfer, bool binaryBatch, int index, int count)
+        {
+            if (transfer == null || count < 1) throw new InvalidDataException("Invalid AutoModSync scheduled chunk request.");
+            if (transfer.PendingRequest != null)
+                throw new InvalidDataException("AutoModSync client requested another bundle window before the previous scheduled window completed.");
+
+            long bytes = ChunkRangeBytes(transfer, index, count);
+            if (bytes <= 0L) throw new InvalidDataException("AutoModSync scheduled chunk request contains no payload bytes.");
+
+            ScheduledChunkRequest request = new ScheduledChunkRequest();
+            request.BinaryBatch = binaryBatch;
+            request.Cursor = index;
+            request.RemainingChunks = count;
+            transfer.PendingRequest = request;
+            transfer.LastActivityUtc = DateTime.UtcNow;
+
+            if (_transferScheduler == null)
+                throw new InvalidOperationException("AutoModSync transfer scheduler is unavailable.");
+            _transferScheduler.SetDemand(transfer.SchedulerPeerId, bytes);
+        }
+
+        // Intent: Computes exact raw artifact bytes covered by a contiguous whole-chunk request, including a short final chunk.
+        private static long ChunkRangeBytes(BundleTransfer transfer, int index, int count)
+        {
+            if (transfer == null || index < 0 || count < 1) return 0L;
+            long start = (long)index * transfer.ChunkBytes;
+            long end = Math.Min(transfer.Size, (long)(index + count) * transfer.ChunkBytes);
+            return Math.Max(0L, end - start);
+        }
+
+        // Intent: Emits as many whole chunks as fit in one scheduler reservation while preserving the existing <=384 KiB per-RPC batch ceiling.
+        // Disk behavior: every active peer reuses one sequential FileStream instead of reopening the immutable ZIP for every request window.
+        private static int SendScheduledChunkGrant(ZRpc rpc, BundleTransfer transfer, int grantBytes)
+        {
+            if (rpc == null || transfer == null || transfer.PendingRequest == null || transfer.ReadStream == null || grantBytes <= 0) return 0;
+
+            ScheduledChunkRequest request = transfer.PendingRequest;
+            int actual = 0;
+            const int maxBatchBytes = 384 * 1024;
+
+            while (request.RemainingChunks > 0)
+            {
+                int nextLength = (int)Math.Min((long)transfer.ChunkBytes, transfer.Size - (long)request.Cursor * transfer.ChunkBytes);
+                if (nextLength <= 0) throw new EndOfStreamException("Unexpected end of scheduled AutoModSync package.");
+                if (actual > 0 && nextLength > grantBytes - actual) break;
+                if (actual == 0 && nextLength > grantBytes) break;
+
+                if (request.BinaryBatch)
+                {
+                    int batchStart = request.Cursor;
+                    List<byte[]> chunks = new List<byte[]>();
+                    int batchRawBytes = 0;
+
+                    while (request.RemainingChunks > 0)
+                    {
+                        nextLength = (int)Math.Min((long)transfer.ChunkBytes, transfer.Size - (long)request.Cursor * transfer.ChunkBytes);
+                        if (nextLength <= 0) throw new EndOfStreamException("Unexpected end of scheduled AutoModSync package.");
+                        if (batchRawBytes > 0 && batchRawBytes + nextLength > maxBatchBytes) break;
+                        if (actual + batchRawBytes + nextLength > grantBytes) break;
+
+                        byte[] data = ReadTransferChunk(transfer, request.Cursor, nextLength);
+                        chunks.Add(data);
+                        batchRawBytes += data.Length;
+                        request.Cursor++;
+                        request.RemainingChunks--;
+                    }
+
+                    if (chunks.Count == 0) break;
+
+                    ZPackage batch = new ZPackage();
+                    batch.Write(batchStart);
+                    batch.Write(chunks.Count);
+                    int i;
+                    for (i = 0; i < chunks.Count; i++)
+                    {
+                        batch.Write(batchStart + i);
+                        batch.Write(chunks[i]);
+                    }
+                    rpc.Invoke(RpcBundleBatch, new object[] { batch });
+                    actual += batchRawBytes;
+                }
+                else
+                {
+                    byte[] data = ReadTransferChunk(transfer, request.Cursor, nextLength);
+                    ZPackage chunk = new ZPackage();
+                    chunk.Write(request.Cursor);
+                    chunk.Write(Convert.ToBase64String(data));
+                    rpc.Invoke(RpcBundleChunk, new object[] { chunk });
+                    request.Cursor++;
+                    request.RemainingChunks--;
+                    actual += data.Length;
+                }
+
+                if (actual >= grantBytes) break;
+            }
+
+            if (request.RemainingChunks == 0) transfer.PendingRequest = null;
+            return actual;
+        }
+
+        // Intent: Reads one exact immutable-artifact chunk through the transfer's persistent stream, seeking only when the requested offset differs from the current sequential position.
+        private static byte[] ReadTransferChunk(BundleTransfer transfer, int index, int length)
+        {
+            long offset = (long)index * transfer.ChunkBytes;
+            if (transfer.ReadStream.Position != offset) transfer.ReadStream.Seek(offset, SeekOrigin.Begin);
+
+            byte[] data = new byte[length];
+            int total = 0;
+            while (total < length)
+            {
+                int read = transfer.ReadStream.Read(data, total, length - total);
+                if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
+                total += read;
+            }
+            return data;
+        }
+
+        // Intent: Publishes the existing AMS4 completion message immediately when a client requests TotalChunks, then frees its active slot and artifact reference.
+        private static void SendBundleEndAndCleanup(ZRpc rpc, BundleTransfer transfer)
+        {
+            ZPackage end = new ZPackage();
+            end.Write(transfer.Sha256);
+            end.Write(transfer.FileCount);
+            rpc.Invoke(RpcBundleEnd, new object[] { end });
+            CleanupBundle(rpc);
+            SendAllQueueStatuses();
+        }
+
         // Intent: Returns a retained immutable bundle for this exact signed content set, or performs the one allowed build for that cache key.
         // Concurrency: waiters for an identical key block on BundleBuildState and then acquire the published artifact; different keys are free to build independently.
         private static BundleArtifact AcquireBundleArtifact(List<FileRecord> records, long expandedBytes, long maxBundleBytes, out string cacheStatus, out double waitSeconds)
@@ -1073,36 +1441,18 @@ namespace ValheimAutoModSync
 
                 if (index == transfer.TotalChunks)
                 {
-                    ZPackage end = new ZPackage();
-                    end.Write(transfer.Sha256);
-                    end.Write(transfer.FileCount);
-                    rpc.Invoke(RpcBundleEnd, new object[] { end });
-                    CleanupBundle(rpc);
+                    SendBundleEndAndCleanup(rpc, transfer);
                     return;
                 }
 
-                byte[] buffer = new byte[transfer.ChunkBytes];
-                using (FileStream stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    stream.Seek((long)index * transfer.ChunkBytes, SeekOrigin.Begin);
-                    int sent;
-                    for (sent = 0; sent < requestedCount && index + sent < transfer.TotalChunks; sent++)
-                    {
-                        int read = stream.Read(buffer, 0, buffer.Length);
-                        if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
-
-                        ZPackage chunk = new ZPackage();
-                        chunk.Write(index + sent);
-                        chunk.Write(Convert.ToBase64String(buffer, 0, read));
-                        rpc.Invoke(RpcBundleChunk, new object[] { chunk });
-                    }
-                }
+                ScheduleChunkRequest(transfer, false, index, Math.Min(requestedCount, transfer.TotalChunks - index));
             }
             catch (Exception ex)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Bundle chunk transfer failed: " + ex);
+                if (_instance != null) _instance.Logger.LogWarning("Bundle chunk request failed: " + ex);
                 CleanupBundle(rpc);
-                SendError(rpc, "Server failed while transferring the compressed AutoModSync package: " + ex.Message);
+                SendError(rpc, "Server failed while scheduling the compressed AutoModSync package: " + ex.Message);
+                SendAllQueueStatuses();
             }
         }
 
@@ -1125,61 +1475,18 @@ namespace ValheimAutoModSync
 
                 if (index == transfer.TotalChunks)
                 {
-                    ZPackage end = new ZPackage();
-                    end.Write(transfer.Sha256);
-                    end.Write(transfer.FileCount);
-                    rpc.Invoke(RpcBundleEnd, new object[] { end });
-                    CleanupBundle(rpc);
+                    SendBundleEndAndCleanup(rpc, transfer);
                     return;
                 }
 
-                const int maxBatchBytes = 384 * 1024;
-                int maxChunksPerMessage = Math.Max(1, maxBatchBytes / Math.Max(1, transfer.ChunkBytes));
-                int remaining = Math.Min(requestedCount, transfer.TotalChunks - index);
-                byte[] buffer = new byte[transfer.ChunkBytes];
-
-                using (FileStream stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    stream.Seek((long)index * transfer.ChunkBytes, SeekOrigin.Begin);
-                    int cursor = index;
-                    while (remaining > 0)
-                    {
-                        int count = Math.Min(maxChunksPerMessage, remaining);
-                        ZPackage batch = new ZPackage();
-                        batch.Write(cursor);
-                        batch.Write(count);
-
-                        int sent;
-                        for (sent = 0; sent < count; sent++)
-                        {
-                            int read = stream.Read(buffer, 0, buffer.Length);
-                            if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
-                            batch.Write(cursor + sent);
-                            if (read == buffer.Length)
-                            {
-                                batch.Write(buffer);
-                            }
-                            else
-                            {
-                                byte[] tail = new byte[read];
-                                Buffer.BlockCopy(buffer, 0, tail, 0, read);
-                                batch.Write(tail);
-                            }
-                        }
-
-                        rpc.Invoke(RpcBundleBatch, new object[] { batch });
-                        cursor += count;
-                        remaining -= count;
-                    }
-                }
-
-                LogTransferSteamTelemetry(transfer);
+                ScheduleChunkRequest(transfer, true, index, Math.Min(requestedCount, transfer.TotalChunks - index));
             }
             catch (Exception ex)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Bundle batch transfer failed: " + ex);
+                if (_instance != null) _instance.Logger.LogWarning("Bundle batch request failed: " + ex);
                 CleanupBundle(rpc);
-                SendError(rpc, "Server failed while transferring the compressed AutoModSync package batch: " + ex.Message);
+                SendError(rpc, "Server failed while scheduling the compressed AutoModSync package batch: " + ex.Message);
+                SendAllQueueStatuses();
             }
         }
 
