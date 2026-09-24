@@ -64,6 +64,9 @@ try {
     Assert-Contains $client 'SteamMatchmakingServers.ServerRules' 'Client passive Steam-rule discovery'
     Assert-Contains $client 'AutoModSyncBadge' 'Client server-browser badge object'
     Assert-Contains $client 'ShowServerBadges' 'Client server-browser badge config'
+    if ([System.IO.File]::ReadAllText($client).IndexOf('typeof(CanvasRenderer)', [System.StringComparison]::Ordinal) -ge 0) {
+        throw 'Client browser badge must not take a compile-time CanvasRenderer/UIModule dependency; Unity UI Image adds its required renderer at runtime.'
+    }
     Assert-Contains $client 'AutoModSyncIdentityDisplay.VerificationCode' 'Client identity display'
     $preprocessorDepth = 0
     foreach ($line in [System.IO.File]::ReadAllLines($client)) {
