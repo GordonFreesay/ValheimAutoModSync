@@ -1924,6 +1924,7 @@ namespace ValheimAutoModSync
                     return byKind != 0 ? byKind : StringComparer.OrdinalIgnoreCase.Compare(a.RelativePath, b.RelativePath);
                 });
                 Dictionary<string, FileRecord> map = new Dictionary<string, FileRecord>(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, string> destinationSources = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 StringBuilder sb = new StringBuilder();
                 int j;
                 for (j = 0; j < records.Count; j++)
@@ -1931,11 +1932,11 @@ namespace ValheimAutoModSync
                     FileRecord r = records[j];
                     if (r.RelativePath.IndexOf('\t') >= 0 || r.RelativePath.IndexOf('\r') >= 0 || r.RelativePath.IndexOf('\n') >= 0) continue;
                     string destinationKey = r.Kind + ":" + r.RelativePath;
-                    FileRecord collision;
-                    if (map.TryGetValue(destinationKey, out collision))
-                        throw new InvalidDataException("AutoModSync manifest destination collision for " + destinationKey +
-                            " between " + (collision.SourceLabel ?? collision.FullPath) + " and " + (r.SourceLabel ?? r.FullPath) +
-                            ". ClientPayload must not shadow a normal synchronized destination.");
+                    AutoModSyncClientPayload.RegisterUniqueDestination(
+                        destinationSources,
+                        r.Kind,
+                        r.RelativePath,
+                        r.SourceLabel ?? r.FullPath);
                     map.Add(destinationKey, r);
                     sb.Append(r.Kind).Append('\t').Append(r.Sha256).Append('\t').Append(r.Size.ToString(CultureInfo.InvariantCulture)).Append('\t').Append(r.RelativePath).Append('\n');
                 }
@@ -1997,33 +1998,26 @@ namespace ValheimAutoModSync
 
         // Intent: Adds recursively packaged client-only plugin payload without placing it in the dedicated server's loadable plugin directory.
         // Policy: every safe non-excluded file under ClientPayload/plugins is implicitly client-required; ServerOnlyPatterns/ClientRequiredPatterns do not reclassify this explicit client-only tree.
-        // Security: paths remain ordinary P destinations, source recursion does not follow reparses, and final manifest construction rejects case-insensitive collisions with normal plugin sources.
+        // Security: shared production scanning rejects unsafe/reparse paths, while final manifest registration rejects case-insensitive collisions with normal plugin sources.
         private static void AddClientPayloadPluginRoot(List<FileRecord> records, string root)
         {
             if (records == null || String.IsNullOrEmpty(root) || !Directory.Exists(root)) return;
-            List<string> files = EnumerateManifestFiles(root);
-            int i;
-            for (i = 0; i < files.Count; i++)
-            {
-                string full = files[i];
-                string rel = NormalizeRelative(MakeRelative(root, full));
-                string name = Path.GetFileName(full);
-                if (rel.Length == 0)
-                {
-                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync skipped an unsafe ClientPayload path: " + full);
-                    continue;
-                }
-                if (IsExcluded(rel, name)) continue;
 
-                full = AutoModSyncPathSafety.SafeUnderRoot(root, rel, true);
-                FileInfo fi = new FileInfo(full);
+            List<AutoModSyncClientPayloadFile> payload = AutoModSyncClientPayload.CollectPluginFiles(
+                root,
+                delegate(string relative, string name) { return IsExcluded(relative, name); });
+
+            int i;
+            for (i = 0; i < payload.Count; i++)
+            {
+                AutoModSyncClientPayloadFile item = payload[i];
                 FileRecord record = new FileRecord();
                 record.Kind = 'P';
-                record.RelativePath = rel;
-                record.FullPath = full;
+                record.RelativePath = item.RelativePath;
+                record.FullPath = item.FullPath;
                 record.SourceLabel = "BepInEx/AutoModSync/ClientPayload/plugins";
-                record.Size = fi.Length;
-                record.Sha256 = Sha256File(full);
+                record.Size = item.Size;
+                record.Sha256 = item.Sha256;
                 records.Add(record);
             }
         }
