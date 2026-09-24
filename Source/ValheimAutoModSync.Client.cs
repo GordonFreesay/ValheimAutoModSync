@@ -3200,7 +3200,7 @@ namespace ValheimAutoModSync
 
             _uiState.Reset();
             _uiState.SetServerFingerprint(fingerprint);
-            _uiState.SetComparison(63, 61, 2, 1, 348L * mib);
+            _uiState.SetComparison(63, 3, 60, 0, 313L * mib + (410L * 1024L));
             _overlayVisible = true;
             _overlayHideUtc = DateTime.MinValue;
 
@@ -3229,7 +3229,7 @@ namespace ValheimAutoModSync
             }
             else if (stage == 4)
             {
-                _uiState.BeginVerification(63);
+                _uiState.BeginVerification(60);
                 int i;
                 for (i = 0; i < 37; i++) _uiState.MarkVerified();
                 ShowSyncOverlay(AutoModSyncUiPhase.Verifying, "Verifying synchronized files...",
@@ -3253,6 +3253,7 @@ namespace ValheimAutoModSync
             }
             else if (stage == 8)
             {
+                _uiState.SetComparison(63, 63, 0, 0, 0L);
                 ShowSyncOverlay(AutoModSyncUiPhase.Complete, "Already synchronized.",
                     "Preview: required mods match this trusted server. Joining normally...");
             }
