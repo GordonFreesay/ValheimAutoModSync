@@ -24,6 +24,7 @@ namespace ValheimAutoModSync
         private const int MaxEntries = 4096;
         internal const string PendingFileName = "ownership-next.txt";
         internal const string TransactionFileName = "ownership-next.txt";
+        internal const string LastSuccessfulServerFileName = "last-successful-server.txt";
 
         // Intent: Loads this trusted server's ownership ledger; a missing ledger means the server owns nothing on this client.
         internal static List<AutoModSyncOwnershipEntry> ReadLedger(string amsRoot, string fingerprint)
@@ -202,6 +203,64 @@ namespace ValheimAutoModSync
                     return false;
             }
             return true;
+        }
+
+        // Intent: Reports whether the immediately prior successful AutoModSync reconciliation was with this exact trusted server.
+        // Conservative deletion rule: missing, malformed, or reparse-point state returns false and therefore disables stale deletion rather than broadening authority.
+        internal static bool WasLastSuccessfulServer(string amsRoot, string fingerprint)
+        {
+            ValidateFingerprint(fingerprint);
+            string root = GetAmsRoot(amsRoot);
+            string path = Path.Combine(root, LastSuccessfulServerFileName);
+            try
+            {
+                if (!File.Exists(path)) return false;
+                AutoModSyncPathSafety.EnsureNoReparsePoints(root, path, true);
+                string prior = (File.ReadAllText(path) ?? "").Trim();
+                if (!IsSha256(prior)) return false;
+                return String.Equals(prior, fingerprint, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // Intent: Durably records which trusted server most recently completed manifest reconciliation with no remaining AMS live-file operations.
+        // Safety: the marker is fixed beneath AutoModSync, contains only a validated fingerprint, and is published through a write-through temp file.
+        internal static void WriteLastSuccessfulServerDurable(string amsRoot, string fingerprint)
+        {
+            ValidateFingerprint(fingerprint);
+            string root = GetAmsRoot(amsRoot);
+            Directory.CreateDirectory(root);
+            string path = Path.Combine(root, LastSuccessfulServerFileName);
+            string temp = path + ".tmp";
+            AutoModSyncPathSafety.EnsureNoReparsePoints(root, path, true);
+            AutoModSyncPathSafety.EnsureNoReparsePoints(root, temp, true);
+            try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+
+            using (FileStream stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using (StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false), 4096, true))
+            {
+                writer.Write(fingerprint.ToLowerInvariant());
+                writer.Write(Environment.NewLine);
+                writer.Flush();
+                stream.Flush(true);
+            }
+
+            if (File.Exists(path))
+            {
+                try
+                {
+                    File.Replace(temp, path, null, true);
+                    return;
+                }
+                catch (PlatformNotSupportedException) { }
+                catch (NotSupportedException) { }
+                catch (IOException) { }
+                File.Delete(path);
+            }
+            File.Move(temp, path);
         }
 
         // Intent: Returns the fixed fingerprint-scoped ledger path; server-controlled data never selects a filesystem directory.
