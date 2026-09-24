@@ -1,0 +1,28 @@
+name: Phase 6 Client Payload Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+    paths:
+      - "Source/AutoModSync.ClientPayload.cs"
+      - "Source/AutoModSync.OwnershipState.cs"
+      - "Source/AutoModSync.PathSafety.cs"
+      - "test-phase6-clientpayload.ps1"
+      - ".github/workflows/phase6-clientpayload-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  client-payload:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Phase 6 client-payload/prior-server harness
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase6-clientpayload.ps1"
