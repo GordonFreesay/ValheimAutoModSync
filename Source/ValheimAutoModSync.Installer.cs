@@ -264,6 +264,133 @@ internal static class AutoModSyncInstaller
             RefreshInstallState();
         }
 
+        private sealed class InstallationState
+        {
+            internal bool BepInEx;
+            internal bool ClientPlugin;
+            internal bool ApplyHelper;
+            internal bool ServerPlugin;
+            internal bool ServerConfig;
+            internal bool ServerPrivateKey;
+            internal bool ServerPublicKey;
+            internal bool ServerReleaseClient;
+
+            internal bool ClientComplete
+            {
+                get { return BepInEx && ClientPlugin && ApplyHelper; }
+            }
+
+            internal bool ServerComplete
+            {
+                get { return BepInEx && ServerPlugin && ServerConfig && ServerPrivateKey && ServerPublicKey && ServerReleaseClient; }
+            }
+
+            internal bool AnyAutoModSync
+            {
+                get { return ClientPlugin || ApplyHelper || ServerPlugin || ServerConfig || ServerPrivateKey || ServerPublicKey || ServerReleaseClient; }
+            }
+        }
+
+        // Intent: Applies the understated AMS charcoal/orange style to secondary installer actions without changing their behavior.
+        private void StyleSecondaryButton(Button button)
+        {
+            button.BackColor = PanelBack;
+            button.ForeColor = TextMain;
+            button.FlatStyle = FlatStyle.Flat;
+            button.FlatAppearance.BorderColor = Color.FromArgb(83, 90, 96);
+        }
+
+        // Intent: Loads the same tracked AMS logo embedded by the release builder; a missing resource leaves the installer fully usable with text branding.
+        private Image LoadBrandLogo()
+        {
+            try
+            {
+                using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("ValheimAutoModSync.Branding.Logo.png"))
+                {
+                    if (stream == null) return null;
+                    using (Image loaded = Image.FromStream(stream))
+                        return new Bitmap(loaded);
+                }
+            }
+            catch { return null; }
+        }
+
+        // Intent: Re-evaluates install/uninstall availability whenever the operator edits or auto-detects the target path.
+        private void PathChanged(object sender, EventArgs e)
+        {
+            if (!_busy) RefreshInstallState();
+        }
+
+        // Intent: Reads only fixed AutoModSync/BepInEx paths to decide whether the selected role is complete enough to expose the uninstall action.
+        private InstallationState InspectInstallation(string root)
+        {
+            InstallationState state = new InstallationState();
+            if (String.IsNullOrEmpty(root) || !Directory.Exists(root)) return state;
+
+            string bep = Path.Combine(root, "BepInEx");
+            string config = Path.Combine(bep, "config");
+            string ams = Path.Combine(bep, "AutoModSync");
+            state.BepInEx = File.Exists(Path.Combine(bep, "core", "BepInEx.dll"));
+            state.ClientPlugin = File.Exists(Path.Combine(bep, "plugins", "ValheimAutoModSync.Client.dll"));
+            state.ApplyHelper = File.Exists(Path.Combine(ams, "ValheimAutoModSync.Apply.exe"));
+            state.ServerPlugin = File.Exists(Path.Combine(bep, "plugins", "ValheimAutoModSync.Server.dll"));
+            state.ServerConfig = File.Exists(Path.Combine(config, "com.gordonfreesay.valheimautomodsync.server.cfg"));
+            state.ServerPrivateKey = File.Exists(Path.Combine(config, "ValheimAutoModSync.private.xml"));
+            state.ServerPublicKey = File.Exists(Path.Combine(config, "ValheimAutoModSync.public.xml"));
+            state.ServerReleaseClient = File.Exists(Path.Combine(ams, "release", "ValheimAutoModSync.Client.dll"));
+            return state;
+        }
+
+        // Intent: Returns whether the currently selected Client, Dedicated Server, or Host & Play role has every required AutoModSync component present.
+        private bool SelectedRoleComplete(InstallationState state)
+        {
+            if (state == null) return false;
+            if (_clientRole.Checked) return state.ClientComplete;
+            if (_serverRole.Checked) return state.ServerComplete;
+            return state.ClientComplete && state.ServerComplete;
+        }
+
+        // Intent: Updates status text plus Install/Repair/Uninstall affordances from read-only on-disk state; incomplete or ambiguous installs never expose uninstall.
+        private void RefreshInstallState()
+        {
+            if (_status == null || _install == null || _uninstall == null) return;
+
+            string root = "";
+            try { root = Path.GetFullPath((_path.Text ?? "").Trim().Trim('"')); }
+            catch { }
+
+            InstallationState state = InspectInstallation(root);
+            bool complete = SelectedRoleComplete(state);
+            bool serverSelected = _serverRole.Checked || _hostRole.Checked;
+
+            _install.Text = complete ? "Repair / Update" : "Install";
+            _uninstall.Visible = complete;
+            _uninstall.Enabled = complete && !_busy;
+            _removeServerIdentity.Visible = complete && serverSelected;
+            if (!_removeServerIdentity.Visible) _removeServerIdentity.Checked = false;
+
+            if (complete)
+            {
+                _status.Text = "Installed • selected role is complete. Repair/update or uninstall safely.";
+                _status.ForeColor = Accent;
+            }
+            else if (state.AnyAutoModSync)
+            {
+                _status.Text = "Partial AutoModSync install detected. Install/Repair will restore the selected role.";
+                _status.ForeColor = Color.FromArgb(255, 185, 110);
+            }
+            else if (root.Length > 0 && Directory.Exists(root))
+            {
+                _status.Text = "AutoModSync is not installed for the selected role.";
+                _status.ForeColor = TextMuted;
+            }
+            else
+            {
+                _status.Text = "Choose or detect a Valheim folder.";
+                _status.ForeColor = TextMuted;
+            }
+        }
+
         // Intent: Creates one role-selection radio button and wires it to path re-detection when selected.
         private RadioButton MakeRole(string text, int left)
         {
@@ -271,6 +398,8 @@ internal static class AutoModSyncInstaller
             role.Text = text;
             role.Location = new Point(left, 25);
             role.AutoSize = true;
+            role.ForeColor = TextMain;
+            role.BackColor = PanelBack;
             role.CheckedChanged += new EventHandler(RoleChanged);
             return role;
         }
@@ -278,7 +407,11 @@ internal static class AutoModSyncInstaller
         // Intent: Updates the suggested path when the chosen install role changes between client/host and dedicated server.
         private void RoleChanged(object sender, EventArgs e)
         {
-            if (_path != null && !_busy) DetectSuggestedPath();
+            if (_path != null && !_busy)
+            {
+                DetectSuggestedPath();
+                RefreshInstallState();
+            }
         }
 
         // Intent: Lets the user explicitly choose a game/server folder rather than relying on auto-detection.
