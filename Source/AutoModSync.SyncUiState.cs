@@ -51,6 +51,7 @@ namespace ValheimAutoModSync
         private DateTime _lastRateSampleUtc;
         private long _lastRateSampleBytes;
 
+        // Intent: Initializes a fresh synchronization presentation state with no stale server identity, counters, or transfer metrics.
         public AutoModSyncUiState()
         {
             Reset();
