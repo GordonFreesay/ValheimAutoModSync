@@ -160,6 +160,8 @@ namespace ValheimAutoModSync
             public FileStream ReadStream;
             public ScheduledChunkRequest PendingRequest;
             public DateTime LastActivityUtc;
+            public DateTime StartedUtc;
+            public long RawPayloadBytesSent;
             public DateTime LastBackpressureLogUtc;
             public uint SteamConnectionHandle;
             public int OriginalSendRateMax;
@@ -208,6 +210,7 @@ namespace ValheimAutoModSync
 
             _transferScheduler = new AutoModSyncTransferScheduler(
                 Math.Min(32, Math.Max(1, _maxActiveBundleTransfers.Value)),
+                Math.Max(0, Math.Min(1024, _maxQueuedBundleTransfers.Value)),
                 Math.Max(1024L * 1024L, (long)_aggregateSendRateMax.Value),
                 Math.Max(65536, Math.Min(4 * 1024 * 1024, _schedulerGrantBytes.Value)),
                 0.25);
@@ -330,6 +333,7 @@ namespace ValheimAutoModSync
                 if (actualBytes < reservedBytes)
                     _transferScheduler.RefundGrant(peerId, reservedBytes - Math.Max(0, actualBytes));
 
+                transfer.RawPayloadBytesSent += Math.Max(0, actualBytes);
                 transfer.LastActivityUtc = now;
                 LogTransferSteamTelemetry(transfer);
             }
@@ -357,10 +361,15 @@ namespace ValheimAutoModSync
                 }
 
                 BundleTransfer transfer;
-                if (BundleTransfers.TryGetValue(rpc, out transfer) && transfer != null && transfer.PendingRequest == null && transfer.LastActivityUtc != DateTime.MinValue)
+                if (BundleTransfers.TryGetValue(rpc, out transfer) && transfer != null)
                 {
                     int timeout = _transferIdleTimeoutSeconds == null ? 60 : Math.Max(10, _transferIdleTimeoutSeconds.Value);
-                    if ((now - transfer.LastActivityUtc).TotalSeconds >= timeout) idle.Add(rpc);
+                    if (AutoModSyncTransferScheduler.ShouldExpireActivePeer(
+                        transfer.LastActivityUtc.Ticks,
+                        now.Ticks,
+                        timeout,
+                        transfer.PendingRequest != null))
+                        idle.Add(rpc);
                 }
             }
 
@@ -842,11 +851,6 @@ namespace ValheimAutoModSync
 
                 CancelScheduledTransferState(rpc);
 
-                int maxQueued = _maxQueuedBundleTransfers == null ? 32 : Math.Max(0, Math.Min(1024, _maxQueuedBundleTransfers.Value));
-                int totalAdmissionCapacity = _transferScheduler.MaxActive + maxQueued;
-                if (PendingBundleRequests.Count + BundleTransfers.Count >= totalAdmissionCapacity)
-                    throw new InvalidDataException("AutoModSync synchronization queue is full; retry after an active transfer finishes.");
-
                 long schedulerPeerId = GetOrCreateSchedulerPeerId(rpc);
                 PendingBundleRequest request = new PendingBundleRequest();
                 request.SchedulerPeerId = schedulerPeerId;
@@ -859,7 +863,11 @@ namespace ValheimAutoModSync
 
                 if (_transferScheduler == null)
                     throw new InvalidOperationException("AutoModSync transfer scheduler is unavailable.");
-                _transferScheduler.Enqueue(schedulerPeerId);
+                if (!_transferScheduler.Enqueue(schedulerPeerId))
+                {
+                    PendingBundleRequests.Remove(rpc);
+                    throw new InvalidDataException("AutoModSync synchronization queue is full; retry after an active transfer finishes.");
+                }
                 SendQueueStatus(rpc);
 
                 if (_instance != null)
@@ -910,6 +918,8 @@ namespace ValheimAutoModSync
                 transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
                 transfer.FileCount = artifact.FileCount;
                 transfer.LastActivityUtc = DateTime.UtcNow;
+                transfer.StartedUtc = transfer.LastActivityUtc;
+                transfer.RawPayloadBytesSent = 0L;
 
                 readStream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, FileOptions.SequentialScan);
                 transfer.ReadStream = readStream;
@@ -1121,6 +1131,17 @@ namespace ValheimAutoModSync
             end.Write(transfer.Sha256);
             end.Write(transfer.FileCount);
             rpc.Invoke(RpcBundleEnd, new object[] { end });
+
+            if (_instance != null && transfer != null)
+            {
+                double elapsed = transfer.StartedUtc == DateTime.MinValue ? 0.0 : Math.Max(0.001, (DateTime.UtcNow - transfer.StartedUtc).TotalSeconds);
+                double mibps = (transfer.RawPayloadBytesSent / (1024.0 * 1024.0)) / elapsed;
+                _instance.Logger.LogInfo("AutoModSync scheduler transfer complete: rawPayload=" + FormatBytes(transfer.RawPayloadBytesSent) +
+                    ", elapsed=" + elapsed.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                    ", avgRawPayload=" + mibps.ToString("0.00", CultureInfo.InvariantCulture) + " MiB/s" +
+                    ", aggregateCap=" + FormatBytes(_aggregateSendRateMax == null ? 0L : (long)_aggregateSendRateMax.Value) + "/s.");
+            }
+
             CleanupBundle(rpc);
             SendAllQueueStatuses();
         }
