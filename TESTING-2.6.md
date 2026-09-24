@@ -27,6 +27,8 @@ The first live attempt on 2026-09-24 exposed a test-hook bug rather than an AMS 
 
 The recognized-AMS matrix remains unchecked until the guided 12-mode live suite is completed. Each mode is intentionally one-shot and bound to a single peer so a failed test cannot silently contaminate a later connection.
 
+Live fail-closed evidence, 2026-09-24: `bad-ack` passed. The client rejected the injected malformed/protocol-mismatched `AMS4_Ack`, the server consumed the intended fault mode, no vanilla `ServerHandshake` replay was observed for that session, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
+
 ### Recognized AMS must fail closed
 
 For every case below, verify that no normal ServerHandshake is replayed and no live synchronized file is changed:
@@ -35,7 +37,7 @@ The development runtime now includes a guided live fault-injection suite in `tes
 
 `trust-decline` deliberately forces the already-pinned development server through first-contact UI without modifying the trust store; click **No**. `apply-prep-failure` injects the failure after verified extraction but before ownership/pending state is written, so an inert staged `.amsnew` may exist until suite cleanup, but no live synchronized file may change.
 
-- [ ] Invalid/malformed `AMS4_Ack`.
+- [x] Invalid/malformed `AMS4_Ack`.
 - [ ] Server acknowledges AMS but never begins a manifest.
 - [ ] Invalid manifest header.
 - [ ] Missing/out-of-order manifest part.
