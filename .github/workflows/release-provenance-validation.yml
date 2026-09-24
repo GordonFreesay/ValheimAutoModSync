@@ -1,0 +1,38 @@
+name: Release Provenance Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+    paths:
+      - "write-release-checksums.ps1"
+      - "build-release.bat"
+      - "build-store-packages.ps1"
+      - "test-release-provenance.ps1"
+      - ".github/workflows/release-build.yml"
+      - ".github/workflows/distribution-packages.yml"
+      - ".github/workflows/publish-nexus.yml"
+      - ".github/workflows/publish-curseforge.yml"
+      - ".github/workflows/publish-thunderstore.yml"
+      - ".github/workflows/release-provenance-validation.yml"
+      - "SIGNING.md"
+      - "DISTRIBUTION.md"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provenance:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate release provenance contract
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-release-provenance.ps1"
