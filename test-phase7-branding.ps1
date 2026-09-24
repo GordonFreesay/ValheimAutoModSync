@@ -52,6 +52,7 @@ try {
     Assert-Contains $client '_uiState.BeginVerification' 'Client UI'
     Assert-Contains $client '_uiState.SetComparison' 'Client UI'
     Assert-Contains $client '_uiState.SetQueue' 'Client UI'
+    Assert-Contains $client 'phase7-test-ui-preview.once' 'Client UI preview'
     Write-Host '  PASS'
 
     Write-Host '[4/4] Verifying dev/release/deploy/store packaging keeps the helper ICO beside the EXE...'
