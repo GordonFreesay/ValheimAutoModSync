@@ -599,17 +599,63 @@ namespace ValheimAutoModSync
                     return byKind != 0 ? byKind : StringComparer.OrdinalIgnoreCase.Compare(a.RelativePath, b.RelativePath);
                 });
 
-                CleanupBundle(rpc);
+                CancelScheduledTransferState(rpc);
 
+                long schedulerPeerId = GetOrCreateSchedulerPeerId(rpc);
+                PendingBundleRequest request = new PendingBundleRequest();
+                request.SchedulerPeerId = schedulerPeerId;
+                request.Records = records;
+                request.ExpandedBytes = expandedBytes;
+                request.ResumeNegotiated = resumeNegotiated;
+                request.ResumeCandidate = resumeCandidate;
+                request.QueuedUtc = DateTime.UtcNow;
+                PendingBundleRequests[rpc] = request;
+
+                if (_transferScheduler == null)
+                    throw new InvalidOperationException("AutoModSync transfer scheduler is unavailable.");
+                _transferScheduler.Enqueue(schedulerPeerId);
+                SendQueueStatus(rpc);
+
+                if (_instance != null)
+                {
+                    int position = _transferScheduler.QueuePosition(schedulerPeerId);
+                    _instance.Logger.LogInfo("AutoModSync bundle request admitted to scheduler: queuePosition=" +
+                        position.ToString(CultureInfo.InvariantCulture) +
+                        ", active=" + _transferScheduler.ActiveCount.ToString(CultureInfo.InvariantCulture) +
+                        "/" + _transferScheduler.MaxActive.ToString(CultureInfo.InvariantCulture) +
+                        ", requestedFiles=" + records.Count.ToString(CultureInfo.InvariantCulture) +
+                        ", expanded=" + FormatBytes(expandedBytes) + ".");
+                }
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Bundle request admission failed: " + ex);
+                CancelScheduledTransferState(rpc);
+                SendError(rpc, "Server failed while admitting the AutoModSync package request: " + ex.Message);
+            }
+        }
+
+        // Intent: Converts one admitted FIFO request into an active immutable-artifact transfer only after the scheduler grants a slot.
+        // Resource control: queued peers do not build/acquire bundle artifacts or receive enlarged Steam transport settings until this method runs.
+        private static void StartScheduledBundleTransfer(ZRpc rpc, PendingBundleRequest request)
+        {
+            if (rpc == null || request == null) return;
+
+            BundleArtifact artifact = null;
+            FileStream readStream = null;
+            bool transferStored = false;
+            try
+            {
                 long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
                 string cacheStatus;
                 double waitSeconds;
                 Stopwatch prepareWatch = Stopwatch.StartNew();
-                BundleArtifact artifact = AcquireBundleArtifact(records, expandedBytes, maxBundleBytes, out cacheStatus, out waitSeconds);
+                artifact = AcquireBundleArtifact(request.Records, request.ExpandedBytes, maxBundleBytes, out cacheStatus, out waitSeconds);
                 prepareWatch.Stop();
 
                 int rawChunk = Math.Max(4096, Math.Min(49152, _chunkBytes.Value));
                 BundleTransfer transfer = new BundleTransfer();
+                transfer.SchedulerPeerId = request.SchedulerPeerId;
                 transfer.Artifact = artifact;
                 transfer.ZipPath = artifact.ZipPath;
                 transfer.Size = artifact.Size;
@@ -617,12 +663,16 @@ namespace ValheimAutoModSync
                 transfer.ChunkBytes = rawChunk;
                 transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
                 transfer.FileCount = artifact.FileCount;
+                transfer.LastActivityUtc = DateTime.UtcNow;
+
+                readStream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, FileOptions.SequentialScan);
+                transfer.ReadStream = readStream;
 
                 int resumeStartChunk = 0;
                 long resumeBytes = 0L;
                 string resumeReason = "";
                 Stopwatch resumeWatch = new Stopwatch();
-                if (resumeNegotiated && resumeCandidate != null)
+                if (request.ResumeNegotiated && request.ResumeCandidate != null)
                 {
                     resumeWatch.Start();
                     if (AutoModSyncResumeState.TryAcceptServerCandidate(
@@ -632,17 +682,18 @@ namespace ValheimAutoModSync
                         transfer.ChunkBytes,
                         transfer.TotalChunks,
                         transfer.FileCount,
-                        resumeCandidate,
+                        request.ResumeCandidate,
                         out resumeBytes,
                         out resumeReason))
                     {
-                        resumeStartChunk = resumeCandidate.NextChunk;
+                        resumeStartChunk = request.ResumeCandidate.NextChunk;
                     }
                     resumeWatch.Stop();
                 }
 
-                // Store the transfer before transport tuning/RPC publication so every later failure path releases the artifact reference.
                 BundleTransfers[rpc] = transfer;
+                transferStored = true;
+                PendingBundleRequests.Remove(rpc);
                 TryTuneTransferTransport(rpc, transfer);
 
                 ZPackage begin = new ZPackage();
@@ -650,14 +701,14 @@ namespace ValheimAutoModSync
                 begin.Write(transfer.Sha256);
                 begin.Write(transfer.TotalChunks);
                 begin.Write(transfer.FileCount);
-                if (resumeNegotiated)
+                if (request.ResumeNegotiated)
                 {
                     begin.Write(transfer.ChunkBytes);
                     begin.Write(resumeStartChunk);
                 }
                 rpc.Invoke(RpcBundleBegin, new object[] { begin });
 
-                if (_instance != null && resumeCandidate != null)
+                if (_instance != null && request.ResumeCandidate != null)
                 {
                     if (resumeStartChunk > 0)
                         _instance.Logger.LogInfo("AutoModSync exact-artifact resume accepted at chunk " + resumeStartChunk.ToString(CultureInfo.InvariantCulture) + "/" + transfer.TotalChunks.ToString(CultureInfo.InvariantCulture) + " (" + FormatBytes(resumeBytes) + " retained, prefixVerify=" + resumeWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s).");
@@ -667,20 +718,35 @@ namespace ValheimAutoModSync
 
                 if (_instance != null)
                 {
+                    double queueSeconds = Math.Max(0.0, (DateTime.UtcNow - request.QueuedUtc).TotalSeconds);
                     _instance.Logger.LogInfo("AutoModSync bundle ready: cache=" + cacheStatus +
                         ", key=" + ShortCacheKey(artifact.CacheKey) +
                         ", files=" + artifact.FileCount.ToString(CultureInfo.InvariantCulture) +
                         ", compressed=" + FormatBytes(artifact.Size) +
                         ", expanded=" + FormatBytes(artifact.ExpandedBytes) +
                         ", prepare=" + prepareWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
-                        (waitSeconds > 0.0005 ? ", singleFlightWait=" + waitSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" : "") + ".");
+                        (waitSeconds > 0.0005 ? ", singleFlightWait=" + waitSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" : "") +
+                        (queueSeconds > 0.0005 ? ", schedulerQueue=" + queueSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" : "") + ".");
                 }
             }
             catch (Exception ex)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Bundle preparation failed: " + ex);
-                CleanupBundle(rpc);
-                SendError(rpc, "Server failed while preparing the compressed AutoModSync package: " + ex.Message);
+                if (_instance != null) _instance.Logger.LogWarning("Scheduled bundle preparation failed: " + ex);
+
+                if (transferStored)
+                {
+                    CleanupBundle(rpc);
+                }
+                else
+                {
+                    try { if (readStream != null) readStream.Dispose(); } catch { }
+                    if (artifact != null) ReleaseBundleArtifact(artifact);
+                    if (_transferScheduler != null) _transferScheduler.Remove(request.SchedulerPeerId);
+                }
+
+                PendingBundleRequests.Remove(rpc);
+                SendError(rpc, "Server failed while preparing the scheduled AutoModSync package: " + ex.Message);
+                SendAllQueueStatuses();
             }
         }
 
