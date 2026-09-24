@@ -20,11 +20,13 @@ if ($LASTEXITCODE -ne 0) { throw "CurseForge package build failed with exit code
 
 Write-Host ""
 Write-Host "All distribution packages built from the same source revision and version:" -ForegroundColor Yellow
-Get-ChildItem -LiteralPath (Join-Path $Root "Dist") -File |
-    Where-Object { $_.Name -match [regex]::Escape($Version) -and $_.Extension -eq ".zip" } |
-    Sort-Object Name |
-    ForEach-Object {
-        $sha = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        Write-Host ("  {0}" -f $_.Name)
-        Write-Host ("    sha256:{0}" -f $sha)
-    }
+$ChecksumScript = Join-Path $Root "write-release-checksums.ps1"
+if (-not (Test-Path -LiteralPath $ChecksumScript -PathType Leaf)) {
+    throw "Release checksum generator is missing: $ChecksumScript"
+}
+& $ChecksumScript -Root $Root
+if ($LASTEXITCODE -ne 0) { throw "Release checksum generation failed with exit code $LASTEXITCODE" }
+
+Get-Content -LiteralPath (Join-Path $Root "Dist\SHA256SUMS.txt") | ForEach-Object {
+    Write-Host ("  {0}" -f $_)
+}
