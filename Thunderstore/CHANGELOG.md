@@ -2,6 +2,9 @@
 
 ## 2.6.0 (development)
 
+- The standalone installer now uses the AMS charcoal/orange branding and embedded logo, reports complete/partial install state, exposes Repair/Update for complete installs, and shows Uninstall only when the selected role is complete.
+- Client uninstall is ownership-safe: exact still-owned synchronized files are removed only when their current size/SHA-256 still match AMS records; locally changed files, unrelated mods, and shared BepInEx are preserved. Server uninstall preserves ClientPayload plus signing identity/config by default, with explicit opt-in identity removal.
+
 - First-contact trust now uses a short human-comparison security code instead of displaying the complete signing-key fingerprint; the full 256-bit fingerprint is still verified and pinned internally, while trusted sessions show only a generic trusted-server label.
 - Added a first-party PII guard to development/release builds and Windows CI. It rejects local user-home paths, email addresses, account/SID/Steam identifiers, and public IP literals from project-authored source/build content, then scans printable strings in AutoModSync-authored binaries.
 
