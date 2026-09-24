@@ -6,6 +6,7 @@ on:
       - dev/2.6
     paths:
       - "Source/ValheimAutoModSync.Client.cs"
+      - "Source/ValheimAutoModSync.Server.cs"
       - "Source/AutoModSync.SyncUiState.cs"
       - "Source/AutoModSync.IdentityDisplay.cs"
       - "Thunderstore/icon.png"
@@ -21,6 +22,7 @@ on:
       - "verify-no-pii.ps1"
       - "test-phase7-ui-preview.ps1"
       - "test-phase7-live.ps1"
+      - "test-phase7-server-browser-presence.ps1"
       - ".github/workflows/phase7-branding-validation.yml"
   workflow_dispatch:
 
@@ -50,6 +52,14 @@ jobs:
           $errors = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\test-phase7-live.ps1"), [ref]$tokens, [ref]$errors)
           if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Host; throw "Phase 7 live harness has PowerShell parse errors." }
+
+      - name: Parse guided server-browser presence probe
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\test-phase7-server-browser-presence.ps1"), [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Host; throw "Server-browser presence probe has PowerShell parse errors." }
 
       - name: Run deterministic Phase 7 branding/package harness
         shell: powershell
