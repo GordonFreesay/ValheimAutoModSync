@@ -158,6 +158,17 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `Source/ValheimAutoModSync.Installer.cs` | Polishes the standalone Windows installer with embedded AMS branding, live complete/partial install detection, `Repair / Update`, and a role-aware `Uninstall` button that appears only for complete selected-role installs. Client uninstall uses strict ownership metadata + live SHA-256 before retiring synchronized files, blocks on pending apply recovery, preserves changed/local files and shared BepInEx; server uninstall preserves operator ClientPayload and signing identity/config by default, with explicit opt-in identity removal. |
 | `test-installer-contract.ps1` / `.github/workflows/installer-validation.yml` | Compile the production installer with the shared identity/path/ownership helpers, enforce the branded/uninstall contract, run the source documentation gate, and PII-scan the compiled installer artifact. |
 
+## Release provenance
+
+| File | Purpose |
+| --- | --- |
+| `write-release-checksums.ps1` | Generates sorted shasum-compatible SHA-256 manifests for the exact standalone/store package bytes. A standalone local build writes a one-package manifest; the unified distribution build overwrites it with all four official package digests. |
+| `.github/workflows/release-build.yml` | Attests the canonical standalone ZIP and checksum manifest with GitHub Artifact Attestations using the GitHub Actions OIDC identity. |
+| `.github/workflows/distribution-packages.yml` | On manual/tag builds, validates the four-package checksum manifest, attests all four subject digests plus the manifest, and uploads the checksum file with the package artifacts. |
+| `.github/workflows/publish-*.yml` | Each store workflow hashes and attests the exact store ZIP produced by that publishing run before uploading it, avoiding any assumption that separately rebuilt ZIPs are byte-identical. |
+| `VERIFYING-RELEASES.md` | Gives users direct `gh attestation verify` and SHA-256 verification commands while explicitly distinguishing provenance from Authenticode/SmartScreen trust. |
+| `test-release-provenance.ps1` / `.github/workflows/release-provenance-validation.yml` | Deterministically validate checksum ordering/digests, workflow permission/subject wiring, exact store coverage, and local-build non-attestation wording. |
+
 ## Phase 7 — telemetry / branded in-game product UI
 
 | File | 2.6 reason |
