@@ -106,6 +106,7 @@ internal static class AutoModSyncInstaller
             MaximizeBox = false;
             BackColor = WindowBack;
             ForeColor = TextMain;
+            TryApplyWindowIcon();
 
             PictureBox logo = new PictureBox();
             logo.Location = new Point(22, 18);
@@ -288,6 +289,20 @@ internal static class AutoModSyncInstaller
             internal bool AnyAutoModSync
             {
                 get { return ClientPlugin || ApplyHelper || ServerPlugin || ServerConfig || ServerPrivateKey || ServerPublicKey || ServerReleaseClient; }
+            }
+        }
+
+        // Intent: Applies the executable's embedded AMS icon to the WinForms title bar/taskbar surface instead of leaving the generic framework icon.
+        private void TryApplyWindowIcon()
+        {
+            try
+            {
+                Icon executableIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (executableIcon != null) Icon = executableIcon;
+            }
+            catch
+            {
+                // Branding failure must never block installation, repair, or uninstall.
             }
         }
 
