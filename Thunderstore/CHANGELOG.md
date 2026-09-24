@@ -2,6 +2,9 @@
 
 ## 2.6.0 (development)
 
+- Added a server-wide concurrent bundle scheduler with FIFO active slots, round-robin aggregate bandwidth grants, optional client queue-position status, Steam reliable-queue backpressure, per-transfer persistent ZIP streams, and dead/idle slot cleanup. Defaults are four active transfers and a 64 MiB/s aggregate raw-payload budget.
+- Added deterministic eight-peer scheduler validation and Windows CI. The first CI run exposed a refill-boundary fairness bug; the scheduler now preserves a peer's turn when tokens are temporarily insufficient and the corrected 6/6 harness passes.
+
 - Added exact-artifact resumable bundle downloads as an optional AMS4 `bundle-resume1` capability. Interrupted clients retain one bounded partial ZIP, and the server independently verifies the exact retained prefix against the current immutable artifact before allowing a nonzero resume offset; mismatches safely restart from zero.
 - Added development-only single-client transfer interruption emulation and an isolated deterministic Phase 4 resume harness. These validation hooks are not compiled into release client binaries.
 
