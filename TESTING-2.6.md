@@ -2,13 +2,16 @@
 
 Installer client-uninstall live evidence, 2026-09-24: the branded installer detected the existing Client role as complete and exposed Repair/Update plus Uninstall. In an isolated disposable install, uninstall removed the client plugin and Apply helper, retired the exact AMS-owned fixture, preserved a locally modified AMS-owned fixture, preserved an unrelated local plugin, preserved shared BepInEx, and the disposable root was then removed successfully.
 
+Installer server-uninstall live evidence, 2026-09-24: the isolated Dedicated Server role uninstall passed all preservation checks. The AMS server runtime/release payload were removed while shared BepInEx, operator-managed ClientPayload, server config, and both signing-identity files remained intact. The subsequent UI recheck also confirmed the widened Repair / Update label and literal Host & Play text.
+
 - [x] Windows CI compiles the production installer with the embedded AMS logo plus shared identity/path/ownership safety helpers.
 - [x] Installer contract requires complete-role detection before exposing `Uninstall`; partial installs remain `Install`/repair-only.
 - [x] Client uninstall contract blocks on pending apply/recovery state and removes synchronized files only when strict ownership metadata plus live size/SHA-256 prove the file is still AMS-owned; local changes are preserved.
 - [x] Server uninstall contract preserves shared BepInEx, unrelated mods, operator-managed `ClientPayload`, and server config/signing identity by default; identity removal requires explicit opt-in.
 - [x] Installer normal identity output uses the short verification code rather than the full fingerprint.
 - [x] Compiled installer artifact passes the first-party PII guard.
-- [ ] Final visual recheck after polish: embedded logo/dark-orange layout remain clean, `Host & Play` renders literally, and the widened `Repair / Update` label is no longer clipped at normal Windows scaling. The preceding live screenshot passed the overall layout/branding check and exposed only those two text-polish issues.
+- [x] Final visual recheck after polish: embedded logo/dark-orange layout remain clean, `Host & Play` renders literally, and the widened `Repair / Update` label is no longer clipped at normal Windows scaling.
+- [ ] Final window-chrome recheck: the installer title-bar/taskbar icon uses the embedded AMS ICO instead of the generic WinForms icon.
 - [x] Isolated live uninstall check: complete Client install exposes Uninstall, exact AMS-owned fixture is retired, locally changed fixture is preserved, BepInEx/unrelated mod remain, and disposable test state cleans up successfully.
 - [ ] Isolated server uninstall check: server plugin/cache/release payload are removed while config/key/ClientPayload remain; explicit identity-removal option deletes only the documented server config/key files.
 
