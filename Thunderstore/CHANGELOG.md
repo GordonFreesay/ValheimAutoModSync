@@ -2,6 +2,10 @@
 
 ## 2.6.0 (development)
 
+- Added conservative trusted-server content ownership. AutoModSync records only files it actually installs/replaces, scoped by the trusted server fingerprint; matching pre-existing local files are not claimed.
+- Added transactional stale-file retirement. A later signed omission can delete only exact bytes still matching that same server's last-owned digest; modified local files are preserved and ownership is relinquished. Write/delete operations share PREPARED/COMMITTED recovery, with AMSTXN2 journals retaining AMSTXN1 recovery compatibility.
+- Added isolated Phase 6 ownership/apply Windows CI covering ownership publication, exact deletion, wrong-digest and cross-server rejection, PREPARED delete rollback, and COMMITTED ownership recovery.
+
 - Added a server-wide concurrent bundle scheduler with FIFO active slots, a bounded waiting queue, round-robin aggregate bandwidth grants, optional client queue-position status, Steam reliable-queue backpressure, per-transfer persistent ZIP streams, and dead/idle slot cleanup. Defaults are four active transfers, 32 additional queued requests, and a 64 MiB/s aggregate raw-payload budget.
 - Added deterministic eight-peer scheduler validation and Windows CI. The first CI run exposed a refill-boundary fairness bug; the scheduler now preserves a peer's turn when tokens are temporarily insufficient and the corrected 6/6 harness passes.
 
