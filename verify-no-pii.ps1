@@ -9,9 +9,10 @@ Set-StrictMode -Version 2.0
 # AutoModSync first-party privacy guard.
 # Intent: prevent machine/user-specific identifiers from entering tracked first-party source or AutoModSync-authored build artifacts.
 # Scope: third-party license attribution is intentionally excluded because it must remain verbatim for legal compliance.
-# This guard does not classify the public AutoModSync/GordonFreesay project brand, repository URLs, or website URL as private PII.
+# The public AutoModSync/GordonFreesay brand, repository URLs, and project website are product identity rather than private user data.
 
-$rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\','/')
+$separators = [char[]]@([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+$rootPath = [IO.Path]::GetFullPath($Root).TrimEnd($separators)
 $failures = New-Object 'System.Collections.Generic.List[string]'
 
 function Add-Failure([string]$Location,[string]$Kind,[string]$Value) {
@@ -21,6 +22,7 @@ function Add-Failure([string]$Location,[string]$Kind,[string]$Value) {
 function Test-PublicIpv4([string]$Value) {
     $parts = $Value.Split('.')
     if ($parts.Count -ne 4) { return $false }
+
     $n = @()
     foreach ($part in $parts) {
         $v = 0
@@ -28,10 +30,8 @@ function Test-PublicIpv4([string]$Value) {
         $n += $v
     }
 
-    # Non-public/documentation ranges are allowed in source examples.
-    if ($n[0] -eq 10) { return $false }
-    if ($n[0] -eq 127) { return $false }
-    if ($n[0] -eq 0) { return $false }
+    # Non-public and documentation-only ranges are safe in examples.
+    if ($n[0] -eq 0 -or $n[0] -eq 10 -or $n[0] -eq 127) { return $false }
     if ($n[0] -eq 169 -and $n[1] -eq 254) { return $false }
     if ($n[0] -eq 172 -and $n[1] -ge 16 -and $n[1] -le 31) { return $false }
     if ($n[0] -eq 192 -and $n[1] -eq 168) { return $false }
@@ -48,14 +48,14 @@ function Scan-Text([string]$Text,[string]$Location) {
 
     foreach ($m in [regex]::Matches($Text,'(?i)\b[A-Z]:\\Users\\([^\\\r\n]+)\\')) {
         $profile = $m.Groups[1].Value
-        if ($profile -notmatch '^(Public|Default|Default User|All Users|<[^>]+>|%[^%]+%|\$\{?[^}\\]+\}?)$') {
+        if ($profile -notmatch '^(Public|Default|Default User|All Users|<[^>]+>|%[^%]+%)$') {
             Add-Failure $Location 'literal Windows user-profile path' $m.Value
         }
     }
 
     foreach ($m in [regex]::Matches($Text,'(?i)(?:/Users|/home)/([^/\s]+)/')) {
         $profile = $m.Groups[1].Value
-        if ($profile -notmatch '^(user|username|runner|<[^>]+>|\$\{?[^}]+\}?)$') {
+        if ($profile -notmatch '^(user|username|runner|<[^>]+>)$') {
             Add-Failure $Location 'literal POSIX user-home path' $m.Value
         }
     }
@@ -73,95 +73,14 @@ function Scan-Text([string]$Text,[string]$Location) {
     }
 
     foreach ($m in [regex]::Matches($Text,'(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)')) {
-        $contextStart = [Math]::Max(0, $m.Index - 48)
-        $context = $Text.Substring($contextStart, $m.Index - $contextStart)
-        if ($context -match '(?i)(Assembly(?:File)?Version|ProductVersion|FileVersion|\bversion)\s*[^\r\n]{0,24}}
+        $contextStart = [Math]::Max(0,$m.Index - 64)
+        $context = $Text.Substring($contextStart,$m.Index - $contextStart)
 
-function Get-TrackedFirstPartyFiles {
-    $files = @()
-    try {
-        $raw = & git -C $rootPath ls-files 2>$null
-        if ($LASTEXITCODE -eq 0) { $files = @($raw) }
-    } catch {}
-
-    if ($files.Count -eq 0) {
-        $files = @(Get-ChildItem -LiteralPath $rootPath -File -Recurse | ForEach-Object {
-            $_.FullName.Substring($rootPath.Length).TrimStart('\','/').Replace('\','/')
-        })
-    }
-
-    $allowedExtensions = @('.cs','.ps1','.bat','.cmd','.md','.txt','.cfg','.json','.yml','.yaml','.xml','.props','.csproj','.gitignore','.gitattributes')
-    foreach ($rel in $files) {
-        $normalized = ($rel -replace '\\','/').TrimStart('/')
-        if ($normalized -match '^(THIRD_PARTY_LICENSES|DevBuild|Dist|\.git)/') { continue }
-        $ext = [IO.Path]::GetExtension($normalized).ToLowerInvariant()
-        $name = [IO.Path]::GetFileName($normalized).ToLowerInvariant()
-        if (($allowedExtensions -notcontains $ext) -and ($allowedExtensions -notcontains ('.' + $name))) { continue }
-        $full = Join-Path $rootPath ($normalized -replace '/','\')
-        if (Test-Path -LiteralPath $full -PathType Leaf) { $full }
-    }
-}
-
-function Get-PrintableBinaryText([string]$Path) {
-    $bytes = [IO.File]::ReadAllBytes($Path)
-    $ascii = New-Object Text.StringBuilder
-    $utf16 = New-Object Text.StringBuilder
-    $out = New-Object Text.StringBuilder
-
-    for ($i = 0; $i -lt $bytes.Length; $i++) {
-        $b = $bytes[$i]
-        if ($b -ge 32 -and $b -le 126) {
-            [void]$ascii.Append([char]$b)
-        } else {
-            if ($ascii.Length -ge 6) { [void]$out.AppendLine($ascii.ToString()) }
-            [void]$ascii.Clear()
-        }
-
-        if ($i + 1 -lt $bytes.Length -and $bytes[$i + 1] -eq 0 -and $b -ge 32 -and $b -le 126) {
-            [void]$utf16.Append([char]$b)
-            $i++
-        } else {
-            if ($utf16.Length -ge 6) { [void]$out.AppendLine($utf16.ToString()) }
-            [void]$utf16.Clear()
-        }
-    }
-
-    if ($ascii.Length -ge 6) { [void]$out.AppendLine($ascii.ToString()) }
-    if ($utf16.Length -ge 6) { [void]$out.AppendLine($utf16.ToString()) }
-    return $out.ToString()
-}
-
-foreach ($file in @(Get-TrackedFirstPartyFiles)) {
-    try {
-        $relative = $file.Substring($rootPath.Length).TrimStart('\','/')
-        Scan-Text ([IO.File]::ReadAllText($file)) $relative
-    } catch {
-        throw "PII guard could not inspect tracked file '$file': $($_.Exception.Message)"
-    }
-}
-
-$artifactList = @()
-if (-not [String]::IsNullOrWhiteSpace($ArtifactPaths)) {
-    $artifactList = @($ArtifactPaths.Split(';') | Where-Object { -not [String]::IsNullOrWhiteSpace($_) })
-}
-
-foreach ($artifact in $artifactList) {
-    $full = [IO.Path]::GetFullPath($artifact)
-    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
-        throw "PII guard artifact does not exist: $full"
-    }
-    Scan-Text (Get-PrintableBinaryText $full) ("artifact " + [IO.Path]::GetFileName($full))
-}
-
-if ($failures.Count -gt 0) {
-    $failures | ForEach-Object { Write-Error $_ }
-    throw ("PII guard failed with " + $failures.Count + " finding(s). Remove machine/user-specific identifiers before building or publishing.")
-}
-
-Write-Host ("PII guard passed: first-party tracked text" + ($(if ($artifactList.Count -gt 0) { " + " + $artifactList.Count + " authored artifact(s)" } else { "" })) + ".")
-) {
+        # Four-component assembly/file versions look like IPv4 addresses but are not network identifiers.
+        if ($context -match '(?i)(Assembly(?:File)?Version|ProductVersion|FileVersion|\bversion)\s*[^\r\n]{0,32}$') {
             continue
         }
+
         if (Test-PublicIpv4 $m.Value) {
             Add-Failure $Location 'public IPv4 literal' $m.Value
         }
@@ -177,56 +96,65 @@ function Get-TrackedFirstPartyFiles {
 
     if ($files.Count -eq 0) {
         $files = @(Get-ChildItem -LiteralPath $rootPath -File -Recurse | ForEach-Object {
-            $_.FullName.Substring($rootPath.Length).TrimStart('\','/').Replace('\','/')
+            $_.FullName.Substring($rootPath.Length).TrimStart($separators).Replace([IO.Path]::DirectorySeparatorChar,'/')
         })
     }
 
-    $allowedExtensions = @('.cs','.ps1','.bat','.cmd','.md','.txt','.cfg','.json','.yml','.yaml','.xml','.props','.csproj','.gitignore','.gitattributes')
+    $allowedExtensions = @('.cs','.ps1','.bat','.cmd','.md','.txt','.cfg','.json','.yml','.yaml','.xml','.props','.csproj')
+    $allowedNames = @('.gitignore','.gitattributes')
+
     foreach ($rel in $files) {
         $normalized = ($rel -replace '\\','/').TrimStart('/')
         if ($normalized -match '^(THIRD_PARTY_LICENSES|DevBuild|Dist|\.git)/') { continue }
+
         $ext = [IO.Path]::GetExtension($normalized).ToLowerInvariant()
         $name = [IO.Path]::GetFileName($normalized).ToLowerInvariant()
-        if (($allowedExtensions -notcontains $ext) -and ($allowedExtensions -notcontains ('.' + $name))) { continue }
-        $full = Join-Path $rootPath ($normalized -replace '/','\')
+        if (($allowedExtensions -notcontains $ext) -and ($allowedNames -notcontains $name)) { continue }
+
+        $full = Join-Path $rootPath ($normalized -replace '/', [IO.Path]::DirectorySeparatorChar)
         if (Test-Path -LiteralPath $full -PathType Leaf) { $full }
     }
 }
 
 function Get-PrintableBinaryText([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
-    $ascii = New-Object Text.StringBuilder
-    $utf16 = New-Object Text.StringBuilder
     $out = New-Object Text.StringBuilder
 
-    for ($i = 0; $i -lt $bytes.Length; $i++) {
-        $b = $bytes[$i]
+    # Extract printable ASCII runs.
+    $run = New-Object Text.StringBuilder
+    foreach ($b in $bytes) {
         if ($b -ge 32 -and $b -le 126) {
-            [void]$ascii.Append([char]$b)
+            [void]$run.Append([char]$b)
         } else {
-            if ($ascii.Length -ge 6) { [void]$out.AppendLine($ascii.ToString()) }
-            [void]$ascii.Clear()
-        }
-
-        if ($i + 1 -lt $bytes.Length -and $bytes[$i + 1] -eq 0 -and $b -ge 32 -and $b -le 126) {
-            [void]$utf16.Append([char]$b)
-            $i++
-        } else {
-            if ($utf16.Length -ge 6) { [void]$out.AppendLine($utf16.ToString()) }
-            [void]$utf16.Clear()
+            if ($run.Length -ge 6) { [void]$out.AppendLine($run.ToString()) }
+            [void]$run.Clear()
         }
     }
+    if ($run.Length -ge 6) { [void]$out.AppendLine($run.ToString()) }
 
-    if ($ascii.Length -ge 6) { [void]$out.AppendLine($ascii.ToString()) }
-    if ($utf16.Length -ge 6) { [void]$out.AppendLine($utf16.ToString()) }
+    # Extract printable UTF-16LE runs independently.
+    [void]$run.Clear()
+    for ($i = 0; $i + 1 -lt $bytes.Length; $i += 2) {
+        $lo = $bytes[$i]
+        $hi = $bytes[$i + 1]
+        if ($hi -eq 0 -and $lo -ge 32 -and $lo -le 126) {
+            [void]$run.Append([char]$lo)
+        } else {
+            if ($run.Length -ge 6) { [void]$out.AppendLine($run.ToString()) }
+            [void]$run.Clear()
+        }
+    }
+    if ($run.Length -ge 6) { [void]$out.AppendLine($run.ToString()) }
+
     return $out.ToString()
 }
 
 foreach ($file in @(Get-TrackedFirstPartyFiles)) {
     try {
-        $relative = $file.Substring($rootPath.Length).TrimStart('\','/')
+        $relative = $file.Substring($rootPath.Length).TrimStart($separators)
         Scan-Text ([IO.File]::ReadAllText($file)) $relative
-    } catch {
+    }
+    catch {
         throw "PII guard could not inspect tracked file '$file': $($_.Exception.Message)"
     }
 }
@@ -241,7 +169,7 @@ foreach ($artifact in $artifactList) {
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
         throw "PII guard artifact does not exist: $full"
     }
-    Scan-Text (Get-PrintableBinaryText $full) ("artifact " + [IO.Path]::GetFileName($full))
+    Scan-Text (Get-PrintableBinaryText $full) ('artifact ' + [IO.Path]::GetFileName($full))
 }
 
 if ($failures.Count -gt 0) {
@@ -249,4 +177,8 @@ if ($failures.Count -gt 0) {
     throw ("PII guard failed with " + $failures.Count + " finding(s). Remove machine/user-specific identifiers before building or publishing.")
 }
 
-Write-Host ("PII guard passed: first-party tracked text" + ($(if ($artifactList.Count -gt 0) { " + " + $artifactList.Count + " authored artifact(s)" } else { "" })) + ".")
+$suffix = ''
+if ($artifactList.Count -gt 0) {
+    $suffix = ' + ' + $artifactList.Count + ' authored artifact(s)'
+}
+Write-Host ('PII guard passed: first-party tracked text' + $suffix + '.')
