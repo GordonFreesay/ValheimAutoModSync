@@ -202,7 +202,8 @@ internal static class Program
             {
                 ApplyItem item = items[i];
                 ApplyOneItem(item, pluginRoot, patcherRoot, configRoot, stagingRoot);
-                AppendApplyLog(amsRoot, "Applied " + (i + 1).ToString() + "/" + items.Count.ToString() + ": " + item.Kind + ":" + item.RelativePath);
+                string operationLabel = item.Operation == 'D' ? "DELETE" : "WRITE";
+                AppendApplyLog(amsRoot, "Applied " + (i + 1).ToString() + "/" + items.Count.ToString() + ": " + operationLabel + " " + item.Kind + ":" + item.RelativePath);
 
 #if AMS_DEV_TESTS
                 if (devFailAfterItems > 0 && (i + 1) == devFailAfterItems)
