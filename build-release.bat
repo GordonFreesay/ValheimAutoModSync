@@ -39,6 +39,10 @@ if exist "%ROOT%verify-version.ps1" (
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-version.ps1"
   if errorlevel 1 goto :FailNoWork
 )
+if exist "%ROOT%verify-no-pii.ps1" (
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -Root "%ROOT%"
+  if errorlevel 1 goto :FailNoWork
+)
 
 set "WORK=%TEMP%\ValheimAutoModSync_Build_%RANDOM%_%RANDOM%"
 mkdir "%WORK%" >nul 2>&1
@@ -47,7 +51,7 @@ if not exist "%SERVERDIR%" mkdir "%SERVERDIR%" >nul 2>&1
 if not exist "%TOOLSDIR%" mkdir "%TOOLSDIR%" >nul 2>&1
 
 set "BUILDTOOL=%WORK%\AutoModSync.BuildTool.exe"
-"%CSC%" /nologo /target:exe /optimize+ /langversion:5 /out:"%BUILDTOOL%" "%SOURCE%\AutoModSync.BuildTool.cs"
+"%CSC%" /nologo /target:exe /optimize+ /langversion:5 /out:"%BUILDTOOL%" "%SOURCE%\AutoModSync.BuildTool.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs"
 if errorlevel 1 goto :Fail
 copy /y "%BUILDTOOL%" "%TOOLSDIR%\AutoModSync.BuildTool.exe" >nul
 if errorlevel 1 goto :Fail
@@ -123,9 +127,9 @@ set "SERVERDLL=%WORK%\ValheimAutoModSync.Server.dll"
 set "APPLYEXE=%WORK%\ValheimAutoModSync.Apply.exe"
 set "INSTALLEREXE=%WORK%\ValheimAutoModSyncInstaller.exe"
 echo Compiling AutoModSync components...
-"%CSC%" @"%REFS%" /target:library /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /out:"%CLIENTDLL%" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.SyncUiState.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ClientResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
+"%CSC%" @"%REFS%" /target:library /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /out:"%CLIENTDLL%" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.SyncUiState.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ClientResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
+"%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
 if errorlevel 1 goto :Fail
 "%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /win32icon:"%APPLYICO%" /out:"%APPLYEXE%" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
@@ -135,6 +139,10 @@ if errorlevel 1 goto :Fail
 rem Sign AutoModSync-authored PE files before they are copied or packaged.
 call :SignReleaseBinaries
 if errorlevel 1 goto :Fail
+if exist "%ROOT%verify-no-pii.ps1" (
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -Root "%ROOT%" -ArtifactPaths "%CLIENTDLL%;%SERVERDLL%;%APPLYEXE%;%INSTALLEREXE%;%BUILDTOOL%"
+  if errorlevel 1 goto :Fail
+)
 copy /y "%BUILDTOOL%" "%TOOLSDIR%\AutoModSync.BuildTool.exe" >nul
 if errorlevel 1 goto :Fail
 
