@@ -41,6 +41,8 @@ Live fail-closed evidence, 2026-09-24: `trust-decline` passed. The native first-
 
 Live fail-closed evidence, 2026-09-24: `server-error` passed. The server injected `AMS4_Error` only after the AMS session had been recognized; the client rejected the protected join on that server-reported error, no vanilla `ServerHandshake` replay was observed, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
 
+Live fail-closed evidence, 2026-09-24: `bad-bundle-header` passed. The client rejected the injected invalid/oversized bundle header before accepting transfer state, the server consumed the intended fault mode, no vanilla `ServerHandshake` replay was observed, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
+
 ### Recognized AMS must fail closed
 
 For every case below, verify that no normal ServerHandshake is replayed and no live synchronized file is changed:
@@ -56,7 +58,7 @@ The development runtime now includes a guided live fault-injection suite in `tes
 - [x] Invalid RSA/SHA-256 manifest signature.
 - [x] User declines first-contact server trust.
 - [x] Server-reported AMS error after recognition.
-- [ ] Invalid/oversized bundle header.
+- [x] Invalid/oversized bundle header.
 - [ ] Out-of-order/oversized legacy bundle chunk.
 - [ ] Out-of-order/oversized binary bundle batch.
 - [ ] Wrong final bundle SHA-256/size/file count.
