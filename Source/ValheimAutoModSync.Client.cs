@@ -118,6 +118,7 @@ namespace ValheimAutoModSync
         private static AutoModSyncResumeCandidate _resumeOfferedCandidate;
         private static bool _bundleResumeSlotActive;
 #if AMS_DEV_TESTS
+        private static readonly Dictionary<int, string> DevServerBrowserRowKeys = new Dictionary<int, string>();
         private static int _devDisconnectAfterChunk;
         private static bool _devEmulateLegacyClient;
         private static int _devTrustDisconnectGeneration;
@@ -140,6 +141,7 @@ namespace ValheimAutoModSync
         private static readonly Dictionary<string, ServerBrowserPresence> ServerBrowserPresenceCache = new Dictionary<string, ServerBrowserPresence>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<int, Vector4> ServerBrowserOriginalNameMargins = new Dictionary<int, Vector4>();
         private static FieldInfo _serverBrowserFilteredListField;
+        private static FieldInfo _serverBrowserEnsureVisibleField;
         private static Type _serverBrowserImageType;
         private static Type _serverBrowserTextType;
         private static string _startupReconnectTarget = "";
@@ -3205,7 +3207,7 @@ namespace ValheimAutoModSync
             if (filtered == null) return;
 
             bool enabled = _showServerBadges == null || _showServerBadges.Value;
-            RectTransform viewport = listRoot.parent as RectTransform;
+            RectTransform viewport = GetServerBrowserViewport(browser, panel, listRoot);
             int rowCount = Math.Min(listRoot.childCount, filtered.Count);
             int i;
             for (i = 0; i < rowCount; i++)
@@ -3225,9 +3227,14 @@ namespace ValheimAutoModSync
                 int gamePort;
                 if (!TryGetServerBrowserEndpoint(filtered[i], out host, out gamePort))
                 {
-                    SetServerBrowserBadge(row, false, "");
+                    // Valheim rebuilds the pooled row list and filtered model in separate steps while changing tabs.
+                    // A transient mismatch must not erase a badge from a row that will be rebound on the next refresh.
                     continue;
                 }
+
+#if AMS_DEV_TESTS
+                LogDevelopmentServerBrowserRowBinding(row, host, gamePort);
+#endif
 
                 ServerBrowserPresence presence = GetOrStartServerBrowserPresence(host, gamePort, now);
                 bool show = presence != null && presence.Completed && presence.IsAutoModSync;
@@ -3237,7 +3244,36 @@ namespace ValheimAutoModSync
             PruneServerBrowserPresenceCache(now);
         }
 
-        // Intent: Restricts passive discovery to rows that overlap the browser viewport so opening a large Community list cannot fan out rule queries to every listed server.
+        // Intent: Uses Valheim's own ServerList scroll controller as the clipping rectangle, falling back to the JoinPanel only when that private field is unavailable.
+        // Compatibility: the Phase 7 live probe confirmed m_serverListEnsureVisible is attached to the ServerList object in Valheim 1.0.
+        private static RectTransform GetServerBrowserViewport(ServerListGui browser, GameObject panel, Transform listRoot)
+        {
+            if (browser != null)
+            {
+                if (_serverBrowserEnsureVisibleField == null)
+                    _serverBrowserEnsureVisibleField = typeof(ServerListGui).GetField("m_serverListEnsureVisible", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                if (_serverBrowserEnsureVisibleField != null)
+                {
+                    try
+                    {
+                        Component ensureVisible = _serverBrowserEnsureVisibleField.GetValue(browser) as Component;
+                        if (ensureVisible != null)
+                        {
+                            RectTransform rect = ensureVisible.transform as RectTransform;
+                            if (rect != null) return rect;
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            RectTransform panelRect = panel == null ? null : panel.transform as RectTransform;
+            if (panelRect != null) return panelRect;
+            return listRoot == null ? null : listRoot.parent as RectTransform;
+        }
+
+        // Intent: Restricts passive discovery to rows that overlap Valheim's actual server-list viewport so Community browsing cannot fan out rule queries to every listed server.
         private static bool IsServerBrowserRowVisible(RectTransform row, RectTransform viewport)
         {
             if (row == null || !row.gameObject.activeInHierarchy) return false;
@@ -3255,11 +3291,26 @@ namespace ValheimAutoModSync
                 return true;
             }
 
-            return rowCorners[2].x >= viewCorners[0].x &&
-                   rowCorners[0].x <= viewCorners[2].x &&
-                   rowCorners[2].y >= viewCorners[0].y &&
-                   rowCorners[0].y <= viewCorners[2].y;
+            const float tolerance = 4f;
+            return rowCorners[2].x >= viewCorners[0].x - tolerance &&
+                   rowCorners[0].x <= viewCorners[2].x + tolerance &&
+                   rowCorners[2].y >= viewCorners[0].y - tolerance &&
+                   rowCorners[0].y <= viewCorners[2].y + tolerance;
         }
+
+#if AMS_DEV_TESTS
+        // Intent: Logs only row-to-endpoint rebinding transitions in development builds so pooled-row reuse bugs can be diagnosed without exposing fingerprints or player identity.
+        private static void LogDevelopmentServerBrowserRowBinding(Transform row, string host, int gamePort)
+        {
+            if (row == null || _instance == null) return;
+            int id = row.gameObject.GetInstanceID();
+            string key = (host ?? "").ToLowerInvariant() + ":" + gamePort.ToString(CultureInfo.InvariantCulture);
+            string previous;
+            if (DevServerBrowserRowKeys.TryGetValue(id, out previous) && String.Equals(previous, key, StringComparison.OrdinalIgnoreCase)) return;
+            DevServerBrowserRowKeys[id] = key;
+            _instance.Logger.LogInfo("AutoModSync DEV browser row binding: row=" + id.ToString(CultureInfo.InvariantCulture) + " endpoint=" + key + ".");
+        }
+#endif
 
         // Intent: Extracts the dedicated host/game-port pair from Valheim's ServerListEntryData without depending on a private field name that may change between game builds.
         private static bool TryGetServerBrowserEndpoint(object entry, out string host, out int gamePort)
