@@ -49,6 +49,10 @@ Live fail-closed evidence, 2026-09-24: `bad-binary-batch` passed. The client rej
 
 Live fail-closed evidence, 2026-09-24: `bad-bundle-end` passed. The client rejected the intentionally mismatched final bundle completion metadata before extraction/apply acceptance, the server consumed the intended fault mode, no vanilla `ServerHandshake` replay was observed, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
 
+Live fail-closed evidence, 2026-09-24: `apply-prep-failure` passed. After a fully verified/extracted bundle, the development hook forced apply/restart preparation to fail before durable transaction state; the client rejected the protected join, no vanilla `ServerHandshake` replay was observed, the reserved payload never reached the live client plugins tree, and no durable pending apply was accepted.
+
+The guided recognized-AMS fail-closed matrix completed 12/12 live cases successfully on 2026-09-24. Every injected recognized-AMS failure remained fail-closed: no case replayed the normal Valheim `ServerHandshake`, no reserved test payload reached the live client plugins tree, and no failed case was accepted into durable pending apply state.
+
 ### Recognized AMS must fail closed
 
 For every case below, verify that no normal ServerHandshake is replayed and no live synchronized file is changed:
@@ -68,7 +72,7 @@ The development runtime now includes a guided live fault-injection suite in `tes
 - [x] Out-of-order/oversized legacy bundle chunk.
 - [x] Out-of-order/oversized binary bundle batch.
 - [x] Wrong final bundle SHA-256/size/file count.
-- [ ] Apply/restart preparation failure after a verified download.
+- [x] Apply/restart preparation failure after a verified download.
 
 ### Path boundary
 
