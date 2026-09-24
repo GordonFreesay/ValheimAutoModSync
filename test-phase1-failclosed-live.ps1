@@ -75,13 +75,13 @@ function Read-SharedLogLines([string]$Path) {
     $stream = $null
     $reader = $null
     try {
-        $stream = New-Object System.IO.FileStream(
+        $stream = [System.IO.FileStream]::new(
             $Path,
             [System.IO.FileMode]::Open,
             [System.IO.FileAccess]::Read,
             ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
         )
-        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8, $true, 4096, $false)
+        $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8, $true, 4096, $false)
         $lines = New-Object System.Collections.Generic.List[string]
         while (-not $reader.EndOfStream) {
             [void]$lines.Add($reader.ReadLine())
