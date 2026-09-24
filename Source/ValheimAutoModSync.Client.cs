@@ -118,6 +118,9 @@ namespace ValheimAutoModSync
         private static bool _devEmulateLegacyClient;
         private static int _devTrustDisconnectGeneration;
         private static DateTime _devTrustDisconnectUtc = DateTime.MinValue;
+        private static bool _devUiPreviewActive;
+        private static int _devUiPreviewIndex;
+        private static DateTime _devUiPreviewNextUtc = DateTime.MinValue;
 #endif
         private static bool _restartRequested;
         private static DateTime _quitAfterUtc = DateTime.MinValue;
@@ -167,6 +170,9 @@ namespace ValheimAutoModSync
                     return;
                 }
                 LoadStartupReconnectRequest();
+#if AMS_DEV_TESTS
+                TryStartDevelopmentUiPreview();
+#endif
                 Harmony harmony = new Harmony(PluginGuid);
                 harmony.PatchAll(typeof(OnNewConnectionPatch));
                 harmony.PatchAll(typeof(InvokeServerHandshakeGatePatch));
@@ -201,6 +207,9 @@ namespace ValheimAutoModSync
         // Compatibility: non-AutoModSync servers are released after a short discovery window; acknowledged AutoModSync servers get a longer manifest-start window.
         private void Update()
         {
+#if AMS_DEV_TESTS
+            if (_devUiPreviewActive) UpdateDevelopmentUiPreview();
+#endif
             if (_restartRequested && !_quitIssued && _quitAfterUtc != DateTime.MinValue && DateTime.UtcNow >= _quitAfterUtc)
             {
                 _quitIssued = true;
@@ -1943,6 +1952,9 @@ namespace ValheimAutoModSync
         {
             if (rpc == null || PreflightComplete.Contains(rpc)) return;
 
+#if AMS_DEV_TESTS
+            _devUiPreviewActive = false;
+#endif
             _pendingRpc = rpc;
             _pendingPassword = "";
             _waitingForServer = true;
@@ -3109,6 +3121,119 @@ namespace ValheimAutoModSync
 #endif
             return ClientCapabilities;
         }
+
+#if AMS_DEV_TESTS
+        // Intent: Consumes a one-shot marker that previews every Phase 7 presentation state at the main menu without opening a network connection or changing files.
+        // Scope: development builds only; release binaries do not contain the preview path.
+        private static void TryStartDevelopmentUiPreview()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase7-test-ui-preview.once");
+                if (!File.Exists(marker)) return;
+                try { File.Delete(marker); } catch { }
+                _devUiPreviewActive = true;
+                _devUiPreviewIndex = 0;
+                _devUiPreviewNextUtc = DateTime.MinValue;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST starting Phase 7 branded UI preview.");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV Phase 7 UI preview marker could not be consumed: " + ex.Message);
+            }
+        }
+
+        // Intent: Advances the development-only branded UI preview through deterministic trust/comparison/queue/transfer/verification/restart states.
+        private static void UpdateDevelopmentUiPreview()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (_devUiPreviewNextUtc != DateTime.MinValue && now < _devUiPreviewNextUtc) return;
+
+            if (_devUiPreviewIndex >= 10)
+            {
+                _devUiPreviewActive = false;
+                _devUiPreviewNextUtc = DateTime.MinValue;
+                HideSyncOverlay();
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 7 branded UI preview completed.");
+                return;
+            }
+
+            ShowDevelopmentUiPreviewStage(_devUiPreviewIndex, now);
+            _devUiPreviewIndex++;
+            _devUiPreviewNextUtc = now.AddSeconds(3.5);
+        }
+
+        // Intent: Seeds one deterministic presentation-only Phase 7 snapshot so the maintainer can visually inspect the renderer without mutating synchronization policy.
+        private static void ShowDevelopmentUiPreviewStage(int stage, DateTime nowUtc)
+        {
+            const string fingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+            const long mib = 1024L * 1024L;
+
+            _uiState.Reset();
+            _uiState.SetServerFingerprint(fingerprint);
+            _uiState.SetComparison(63, 61, 2, 1, 348L * mib);
+            _overlayVisible = true;
+            _overlayHideUtc = DateTime.MinValue;
+
+            if (stage == 0)
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Trust, "Trust this server?",
+                    "Preview: the real trust state appears while the native Windows Yes/No confirmation remains open.");
+            }
+            else if (stage == 1)
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Comparing, "Comparing server mods...",
+                    "Preview: signed manifest verified. Comparing required files with this client.");
+            }
+            else if (stage == 2)
+            {
+                _uiState.SetQueue(3, 4, 4);
+                ShowSyncOverlay(AutoModSyncUiPhase.Queued, "Queued for synchronization...",
+                    "Preview: the server is limiting simultaneous fresh-client transfers. Your place is reserved.");
+            }
+            else if (stage == 3)
+            {
+                _uiState.BeginTransfer(313L * mib + (410L * 1024L), 96L * mib, nowUtc.AddSeconds(-6.0));
+                _uiState.UpdateTransfer(188L * mib, nowUtc);
+                ShowSyncOverlay(AutoModSyncUiPhase.Downloading, "Resuming required mods...",
+                    "Preview: verified package data was retained from an interrupted transfer.");
+            }
+            else if (stage == 4)
+            {
+                _uiState.BeginVerification(63);
+                int i;
+                for (i = 0; i < 37; i++) _uiState.MarkVerified();
+                ShowSyncOverlay(AutoModSyncUiPhase.Verifying, "Verifying synchronized files...",
+                    "Preview: checking extracted file sizes and SHA-256 hashes before anything can be applied.");
+            }
+            else if (stage == 5)
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Applying, "Preparing synchronized changes...",
+                    "Preview: verified files are ready. Preparing a crash-safe apply transaction.");
+            }
+            else if (stage == 6)
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Restarting, "Sync complete. Restarting Valheim...",
+                    "Preview: verified changes will be applied out-of-process before Valheim relaunches.");
+            }
+            else if (stage == 7)
+            {
+                _uiState.SetComparison(0, 0, 0, 0, 0L);
+                ShowSyncOverlay(AutoModSyncUiPhase.Reconnecting, "Reconnecting to synchronized server...",
+                    "Preview: Valheim restarted successfully and AutoModSync is restoring the saved join.");
+            }
+            else if (stage == 8)
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Complete, "Already synchronized.",
+                    "Preview: required mods match this trusted server. Joining normally...");
+            }
+            else
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Failed, "AutoModSync blocked this join.",
+                    "Preview: a protected synchronization failure is shown briefly without releasing the held vanilla handshake.");
+            }
+        }
+#endif
 
 #if AMS_DEV_TESTS
         // Intent: Forces exactly one verified server identity through first-contact trust UI without altering the existing trust store.
