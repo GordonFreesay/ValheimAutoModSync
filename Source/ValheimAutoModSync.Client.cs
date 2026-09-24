@@ -620,6 +620,13 @@ namespace ValheimAutoModSync
                     _serverSupportsBundleScheduler = false;
                     if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST emulating a pre-resume AMS4 client; bundle-resume1 and bundle-scheduler1 are ignored for this connection.");
                 }
+                if (serverVersion.StartsWith("2.5.", StringComparison.Ordinal)
+                    && !_serverSupportsBundleResume
+                    && !_serverSupportsBundleScheduler
+                    && _instance != null)
+                {
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: 2.5 AMS4 capability set accepted; resume/scheduler extensions remain disabled.");
+                }
 #endif
                 if (_instance != null)
                 {
