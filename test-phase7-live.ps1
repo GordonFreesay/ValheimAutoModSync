@@ -248,7 +248,7 @@ switch ($Action) {
         Require-Clean-Apply-State
         if (-not (Test-Path -LiteralPath $clientFixture -PathType Leaf)) { throw 'Client fixture is already absent; cleanup reconciliation cannot be validated.' }
         if (Test-Path -LiteralPath $serverFixture -PathType Leaf) { Remove-Item -LiteralPath $serverFixture -Force }
-        if (Test-Path -LiteralPath $serverTestRoot -PathType Container -and @(Get-ChildItem -LiteralPath $serverTestRoot -Force).Count -eq 0) {
+        if ((Test-Path -LiteralPath $serverTestRoot -PathType Container) -and (@(Get-ChildItem -LiteralPath $serverTestRoot -Force).Count -eq 0)) {
             Remove-Item -LiteralPath $serverTestRoot -Force
         }
 
@@ -266,7 +266,7 @@ switch ($Action) {
     'InspectCleanup' {
         if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { throw 'No Phase 7 live state exists.' }
         $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-        if ($null -eq $state.cleanupApplyLogLines) { throw 'Cleanup was not prepared. Run -Action PrepareCleanup first.' }
+        if (-not ($state.PSObject.Properties.Name -contains 'cleanupApplyLogLines')) { throw 'Cleanup was not prepared. Run -Action PrepareCleanup first.' }
         $ok = $true
 
         if (Test-Path -LiteralPath $serverFixture -PathType Leaf) {
@@ -311,7 +311,7 @@ switch ($Action) {
         if ($ok) {
             try { Remove-Item -LiteralPath $statePath -Force } catch {}
             $clientDir = Split-Path -Parent $clientFixture
-            if (Test-Path -LiteralPath $clientDir -PathType Container -and @(Get-ChildItem -LiteralPath $clientDir -Force).Count -eq 0) {
+            if ((Test-Path -LiteralPath $clientDir -PathType Container) -and (@(Get-ChildItem -LiteralPath $clientDir -Force).Count -eq 0)) {
                 try { Remove-Item -LiteralPath $clientDir -Force } catch {}
             }
             Write-Host ''
