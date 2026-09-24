@@ -9,6 +9,7 @@ namespace ValheimAutoModSync
     // expand the server's distributable source boundary. File reparse points are excluded as sources as well.
     internal static class AutoModSyncManifestScanner
     {
+        // Intent: Enumerates one fixed manifest source tree while refusing reparse-point files and directories.
         internal static List<string> EnumerateFiles(string root, Action<string> warning)
         {
             List<string> files = new List<string>();
