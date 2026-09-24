@@ -43,8 +43,8 @@ namespace ValheimAutoModSync
         {
             try
             {
-                Console.WriteLine("[1/6] Eight peers respect four active slots and FIFO queue positions...");
-                AutoModSyncTransferScheduler slots = new AutoModSyncTransferScheduler(4, 64L * MiB, (int)MiB, 0.25);
+                Console.WriteLine("[1/8] Eight peers respect four active slots and FIFO queue positions...");
+                AutoModSyncTransferScheduler slots = new AutoModSyncTransferScheduler(4, 4, 64L * MiB, (int)MiB, 0.25);
                 for (long id = 1; id <= 8; id++) Assert(slots.Enqueue(id), "could not enqueue peer " + id);
 
                 for (long expected = 1; expected <= 4; expected++)
@@ -60,7 +60,7 @@ namespace ValheimAutoModSync
                 Assert(!slots.TryActivate(out extra), "fifth peer bypassed MaxActiveBundleTransfers");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[2/6] Releasing a slot promotes exactly the oldest waiting peer...");
+                Console.WriteLine("[2/8] Releasing a slot promotes exactly the oldest waiting peer...");
                 slots.Remove(2);
                 long promoted;
                 Assert(slots.TryActivate(out promoted), "queued peer was not promoted");
@@ -69,11 +69,11 @@ namespace ValheimAutoModSync
                 Assert(slots.QueuePosition(6) == 1, "queue did not advance after promotion");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[3/6] Aggregate token bucket never exceeds configured rate plus bounded burst...");
+                Console.WriteLine("[3/8] Aggregate token bucket never exceeds configured rate plus bounded burst...");
                 const long rate = 64L * MiB;
                 const int grant = 1024 * 1024;
                 const double burstSeconds = 0.25;
-                AutoModSyncTransferScheduler bandwidth = new AutoModSyncTransferScheduler(4, rate, grant, burstSeconds);
+                AutoModSyncTransferScheduler bandwidth = new AutoModSyncTransferScheduler(4, 4, rate, grant, burstSeconds);
                 for (long id = 1; id <= 4; id++)
                 {
                     bandwidth.Enqueue(id);
@@ -108,7 +108,7 @@ namespace ValheimAutoModSync
                 Assert(sentTotal >= (long)(rate * elapsedSeconds * 0.95), "aggregate scheduler materially underused available budget in deterministic simulation");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[4/6] Round-robin grants keep four continuously-demanding peers fair...");
+                Console.WriteLine("[4/8] Round-robin grants keep four continuously-demanding peers fair...");
                 long min = Int64.MaxValue;
                 long max = 0L;
                 for (long id = 1; id <= 4; id++)
@@ -122,8 +122,8 @@ namespace ValheimAutoModSync
                 Assert((double)max / min < 1.10, "fastest/slowest deterministic share ratio exceeded 1.10");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[5/6] Refunding a blocked grant preserves bytes and advances fairness...");
-                AutoModSyncTransferScheduler refund = new AutoModSyncTransferScheduler(2, 8L * MiB, 512 * 1024, 0.25);
+                Console.WriteLine("[5/8] Refunding a blocked grant preserves bytes and advances fairness...");
+                AutoModSyncTransferScheduler refund = new AutoModSyncTransferScheduler(2, 2, 8L * MiB, 512 * 1024, 0.25);
                 refund.Enqueue(1);
                 refund.Enqueue(2);
                 Assert(refund.TryActivate(out promoted) && promoted == 1, "refund peer 1 activation failed");
@@ -145,16 +145,35 @@ namespace ValheimAutoModSync
                 Assert(secondId == 2, "blocked/refunded peer monopolized the next round-robin turn");
                 Console.WriteLine("  PASS");
 
-                Console.WriteLine("[6/6] Removed queued peers are skipped without corrupting later FIFO order...");
-                AutoModSyncTransferScheduler removal = new AutoModSyncTransferScheduler(1, 4L * MiB, 256 * 1024, 0.25);
-                removal.Enqueue(10);
-                removal.Enqueue(11);
-                removal.Enqueue(12);
+                Console.WriteLine("[6/8] Removed queued peers are skipped without corrupting later FIFO order...");
+                AutoModSyncTransferScheduler removal = new AutoModSyncTransferScheduler(1, 2, 4L * MiB, 256 * 1024, 0.25);
+                Assert(removal.Enqueue(10), "peer 10 enqueue failed");
+                Assert(removal.Enqueue(11), "peer 11 enqueue failed");
+                Assert(removal.Enqueue(12), "peer 12 enqueue failed");
                 Assert(removal.TryActivate(out promoted) && promoted == 10, "peer 10 did not activate");
                 removal.Remove(11);
                 Assert(removal.QueuePosition(12) == 1, "removed queued peer still occupied a queue position");
                 removal.Remove(10);
                 Assert(removal.TryActivate(out promoted) && promoted == 12, "scheduler did not skip removed queued peer");
+                Console.WriteLine("  PASS");
+
+                Console.WriteLine("[7/8] Admission capacity is bounded at active + queued peers...");
+                AutoModSyncTransferScheduler bounded = new AutoModSyncTransferScheduler(2, 3, 8L * MiB, 256 * 1024, 0.25);
+                Assert(bounded.Enqueue(1), "bounded enqueue 1 failed");
+                Assert(bounded.Enqueue(2), "bounded enqueue 2 failed");
+                Assert(bounded.Enqueue(3), "bounded enqueue 3 failed");
+                Assert(bounded.Enqueue(4), "bounded enqueue 4 failed");
+                Assert(bounded.Enqueue(5), "bounded enqueue 5 failed");
+                Assert(!bounded.Enqueue(6), "scheduler accepted a peer beyond active+queued capacity");
+                Assert(bounded.MaxActive == 2 && bounded.MaxQueued == 3, "configured bounded capacity was not retained");
+                Console.WriteLine("  PASS");
+
+                Console.WriteLine("[8/8] Idle expiry never fires while scheduler demand is outstanding...");
+                long nowTicks = DateTime.UtcNow.Ticks;
+                long oldTicks = nowTicks - 30L * TimeSpan.TicksPerSecond;
+                Assert(!AutoModSyncTransferScheduler.ShouldExpireActivePeer(oldTicks, nowTicks, 10, true), "outstanding demand was incorrectly expired");
+                Assert(AutoModSyncTransferScheduler.ShouldExpireActivePeer(oldTicks, nowTicks, 10, false), "idle no-demand peer was not expired");
+                Assert(!AutoModSyncTransferScheduler.ShouldExpireActivePeer(nowTicks, nowTicks, 10, false), "fresh activity was incorrectly expired");
                 Console.WriteLine("  PASS");
 
                 Console.WriteLine();
