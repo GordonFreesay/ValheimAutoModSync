@@ -65,7 +65,12 @@ try {
     Assert-Contains $client 'AutoModSyncBadge' 'Client server-browser badge object'
     Assert-Contains $client 'ShowServerBadges' 'Client server-browser badge config'
     Assert-Contains $client 'm_serverListEnsureVisible' 'Client server-browser viewport anchor'
+    Assert-Contains $client 'm_serverListElements' 'Client exact server-row binding source'
+    Assert-Contains $client 'TryGetServerBrowserElementBinding' 'Client exact server-row binding'
     Assert-Contains $client 'LogDevelopmentServerBrowserRowBinding' 'Client pooled-row diagnostics'
+    if ([System.IO.File]::ReadAllText($client).IndexOf('_serverBrowserFilteredListField', [System.StringComparison]::Ordinal) -ge 0) {
+        throw 'Server-browser badge code must not index-zip m_filteredList with pooled UI rows.'
+    }
     Assert-Contains $client 'A transient mismatch must not erase a badge' 'Client tab-rebuild safety'
     if ([System.IO.File]::ReadAllText($client).IndexOf('typeof(CanvasRenderer)', [System.StringComparison]::Ordinal) -ge 0) {
         throw 'Client browser badge must not take a compile-time CanvasRenderer/UIModule dependency; Unity UI Image adds its required renderer at runtime.'
