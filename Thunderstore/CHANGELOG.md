@@ -2,6 +2,11 @@
 
 ## 2.6.0 (development)
 
+- Added a state-driven in-game synchronization panel using AutoModSync's charcoal/gray/orange branding, with the AMS logo, signed-manifest comparison counts, queue status, transfer progress, current/average throughput, ETA, resume-retained bytes, verification progress, restart/reconnect status, and bounded failure presentation.
+- Kept Phase 7 presentation policy-free: UI state observes decisions already made by trust/network/filesystem/scheduler code and does not control admission, pacing, trust, or fail-open/fail-closed behavior.
+- Added reproducible executable branding from the canonical AMS PNG: development/release builds generate a multi-size ICO, embed it into the Apply helper (and standalone installer on release builds), and package the physical ICO beside the executable.
+- Added deterministic Windows UI-state/branding validation plus a development-only one-shot ten-state visual preview; release client binaries do not contain the preview hook.
+
 - Added conservative trusted-server content ownership. AutoModSync records only files it actually installs/replaces, scoped by the trusted server fingerprint; matching pre-existing local files are not claimed.
 - Added a fixed server-side `BepInEx/AutoModSync/ClientPayload/plugins/**` tree for client-required plugins/assets that the dedicated server must not load. Payload files reuse signed `P` destinations, honor exclusions, and fail explicitly on case-insensitive collisions with normal synchronized plugins.
 - Stale owned deletion now additionally requires the immediately prior successful synchronization to have used the same trusted server fingerprint; a server switch defers exact stale cleanup instead of deleting across server contexts.
