@@ -615,8 +615,8 @@ namespace ValheimAutoModSync
                 if (_devEmulateLegacyClient)
                 {
                     _serverSupportsBundleResume = false;
-                _serverSupportsBundleScheduler = false;
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST emulating a pre-resume AMS4 client; bundle-resume1 is ignored for this connection.");
+                    _serverSupportsBundleScheduler = false;
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST emulating a pre-resume AMS4 client; bundle-resume1 and bundle-scheduler1 are ignored for this connection.");
                 }
 #endif
                 if (_instance != null)
@@ -1564,6 +1564,7 @@ namespace ValheimAutoModSync
             _serverSupportsBundleBatch = false;
             _serverSupportsBundlePipeline = false;
             _serverSupportsBundleResume = false;
+            _serverSupportsBundleScheduler = false;
             _preflightGateActive = true;
             _serverHandshakeHeld = false;
             _heldServerHandshakeParameters = new object[0];
@@ -1683,6 +1684,7 @@ namespace ValheimAutoModSync
             _serverSupportsBundleBatch = false;
             _serverSupportsBundlePipeline = false;
             _serverSupportsBundleResume = false;
+            _serverSupportsBundleScheduler = false;
             _pendingRpc = null;
             if (!_restartRequested) HideSyncOverlay();
             ResetManifestState();
@@ -2607,6 +2609,7 @@ namespace ValheimAutoModSync
             _serverSupportsBundleBatch = false;
             _serverSupportsBundlePipeline = false;
             _serverSupportsBundleResume = false;
+            _serverSupportsBundleScheduler = false;
             _preflightGateActive = false;
             _serverHandshakeHeld = false;
             _heldServerHandshakeParameters = new object[0];
