@@ -110,7 +110,10 @@ function Save-State($State){
 
 function Start-Suite {
     Ensure-Roots
-    if(Test-Path -LiteralPath $statePath -PathType Leaf){throw 'Phase 3 cache lifecycle state already exists. Run Cleanup first.'}
+    if(Test-Path -LiteralPath $statePath -PathType Leaf){
+        $existing=Get-Content -LiteralPath $statePath -Raw|ConvertFrom-Json
+        throw ("Phase 3 cache lifecycle suite is already armed at stage " + [string]$existing.stage + ". Do not run StartSuite again. Run Next after the requested join, or Cleanup to reset the suite.")
+    }
     if(Test-Path -LiteralPath $clientPending -PathType Leaf){throw "Client has an existing pending apply: $clientPending"}
     if(Test-Path -LiteralPath $clientReconnect -PathType Leaf){throw "Client has an existing AutoModSync reconnect token: $clientReconnect"}
     if(Test-Path -LiteralPath $clientTransaction){throw "Client has an existing apply transaction: $clientTransaction"}
