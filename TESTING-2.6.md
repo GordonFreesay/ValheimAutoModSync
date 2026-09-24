@@ -56,15 +56,15 @@ Create fixtures only inside a disposable test Valheim/BepInEx tree.
 
 ### Resource limits / ZIP extraction
 
-- [ ] Client rejects a compressed bundle declaration over 2048 MiB before opening/writing the staging archive.
-- [ ] Client rejects more than 4096 required bundle files.
-- [ ] Client rejects more than 4096 MiB expanded required content.
-- [ ] Client rejects an individual required file over the 512 MiB hard client ceiling.
-- [ ] Client rejects an implausible/excessive bundle chunk count.
-- [ ] Client rejects non-hex or non-64-character bundle SHA-256 text.
-- [ ] Legacy Base64/binary batch bytes cannot write past the bundle's declared compressed size.
-- [ ] ZIP entry whose expanded stream exceeds its signed size is stopped during extraction.
-- [ ] Cumulative ZIP expansion cannot exceed the client expanded-size ceiling.
+- [x] Client rejects a compressed bundle declaration over 2048 MiB before opening/writing the staging archive.
+- [x] Client rejects more than 4096 required bundle files.
+- [x] Client rejects more than 4096 MiB expanded required content.
+- [x] Client rejects an individual required file over the 512 MiB hard client ceiling.
+- [x] Client rejects an implausible/excessive bundle chunk count.
+- [x] Client rejects non-hex or non-64-character bundle SHA-256 text.
+- [x] Legacy Base64/binary batch bytes cannot write past the bundle's declared compressed size.
+- [x] ZIP entry whose expanded stream exceeds its signed size is stopped during extraction.
+- [x] Cumulative ZIP expansion cannot exceed the client expanded-size ceiling.
 - [ ] Partially extracted failed entry is not left as an accepted pending file.
 - [ ] Server rejects requested expanded source bytes above `MaxExpandedBundleMiB` before ZIP construction.
 - [ ] Server aborts bundle construction once compressed output crosses `MaxBundleMiB`.
@@ -178,6 +178,7 @@ Development-only compatibility emulation is available without a second tester. C
 - Phase 1 production manifest-scanner validation passed on 2026-09-24 for ordinary recursive enumeration plus a real Windows directory junction: the scanner identified the junction as a reparse point, did not traverse or publish anything beneath it, did not publish the outside target, and emitted the expected skip warning. File-symlink creation was denied on this host, so the separate `Server scanner does not publish a reparse-point file` gate remains pending rather than being inferred from the directory result.
 - Phase 1/2 adversarial Apply-helper validation was rerun on 2026-09-24 with the harness expanded to 6/6 cases. In addition to the existing rollback/journal/recovery checks, a staging path redirected through a real junction was rejected without changing the legitimate live file, and a live plugin destination redirected through a real junction was rejected without changing the outside target. This closes the independent Apply-helper staging/live reparse gate.
 - Phase 1 client live-destination validation passed on 2026-09-24. The isolated harness verified an ordinary plugin destination resolves normally, an existing parent junction is rejected, and an existing leaf reparse point is rejected with the production client's `SafeUnderRoot(rootPath, relative, true)` wiring. No real Valheim/BepInEx files were touched.
+- Phase 1 client resource-limit validation passed in GitHub Actions on Windows Server 2025 on 2026-09-24. The production `AutoModSync.ClientResourceSafety.cs` harness passed 10/10 cases / 16 assertions covering the 2048 MiB compressed ceiling, 4096-file ceiling, 512 MiB per-file ceiling, 4096 MiB expanded ceiling, chunk-count ceiling, SHA-256 syntax, declared-compressed-size enforcement, resumable chunk geometry, signed ZIP-entry size enforcement, and cumulative ZIP expansion enforcement. The maintainer's local Application Control policy blocked execution of the freshly compiled `%TEMP%` harness, so the exact CI run is the validation evidence; Windows Security was not disabled or weakened. The separate partial-extraction-cleanup gate remains pending.
 - Phase 5 integrated development build passed locally after the scheduler integration was added. `build-dev.bat` reported `SUCCESS: development runtime built in: C:\Users\billy\source\repos\oG1337\ValheimAutoModSync\DevBuild` and explicitly produced no installer, release ZIP, store package, tag, or publication artifact.
 - Phase 5 one-client live scheduler integration passed on 2026-09-23 with a one-file delta. The server logged scheduler admission (`queuePosition=1, active=0/4`), built the 4.0 KB bundle, applied temporary Steam transport tuning, published `bundle ready` with `schedulerQueue=0.018 s`, emitted transfer telemetry, and restored the exact Steam bundle transport settings after synchronization. The restarted client then executed its one-shot reconnect, reported that its mods already matched the trusted server, and released the held Valheim ServerHandshake. This closes the basic integrated admission -> transfer -> apply/restart/reconnect path for one client.
 - Phase 5 aggregate-cap/backpressure live validation passed on 2026-09-23 using the 313.4 MB / 60-file cached bundle with `AggregateSendRateMaxBytesPerSec=4194304` and `SchedulerMaxSteamQueueMs=1`. The server repeatedly logged scheduler backpressure while Steam reliable queue time was approximately 13-62 ms, then completed normally instead of disconnecting/failing. Completion telemetry reported `rawPayload=313.4 MB, elapsed=83.383 s, avgRawPayload=3.76 MiB/s, aggregateCap=4.0 MB/s`, and the original Steam transport settings were restored afterward. The normal 64 MiB/s aggregate configuration was subsequently restored, as confirmed by the following compatibility run's `aggregateCap=64.0 MB/s` completion telemetry.
