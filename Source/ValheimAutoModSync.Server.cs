@@ -355,7 +355,7 @@ namespace ValheimAutoModSync
                 }
 
                 BundleTransfer transfer;
-                if (BundleTransfers.TryGetValue(rpc, out transfer) && transfer != null && transfer.LastActivityUtc != DateTime.MinValue)
+                if (BundleTransfers.TryGetValue(rpc, out transfer) && transfer != null && transfer.PendingRequest == null && transfer.LastActivityUtc != DateTime.MinValue)
                 {
                     int timeout = _transferIdleTimeoutSeconds == null ? 60 : Math.Max(10, _transferIdleTimeoutSeconds.Value);
                     if ((now - transfer.LastActivityUtc).TotalSeconds >= timeout) idle.Add(rpc);
