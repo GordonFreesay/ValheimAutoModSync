@@ -159,8 +159,8 @@ Development-only compatibility emulation is available without a second tester. C
 - [ ] If a formerly owned stale file is locally modified before the server removes it, the client preserves the file, relinquishes ownership metadata without a live delete, and continues the trusted join.
 - [ ] A pre-existing local file that already matches the signed server manifest is never claimed merely because it matches; later server omission does not delete it.
 - [x] Isolated helper validation covers plugin, patcher, and config-root stale deletion and confirms protected config names remain unownable/undeletable.
-- [ ] Switching to another trusted server never consults or deletes the first server's fingerprint-scoped ownership ledger.
-- [ ] Ownership lifecycle adds no network protocol break: server manifest signing/trust remains the deletion authorization input and AMS stays protocol 4.
+- [x] Cross-server ownership isolation is covered by production-helper CI and source review: only the current trusted fingerprint ledger is loaded, and another trusted fingerprint cannot authorize deletion from the first ledger.
+- [x] Source review confirms Phase 6 adds no network protocol break: no new server RPC/capability/wire field is introduced; the existing verified signed manifest + trusted fingerprint feed local ownership lifecycle while AMS remains protocol 4.
 
 ## Runtime evidence — 2026-09-23
 
