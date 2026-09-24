@@ -227,8 +227,8 @@ internal static class AutoModSyncInstaller
             _uninstall = new Button();
             _uninstall.Text = "Uninstall";
             _uninstall.Font = new Font(Font.FontFamily, 10F, FontStyle.Bold);
-            _uninstall.Location = new Point(500, 542);
-            _uninstall.Size = new Size(112, 36);
+            _uninstall.Location = new Point(474, 542);
+            _uninstall.Size = new Size(120, 36);
             _uninstall.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             _uninstall.BackColor = Color.FromArgb(96, 45, 31);
             _uninstall.ForeColor = TextMain;
@@ -241,8 +241,8 @@ internal static class AutoModSyncInstaller
             _install = new Button();
             _install.Text = "Install";
             _install.Font = new Font(Font.FontFamily, 10F, FontStyle.Bold);
-            _install.Location = new Point(620, 542);
-            _install.Size = new Size(118, 36);
+            _install.Location = new Point(602, 542);
+            _install.Size = new Size(136, 36);
             _install.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             _install.BackColor = Accent;
             _install.ForeColor = Color.Black;
@@ -396,6 +396,7 @@ internal static class AutoModSyncInstaller
         {
             RadioButton role = new RadioButton();
             role.Text = text;
+            role.UseMnemonic = false;
             role.Location = new Point(left, 25);
             role.AutoSize = true;
             role.ForeColor = TextMain;
