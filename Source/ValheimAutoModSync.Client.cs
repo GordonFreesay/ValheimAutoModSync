@@ -1482,8 +1482,11 @@ namespace ValheimAutoModSync
                 string pending = Path.Combine(amsRoot, "pending.txt");
                 if (PendingRelativePaths.Count == 0)
                     throw new InvalidOperationException("AutoModSync apply/restart was requested without any live file operations.");
-                WritePendingFileDurable(pending, PendingRelativePaths);
+
+                // ownership-next is written first; pending.txt is the durable trigger observed by startup recovery.
+                // A crash between these writes leaves harmless metadata but never a half-described live transaction.
                 AutoModSyncOwnershipState.WritePendingDurable(amsRoot, _serverFingerprint, DesiredOwnershipEntries);
+                WritePendingFileDurable(pending, PendingRelativePaths);
                 string reconnect = Path.Combine(amsRoot, "reconnect.txt");
                 bool reconnectAvailable = !String.IsNullOrEmpty(_reconnectHost);
                 if (reconnectAvailable)
