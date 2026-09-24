@@ -127,11 +127,21 @@ function Inspect-Test {
     }
 
     $admissionCount=[regex]::Matches($serverText,'AutoModSync bundle request admitted to scheduler: .*requestedFiles=1,').Count
-    if($admissionCount-ge 2){
-        Write-Host("  PASS observed at least two independent scheduler admissions for the same one-file delta ({0})."-f$admissionCount)
+    if($admissionCount-eq 2){
+        Write-Host '  PASS observed exactly two scheduler admissions for the same one-file delta.'
     }else{
-        Write-Host("  FAIL expected two scheduler admissions for the one-file delta; observed {0}."-f$admissionCount)
+        Write-Host("  FAIL expected exactly two scheduler admissions for the two real clients; observed {0}."-f$admissionCount)
         $ok=$false
+    }
+
+    if($serverText.IndexOf('Bundle batch request failed:',[StringComparison]::OrdinalIgnoreCase)-ge 0-or
+       $serverText.IndexOf('Bundle chunk request failed:',[StringComparison]::OrdinalIgnoreCase)-ge 0-or
+       $serverText.IndexOf('Scheduled bundle preparation failed:',[StringComparison]::OrdinalIgnoreCase)-ge 0-or
+       $serverText.IndexOf('Scheduled bundle publication failed:',[StringComparison]::OrdinalIgnoreCase)-ge 0){
+        Write-Host '  FAIL the two-client run produced an AutoModSync bundle preparation/serving warning.'
+        $ok=$false
+    }else{
+        Write-Host '  PASS no AutoModSync bundle preparation/serving warning was emitted.'
     }
 
     $waitMatch=[regex]::Match($serverText,'AutoModSync bundle cache WAIT key=([0-9a-fA-F]+); another client is building the identical artifact.')
