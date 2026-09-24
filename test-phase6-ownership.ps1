@@ -148,7 +148,7 @@ Write-Host "Sandbox: $sandbox"
 Write-Host ''
 
 try {
-    Write-Host '[1/6] Verified write acquires ownership only after COMMITTED...'
+    Write-Host '[1/7] Verified write acquires ownership only after COMMITTED...'
     Reset-Sandbox
     Write-Utf8 $staged $ownedText
     Write-PendingWrite 'P' $rel
@@ -163,7 +163,7 @@ try {
     Assert-True (-not (Test-Path -LiteralPath $ownershipPending)) 'Committed write left ownership-next behind.'
     Write-Host '  PASS'
 
-    Write-Host '[2/6] Exact same-server owned bytes can be retired transactionally...'
+    Write-Host '[2/7] Exact same-server owned bytes can be retired transactionally...'
     Write-PendingDelete 'P' $rel $owned.Size $owned.Sha
     Write-OwnershipPending $fpA @()
     $exit = Invoke-Helper
@@ -173,7 +173,7 @@ try {
     Assert-True (-not $ledgerText.Contains($owned.Sha)) 'Committed delete retained stale ownership.'
     Write-Host '  PASS'
 
-    Write-Host '[3/6] Wrong digest deletion is rejected without touching the live file...'
+    Write-Host '[3/7] Wrong digest deletion is rejected without touching the live file...'
     Reset-Sandbox
     Write-Utf8 $live $ownedText
     Write-Ledger $fpA @($owned)
@@ -186,7 +186,7 @@ try {
     Assert-True (([IO.File]::ReadAllText((Join-Path $ownershipRoot ($fpA + '.txt')))).Contains($owned.Sha)) 'Wrong-digest deletion changed ownership.'
     Write-Host '  PASS'
 
-    Write-Host '[4/6] Another trusted server cannot delete server-A ownership...'
+    Write-Host '[4/7] Another trusted server cannot delete server-A ownership...'
     Reset-Sandbox
     Write-Utf8 $live $ownedText
     Write-Ledger $fpA @($owned)
@@ -198,7 +198,7 @@ try {
     Assert-True (([IO.File]::ReadAllText((Join-Path $ownershipRoot ($fpA + '.txt')))).Contains($owned.Sha)) 'Cross-server deletion changed server-A ownership.'
     Write-Host '  PASS'
 
-    Write-Host '[5/6] PREPARED deletion interruption rolls the file back before retry...'
+    Write-Host '[5/7] PREPARED deletion interruption rolls the file back before retry...'
     Reset-Sandbox
     Write-Utf8 $live $ownedText
     Write-Ledger $fpA @($owned)
@@ -230,7 +230,7 @@ try {
     Assert-True (-not ([IO.File]::ReadAllText((Join-Path $ownershipRoot ($fpA + '.txt'))).Contains($owned.Sha))) 'Retry after rollback did not publish new ownership.'
     Write-Host '  PASS'
 
-    Write-Host '[6/6] COMMITTED interruption preserves new live state and publishes ownership during recovery...'
+    Write-Host '[6/7] COMMITTED interruption preserves new live state and publishes ownership during recovery...'
     Reset-Sandbox
     Write-Utf8 $staged $ownedText
     Write-PendingWrite 'P' $rel
@@ -250,6 +250,46 @@ try {
     Assert-True ((Test-Path -LiteralPath $live) -and ([IO.File]::ReadAllText($live) -eq $ownedText)) 'COMMITTED recovery changed the winning live state.'
     Assert-True (([IO.File]::ReadAllText((Join-Path $ownershipRoot ($fpA + '.txt')))).Contains($owned.Sha)) 'COMMITTED recovery did not publish ownership.'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $amsRoot 'apply-transaction'))) 'COMMITTED recovery did not clean the transaction directory.'
+    Write-Host '  PASS'
+
+    Write-Host '[7/7] Ownership deletion stays inside P/R/C roots and protected config remains forbidden...'
+    Reset-Sandbox
+    $patcherRoot = Join-Path $bepInExRoot 'patchers'
+    $configRoot = Join-Path $bepInExRoot 'config'
+    New-Item -ItemType Directory -Path $patcherRoot,$configRoot -Force | Out-Null
+
+    $patchRel = 'Phase6Fixture\owned-patcher.txt'
+    $configRel = 'Phase6Fixture\owned-client.cfg'
+    $patchText = 'PATCHER-OWNED'
+    $configText = 'CONFIG-OWNED'
+    $patch = [pscustomobject]@{ Kind='R'; Rel=$patchRel; Size=[Text.Encoding]::UTF8.GetByteCount($patchText); Sha=Get-ShaHex $patchText }
+    $config = [pscustomobject]@{ Kind='C'; Rel=$configRel; Size=[Text.Encoding]::UTF8.GetByteCount($configText); Sha=Get-ShaHex $configText }
+    $patchLive = Join-Path $patcherRoot $patchRel
+    $configLive = Join-Path $configRoot $configRel
+    Write-Utf8 $patchLive $patchText
+    Write-Utf8 $configLive $configText
+    Write-Ledger $fpA @($patch,$config)
+
+    Write-Utf8 $pendingPath ('AMSPENDING2' + $crlf +
+        'D|R|' + $patch.Size + '|' + $patch.Sha + '|' + (B64 $patchRel) + $crlf +
+        'D|C|' + $config.Size + '|' + $config.Sha + '|' + (B64 $configRel) + $crlf)
+    Write-OwnershipPending $fpA @()
+    $exit = Invoke-Helper
+    Assert-True ($exit -eq 3) "Patcher/config deletion returned unexpected exit code $exit."
+    Assert-True (-not (Test-Path -LiteralPath $patchLive)) 'Owned patcher-root file was not retired.'
+    Assert-True (-not (Test-Path -LiteralPath $configLive)) 'Owned allowlisted-config-root fixture was not retired.'
+
+    Reset-Sandbox
+    $protectedRel = 'BepInEx.cfg'
+    $protectedPath = Join-Path (Join-Path $bepInExRoot 'config') $protectedRel
+    New-Item -ItemType Directory -Path (Split-Path -Parent $protectedPath) -Force | Out-Null
+    Write-Utf8 $protectedPath 'DO-NOT-DELETE'
+    $protectedSha = Get-ShaHex 'DO-NOT-DELETE'
+    Write-Utf8 $pendingPath ('AMSPENDING2' + $crlf + 'D|C|13|' + $protectedSha + '|' + (B64 $protectedRel) + $crlf)
+    Write-OwnershipPending $fpA @()
+    $exit = Invoke-Helper
+    Assert-True ($exit -eq 1) "Protected-config deletion returned unexpected exit code $exit."
+    Assert-True ((Test-Path -LiteralPath $protectedPath) -and ([IO.File]::ReadAllText($protectedPath) -eq 'DO-NOT-DELETE')) 'Protected config was modified/deleted.'
     Write-Host '  PASS'
 
     Write-Host ''
