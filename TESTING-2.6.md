@@ -224,6 +224,29 @@ Development-only compatibility emulation is available without a second tester. C
 - [x] Production destination-collision validation plus server source wiring confirms case-insensitive same-kind collisions between normal synchronized plugins and `ClientPayload/plugins` fail manifest construction explicitly instead of silently choosing a source.
 - [x] Exact stale deletion is allowed only when the immediately prior successful AMS reconciliation used the same trusted fingerprint. After a server switch, exact stale cleanup is deferred until a subsequent consecutive successful sync with that server.
 
+## Phase 7 — telemetry / branded in-game UI
+
+### Deterministic foundation
+
+- [x] `test-phase7-ui-state.ps1` passes all 6/6 production-model cases: reset, signed-manifest comparison counters, current/average throughput + ETA, resume-aware timing, bounded queue/verification counters, and cross-session reset.
+- [x] `build-dev.bat` compiles the integrated 2.6 client/server/apply development runtime with the Phase 7 state model after source-documentation validation.
+- [x] A trusted zero-delta live regression with the Phase 7 state model compiled in completed the one-shot restart reconnect, recognized the AutoModSync server, reported matching mods, and released the original one-argument Valheim `ServerHandshake` without a Phase 7 exception.
+- [x] `test-phase7-branding.ps1` deterministically generates/validates the seven-frame helper ICO and checks state-driven client wiring plus dev/release/deploy/store icon packaging contracts on Windows CI.
+- [x] Existing client-path/resource/fail-closed/legacy-2.5/cache/prewarm/stale-trust workflows remained green after the state-driven branded renderer and development preview hook were added.
+
+### Next live visual/product gate
+
+- [ ] Development `phase7-test-ui-preview.once` cycles Trust, Comparing, Queued, resumed Downloading, Verifying, Applying, Restarting, Reconnecting, Complete, and Failed at the main menu with no clipping/overlap at the maintainer's normal resolution/UI scale.
+- [ ] Embedded AMS logo renders correctly in-game; missing/corrupt-resource fallback remains nonfatal.
+- [ ] Gray/charcoal/orange/ember palette, typography, stat tiles, progress bars, fingerprint block, and failure accent remain readable against Valheim menus.
+- [ ] Resumed Downloading preview clearly shows retained bytes plus current/average throughput and ETA without treating retained bytes as current-session throughput.
+- [ ] `ValheimAutoModSync.Apply.exe` exposes the embedded AMS icon and `ValheimAutoModSync.Apply.ico` is deployed beside it by the dev path.
+- [ ] Real changed-file synchronization drives comparison -> queue (when applicable) -> download -> verify -> apply/restart -> reconnect states from production events, with telemetry moving monotonically and the final reconnect remaining one-shot.
+- [ ] A real interrupted/resumed package displays the retained prefix, measures only new session bytes for average rate, completes verification/apply/reconnect, and leaves no stale Phase 7 overlay.
+- [ ] Failure/connection-loss presentation self-clears and never changes the established fail-open/fail-closed policy.
+
+The development-only visual preview is presentation-only: it does not open an AutoModSync connection, alter trust, request a bundle, write synchronized files, or change scheduler/transfer policy. A real connection immediately disables the preview. Release builds do not compile the marker path.
+
 ## Runtime evidence — 2026-09-23
 
 - Phase 6 isolated Windows CI first passed the core 6/6 ownership/apply checks at commit `2ad713d5dcefef09294b505226f6fb6e0545d82f`, then the expanded harness passed 7/7 at commit `742bde3e53f85dcc0da09112b7879455c1caafc6`. Coverage now includes verified write ownership publication, exact same-server stale deletion, wrong-digest rejection, cross-server deletion rejection, PREPARED deletion rollback/retry, COMMITTED ownership-publication recovery, plugin/patcher/config fixed-root deletion, and protected-config rejection. The harness compiled the production Apply/ownership/path-safety sources and modified only a temporary BepInEx sandbox.
