@@ -67,7 +67,7 @@ namespace ValheimAutoModSync
             string full = Path.GetFullPath(fullPath);
             bool isRoot = String.Equals(full, root, StringComparison.OrdinalIgnoreCase);
             if (!isRoot && !full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("AutoModSync reparse check escaped its fixed root.");
+                throw new InvalidDataException("AutoModSync reparse check escaped its fixed root. Root='" + root + "' Full='" + full + "'.");
 
             string relative = isRoot ? "" : full.Substring(prefix.Length);
             string[] parts = relative.Split(new char[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
