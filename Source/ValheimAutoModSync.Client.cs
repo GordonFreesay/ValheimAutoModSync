@@ -860,10 +860,18 @@ namespace ValheimAutoModSync
 
                 AutoModSyncOwnershipEntry previousOwned;
                 bool wasOwned = ownedByKey.TryGetValue(destinationKey, out previousOwned);
-                // Already-owned destinations remain owned across server updates. An unowned path is claimed only
-                // when AMS must actually install/replace it; a coincidentally matching local file remains local/user-owned.
-                if (wasOwned || needed)
+                bool stillExactOwnedBytes = wasOwned
+                    && previousOwned.Size == e.Size
+                    && ConstantEquals(previousOwned.Sha256, e.Sha256);
+
+                // Retain ownership only when the manifest still names the exact digest AMS last installed.
+                // A changed manifest digest is owned again only if AMS itself must perform the verified write.
+                // If some external/manual action already changed an owned destination to the server's new bytes,
+                // preserve those bytes but relinquish ownership rather than claiming a change AMS did not perform.
+                if (stillExactOwnedBytes || needed)
                     AddDesiredOwnership(e.Kind, e.RelativePath, e.Size, e.Sha256);
+                else if (wasOwned && _instance != null)
+                    _instance.Logger.LogWarning("AutoModSync found an externally changed owned file already matching the server and relinquished ownership: " + e.Kind + ":" + e.RelativePath);
 
                 if (!needed) continue;
                 if (e.Size > MaxIndividualSyncFileBytes)
