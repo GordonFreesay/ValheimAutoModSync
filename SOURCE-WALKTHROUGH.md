@@ -206,6 +206,8 @@ The branch contains:
 
 The intended public-release path Authenticode-signs only AutoModSync-authored PE files, verifies their signatures before packaging, and fails a signing-required release if any signature is missing/invalid. Third-party BepInEx/Doorstop binaries are never re-signed as though they were authored by AutoModSync.
 
+Trusted Authenticode is currently optional/unavailable, so 2.6 adds a separate provenance layer rather than pretending self-signing is equivalent. `write-release-checksums.ps1` generates shasum-compatible SHA-256 manifests over the exact package bytes. GitHub build/tag/store workflows request only `contents: read`, `id-token: write`, and `attestations: write`, then use `actions/attest@v4` to bind package digests to the repository/workflow/commit identity through GitHub/Sigstore. The canonical checksum manifest is separately attested. Manual store-publishing workflows attest the exact ZIP from the same run that uploads it, because independently rebuilt ZIPs are not assumed byte-identical. Local builds can generate checksums but explicitly state that they are not GitHub-attested.
+
 ## Review-surface inventory
 
 A source review of the five C# files shows the following intentional privileged surfaces:
