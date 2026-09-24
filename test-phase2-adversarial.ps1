@@ -164,7 +164,7 @@ Write-Host ''
 
 try {
     # Test 1: a caught failure after a real live write must synchronously roll the entire PREPARED set back.
-    Write-Host '[1/4] Caught per-file failure rollback...'
+    Write-Host '[1/6] Caught per-file failure rollback...'
     Reset-Sandbox
     $a = Add-Fixture 'P' 'Phase2Fixture\a.txt' 'OLD-A' 'NEW-A'
     $b = Add-Fixture 'P' 'Phase2Fixture\b.txt' 'OLD-B' 'NEW-B'
@@ -182,7 +182,7 @@ try {
     Write-Host '  PASS'
 
     # Test 2: a version-mismatched journal must be rejected without guessing or touching the old live file.
-    Write-Host '[2/4] Malformed/version-mismatched journal rejection...'
+    Write-Host '[2/6] Malformed/version-mismatched journal rejection...'
     Reset-Sandbox
     $a = Add-Fixture 'P' 'Phase2Fixture\version.txt' 'OLD-VERSION' 'NEW-VERSION'
     Write-Pending @($a)
@@ -208,7 +208,7 @@ try {
     Write-Host '  PASS'
 
     # Test 3: recovery metadata cannot select a protected config or escape its fixed root.
-    Write-Host '[3/4] Protected-config and fixed-root journal rejection...'
+    Write-Host '[3/6] Protected-config and fixed-root journal rejection...'
     Reset-Sandbox
     $a = Add-Fixture 'C' 'Phase2Fixture\safe.cfg' 'OLD-CONFIG' 'NEW-CONFIG'
     Write-Pending @($a)
@@ -233,7 +233,7 @@ try {
     Write-Host '  PASS'
 
     # Test 4: recovery must reject a junction/reparse point at the transaction boundary.
-    Write-Host '[4/4] Recovery reparse-point rejection...'
+    Write-Host '[4/6] Recovery reparse-point rejection...'
     $txReal = Join-Path $amsRoot 'apply-transaction-real'
     Rename-Item -LiteralPath $txRoot -NewName (Split-Path -Leaf $txReal)
     $mklink = 'mklink /J "{0}" "{1}"' -f $txRoot, $txReal
@@ -253,6 +253,64 @@ try {
     Assert-True (([System.IO.File]::ReadAllText($a.Live)) -eq 'NEW-CONFIG') 'Restored safe transaction did not recover and apply normally.'
     Assert-True (-not (Test-Path -LiteralPath $txRoot)) 'Safe recovery did not clean up the transaction directory.'
     Assert-True (-not (Test-Path -LiteralPath $pendingPath)) 'Safe recovery did not clean up pending.txt.'
+    Write-Host '  PASS'
+
+    # Test 5: a verified staged source may not be redirected through a junction beneath the staging root.
+    Write-Host '[5/6] Staging-path reparse-point rejection...'
+    Reset-Sandbox
+    $relative = 'Phase2Reparse\staging.txt'
+    $liveDir = Join-Path $pluginRoot 'Phase2Reparse'
+    New-Item -ItemType Directory -Path $liveDir -Force | Out-Null
+    $livePath = Join-Path $liveDir 'staging.txt'
+    Write-Utf8NoBom $livePath 'OLD-STAGING-SAFE'
+
+    $stageOutside = Join-Path $root 'stage-outside'
+    New-Item -ItemType Directory -Path $stageOutside -Force | Out-Null
+    Write-Utf8NoBom (Join-Path $stageOutside 'staging.txt.amsnew') 'NEW-STAGING-REDIRECTED'
+    $stageLink = Join-Path (Join-Path $stagingRoot 'plugins') 'Phase2Reparse'
+    $mklink = 'mklink /J "{0}" "{1}"' -f $stageLink, $stageOutside
+    & $env:ComSpec /d /c $mklink | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'Could not create the staging test junction.'
+
+    $fixture = [pscustomobject]@{ Kind = [char]'P'; RelativePath = $relative }
+    Write-Pending @($fixture)
+    $exitCode = Invoke-ApplyHelper
+    Assert-True ($exitCode -eq 1) "Staging reparse-point apply returned unexpected exit code $exitCode."
+    Assert-True (([System.IO.File]::ReadAllText($livePath)) -eq 'OLD-STAGING-SAFE') 'Staging reparse rejection changed the legitimate live file.'
+    Assert-Contains $errorPath 'refuses to traverse a filesystem reparse point' 'Staging reparse point was not rejected.'
+
+    $rmdir = 'rmdir "{0}"' -f $stageLink
+    & $env:ComSpec /d /c $rmdir | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'Could not remove the staging test junction.'
+    Write-Host '  PASS'
+
+    # Test 6: a live destination may not be redirected through a junction beneath the fixed plugin root.
+    Write-Host '[6/6] Live-destination reparse-point rejection...'
+    Reset-Sandbox
+    $relative = 'Phase2Reparse\live.txt'
+    $stageDir = Join-Path (Join-Path $stagingRoot 'plugins') 'Phase2Reparse'
+    New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
+    Write-Utf8NoBom (Join-Path $stageDir 'live.txt.amsnew') 'NEW-LIVE-REDIRECTED'
+
+    $liveOutside = Join-Path $root 'live-outside'
+    New-Item -ItemType Directory -Path $liveOutside -Force | Out-Null
+    $outsideLivePath = Join-Path $liveOutside 'live.txt'
+    Write-Utf8NoBom $outsideLivePath 'OLD-LIVE-OUTSIDE'
+    $liveLink = Join-Path $pluginRoot 'Phase2Reparse'
+    $mklink = 'mklink /J "{0}" "{1}"' -f $liveLink, $liveOutside
+    & $env:ComSpec /d /c $mklink | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'Could not create the live-destination test junction.'
+
+    $fixture = [pscustomobject]@{ Kind = [char]'P'; RelativePath = $relative }
+    Write-Pending @($fixture)
+    $exitCode = Invoke-ApplyHelper
+    Assert-True ($exitCode -eq 1) "Live reparse-point apply returned unexpected exit code $exitCode."
+    Assert-True (([System.IO.File]::ReadAllText($outsideLivePath)) -eq 'OLD-LIVE-OUTSIDE') 'Live reparse rejection changed the redirected outside file.'
+    Assert-Contains $errorPath 'refuses to traverse a filesystem reparse point' 'Live destination reparse point was not rejected.'
+
+    $rmdir = 'rmdir "{0}"' -f $liveLink
+    & $env:ComSpec /d /c $rmdir | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'Could not remove the live-destination test junction.'
     Write-Host '  PASS'
 
     Write-Host ''
