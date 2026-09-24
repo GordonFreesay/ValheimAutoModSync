@@ -160,6 +160,7 @@ internal static class AutoModSyncInstaller
 
             Label roleHelp = new Label();
             roleHelp.Text = "Client joins synchronized servers. Dedicated Server serves its plugin set. Host & Play installs both roles.";
+            roleHelp.UseMnemonic = false;
             roleHelp.ForeColor = TextMuted;
             roleHelp.Location = new Point(20, 56);
             roleHelp.Size = new Size(660, 22);
