@@ -12,7 +12,13 @@ Set-StrictMode -Version 2.0
 # The public AutoModSync/GordonFreesay brand, repository URLs, and project website are product identity rather than private user data.
 
 $separators = [char[]]@([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
-$rootPath = [IO.Path]::GetFullPath($Root).TrimEnd($separators)
+$normalizedRootArgument = $Root
+if ($null -eq $normalizedRootArgument) { $normalizedRootArgument = '' }
+$normalizedRootArgument = $normalizedRootArgument.Trim().Trim('"')
+if ([String]::IsNullOrWhiteSpace($normalizedRootArgument)) {
+    $normalizedRootArgument = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+$rootPath = [IO.Path]::GetFullPath($normalizedRootArgument).TrimEnd($separators)
 $failures = New-Object 'System.Collections.Generic.List[string]'
 $projectVersionQuad = ''
 $versionFile = Join-Path $rootPath 'VERSION'
