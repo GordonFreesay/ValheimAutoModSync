@@ -10,6 +10,7 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2.0
 
 $statePath=Join-Path $env:TEMP 'AMS26-Phase3-Prewarm-State.json'
+$cacheLifecycleStatePath=Join-Path $env:TEMP 'AMS26-Phase3-CacheLifecycle-State.json'
 $serverAms=Join-Path $ServerBepInEx 'AutoModSync'
 $clientAms=Join-Path $ClientBepInEx 'AutoModSync'
 $serverZeroTtlMarker=Join-Path $serverAms 'phase3-test-cache-seconds-zero.once'
@@ -58,8 +59,13 @@ function Prepare-Test {
     if(Test-Path -LiteralPath $clientReconnect -PathType Leaf){throw "Client has an existing AutoModSync reconnect token: $clientReconnect"}
     if(Test-Path -LiteralPath $clientTransaction){throw "Client has an existing apply transaction: $clientTransaction"}
 
-    foreach($p in @($serverZeroTtlMarker,$nearlyBareMarker,$stopAfterHeaderMarker)){
+    foreach($p in @($serverZeroTtlMarker,$nearlyBareMarker)){
         try{if(Test-Path -LiteralPath $p){Remove-Item -LiteralPath $p -Force}}catch{}
+    }
+    if(Test-Path -LiteralPath $cacheLifecycleStatePath -PathType Leaf){
+        Write-Warning 'An active Phase 3 cache-lifecycle suite was detected; preserving the shared stop-after-header marker.'
+    }else{
+        try{if(Test-Path -LiteralPath $stopAfterHeaderMarker){Remove-Item -LiteralPath $stopAfterHeaderMarker -Force}}catch{}
     }
     if(Test-Path -LiteralPath $clientStaging){Remove-Item -LiteralPath $clientStaging -Recurse -Force}
 
