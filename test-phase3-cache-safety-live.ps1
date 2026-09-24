@@ -49,7 +49,18 @@ function Get-NewLines([string]$Path,[int]$StartCount){
 
 function Prepare-Test {
     Ensure-Root
-    if(Test-Path -LiteralPath $statePath -PathType Leaf){throw 'Phase 3 cache-safety test state already exists. Run Cleanup first.'}
+    if(Test-Path -LiteralPath $statePath -PathType Leaf){
+        $existing=Get-Content -LiteralPath $statePath -Raw|ConvertFrom-Json
+        $newServer=@(Get-NewLines $serverLog ([int]$existing.serverLogLines))
+        $newServerText=$newServer-join[Environment]::NewLine
+        $armedNow=(Test-Path -LiteralPath $safetyMarker -PathType Leaf)
+        $suiteBegan=$newServerText.IndexOf('AutoModSync DEV TEST Phase 3 cache-safety suite BEGIN.',[StringComparison]::OrdinalIgnoreCase)-ge 0
+        if($armedNow-or$suiteBegan){
+            throw 'Phase 3 cache-safety suite is already armed or has started. Do not Prepare again; run Inspect after the server-side suite finishes, or Cleanup to reset it.'
+        }
+        Write-Warning 'Found stale Phase 3 cache-safety state with no armed marker and no suite BEGIN evidence. Resetting that stale state and re-arming cleanly.'
+        try{Remove-Item -LiteralPath $statePath -Force}catch{}
+    }
 
     foreach($p in @($disablePrewarmMarker,$safetyMarker,$orphanZip,$orphanTemp)){
         try{if(Test-Path -LiteralPath $p){Remove-Item -LiteralPath $p -Force}}catch{}
