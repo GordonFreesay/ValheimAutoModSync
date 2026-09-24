@@ -7,6 +7,7 @@ on:
     paths:
       - "Source/ValheimAutoModSync.Client.cs"
       - "Source/AutoModSync.SyncUiState.cs"
+      - "Source/AutoModSync.IdentityDisplay.cs"
       - "Thunderstore/icon.png"
       - "build-branding-assets.ps1"
       - "build-dev.bat"
@@ -16,6 +17,8 @@ on:
       - "build-modsite-package.ps1"
       - "install.bat"
       - "test-phase7-branding.ps1"
+      - "test-phase7-identity-display.ps1"
+      - "verify-no-pii.ps1"
       - "test-phase7-ui-preview.ps1"
       - "test-phase7-live.ps1"
       - ".github/workflows/phase7-branding-validation.yml"
