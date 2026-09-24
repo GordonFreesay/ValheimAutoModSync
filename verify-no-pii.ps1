@@ -1,6 +1,6 @@
 param(
     [string]$Root = (Split-Path -Parent $MyInvocation.MyCommand.Path),
-    [string[]]$ArtifactPaths = @()
+    [string]$ArtifactPaths = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -142,8 +142,12 @@ foreach ($file in @(Get-TrackedFirstPartyFiles)) {
     }
 }
 
-foreach ($artifact in @($ArtifactPaths)) {
-    if ([String]::IsNullOrWhiteSpace($artifact)) { continue }
+$artifactList = @()
+if (-not [String]::IsNullOrWhiteSpace($ArtifactPaths)) {
+    $artifactList = @($ArtifactPaths.Split(';') | Where-Object { -not [String]::IsNullOrWhiteSpace($_) })
+}
+
+foreach ($artifact in $artifactList) {
     $full = [IO.Path]::GetFullPath($artifact)
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
         throw "PII guard artifact does not exist: $full"
@@ -156,4 +160,4 @@ if ($failures.Count -gt 0) {
     throw ("PII guard failed with " + $failures.Count + " finding(s). Remove machine/user-specific identifiers before building or publishing.")
 }
 
-Write-Host ("PII guard passed: first-party tracked text" + ($(if ($ArtifactPaths.Count -gt 0) { " + " + $ArtifactPaths.Count + " authored artifact(s)" } else { "" })) + ".")
+Write-Host ("PII guard passed: first-party tracked text" + ($(if ($artifactList.Count -gt 0) { " + " + $artifactList.Count + " authored artifact(s)" } else { "" })) + ".")
