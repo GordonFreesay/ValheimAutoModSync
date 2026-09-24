@@ -151,6 +151,23 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `Thunderstore/CHANGELOG.md` | Records Phase 6 development behavior without publishing a release. |
 | `IMPLEMENTATION-2.6.md` | Records the Phase 6 implementation/trust-boundary change set and validation status. |
 
+### Phase 7 — telemetry / branded in-game product UI
+
+| File | 2.6 reason |
+| --- | --- |
+| `Source/AutoModSync.SyncUiState.cs` | Adds a policy-free presentation model for lifecycle phase, server fingerprint, signed-manifest comparison counts, required expanded bytes, scheduler position, resume-aware transfer progress/current+average throughput/ETA, and per-file verification progress. It owns no networking, trust, filesystem, pacing, or admission decisions. |
+| `Source/ValheimAutoModSync.Client.cs` | Maps the existing trusted synchronization decisions into `AutoModSyncUiState` and renders a gray/charcoal/orange branded IMGUI panel for trust, compare, queue, download, verification, apply/restart, reconnect, completion, and failure. The client embeds the canonical AMS logo and degrades to text branding if that resource cannot be decoded. Development builds also contain a one-shot presentation-only preview that cycles all major states without opening a connection or changing files. |
+| `build-branding-assets.ps1` | Generates a multi-size PNG-backed Windows ICO from the canonical tracked AMS package logo so executable branding has one reproducible source asset. |
+| `build-dev.bat` | Embeds the AMS PNG resource into the development client, references Unity ImageConversion for runtime PNG decoding, generates the helper ICO, embeds it into `ValheimAutoModSync.Apply.exe`, and retains the standalone ICO beside the development helper. |
+| `build-release.bat` | Applies the same embedded client-logo and helper-icon path to release compilation, embeds the icon into the standalone installer, and packages physical ICO files beside the user-facing executables. Release builds still omit all `AMS_DEV_TESTS` preview hooks. |
+| `deploy-dev.ps1` | Deploys and SHA-256 verifies the generated helper ICO beside the exact development Apply helper location in addition to the runtime binaries. |
+| `build-thunderstore.ps1` / `build-modsite-package.ps1` / `install.bat` | Keep `ValheimAutoModSync.Apply.ico` beside `ValheimAutoModSync.Apply.exe` for package-manager, Nexus/CurseForge, and standalone installation paths. |
+| `test-phase7-ui-state.ps1` | Deterministically validates the production presentation model: reset, comparison counters, transfer rate/ETA/progress, resume accounting, queue/verification bounds, and cross-session reset. |
+| `test-phase7-branding.ps1` | Generates and structurally validates the ICO, checks the production client state/branding wiring, and verifies dev/release/deploy/distribution packaging contracts. |
+| `test-phase7-ui-preview.ps1` | Arms a one-shot development marker so the maintainer can visually inspect ten branded presentation states at the Valheim main menu without mutating synchronization state. |
+| `.github/workflows/phase7-ui-state-validation.yml` / `.github/workflows/phase7-branding-validation.yml` | Independently rerun the deterministic model and branding/package contracts on Windows. |
+| `SOURCE-WALKTHROUGH.md` / `TESTING-2.6.md` / `Thunderstore/CHANGELOG.md` | Document the presentation-only trust boundary, visual/runtime gates, and 2.6 development behavior. |
+
 ### Later phases
 
 Add each 2.6-modified file here in the same phase that introduces the change, with a concise audit reason.
@@ -167,5 +184,6 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Transfer performance validation: **in progress** — the 16/64/32 MiB follow-up successfully moved Steam's live send-rate telemetry from the prior 8 MiB/s floor to exactly 16 MiB/s and restored the original connection settings afterward. End-to-end client payload timing for this run is still needed before treating the higher settings as a proven wall-clock improvement.
 - Restart reconnect validation: **passed for the observed regression** — the patched client completed exactly one automatic character-start/reconnect sequence, then completed trusted AMS preflight and downstream mod synchronization without dispatching a second reconnect.
 - Phase 3 implementation: **partial runtime validation** — a 60-file / 313.4 MiB near-bare request hit the retained cache with `prepare=0.000 s`, proving join-time cache reuse. Recognized-session disconnect cleanup, delayed background-native trust acceptance, trust rejection, normal native pointer interaction, and transient blocked-banner cleanup have passed. Startup MISS/build timing, native-dialog stale-result cleanup on mid-prompt disconnect, WAIT-HIT concurrency, invalidation, and TTL/budget eviction still require runtime validation.
+- Phase 7 implementation: **complete in source; deterministic validation passed, live branded UI qualification pending** — the policy-free UI-state harness passes 6/6, the Windows branding/package harness passes, source-documentation validation passes, and existing Phase 1/3 client regression workflows remained green after the state-driven UI wiring. The maintainer has already passed the pre-renderer Phase 7 foundation dev-build and zero-delta reconnect smoke gates. The next gate is the development-only ten-state visual preview followed by a real changed-file/resume transfer to confirm runtime layout, telemetry cadence, restart/reconnect presentation, and embedded/sidecar executable icon behavior.
 - Release build validation: **not yet performed**
 - Public release: **not authorized**
