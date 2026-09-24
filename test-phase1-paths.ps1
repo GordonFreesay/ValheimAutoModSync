@@ -77,7 +77,10 @@ namespace ValheimAutoModSync
 
         private static string Quote(string value)
         {
-            return """ + (value ?? "").Replace(""", """") + """;
+            // The test sandbox paths are generated locally and cannot contain a double quote.
+            // Build the surrounding quotes explicitly so the PowerShell here-string cannot corrupt C# escaping.
+            string q = ((char)34).ToString();
+            return q + (value ?? "") + q;
         }
 
         public static int Main(string[] args)
