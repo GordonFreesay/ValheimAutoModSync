@@ -681,8 +681,8 @@ namespace ValheimAutoModSync
                 string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-two-client-delay.once");
                 if (!File.Exists(marker)) return;
                 try { File.Delete(marker); } catch { }
-                Interlocked.Exchange(ref DevelopmentDelayNextBundleBuildMs, 5000);
-                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST armed a 5000 ms background bundle-build delay for real two-client overlap validation.");
+                Interlocked.Exchange(ref DevelopmentDelayNextBundleBuildMs, 10000);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST armed a 10000 ms background bundle-build delay for real two-client overlap validation.");
             }
             catch (Exception ex)
             {
