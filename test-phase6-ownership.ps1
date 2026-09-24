@@ -111,8 +111,13 @@ function Wait-ForLog([string]$Needle, [int]$Seconds = 15) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     while ([DateTime]::UtcNow -lt $deadline) {
         if (Test-Path -LiteralPath $logPath) {
-            $text = [System.IO.File]::ReadAllText($logPath)
-            if ($text.IndexOf($Needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return }
+            try {
+                $text = [System.IO.File]::ReadAllText($logPath)
+                if ($text.IndexOf($Needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return }
+            }
+            catch [System.IO.IOException] {
+                # The helper may have the log open for the exact line we are polling; retry instead of turning a timing race into a test failure.
+            }
         }
         Start-Sleep -Milliseconds 100
     }
