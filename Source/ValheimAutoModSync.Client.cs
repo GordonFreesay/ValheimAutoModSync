@@ -3276,7 +3276,6 @@ namespace ValheimAutoModSync
             return "<" + type.FullName + ">";
         }
 
-#if AMS_DEV_TESTS
         // Intent: Consumes a one-shot marker that previews every Phase 7 presentation state at the main menu without opening a network connection or changing files.
         // Scope: development builds only; release binaries do not contain the preview path.
         private static void TryStartDevelopmentUiPreview()
