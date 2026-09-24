@@ -82,8 +82,8 @@ function Prepare-Test {
 
     Write-Host ''
     Write-Host 'ARMED: real two-client single-flight validation.'
-    Write-Host 'The server has one new 4 MiB random client payload, startup prewarm is disabled for this process, and the first real bundle build will pause 5 seconds on a worker thread.'
-    Write-Host 'Start the dedicated server. Then connect BOTH already-baselined 2.6 clients as close together as practical (within the 5-second build window).'
+    Write-Host 'The server has one new 4 MiB random client payload, startup prewarm is disabled for this process, and the first real bundle build will pause 10 seconds on a worker thread.'
+    Write-Host 'Start the dedicated server. Then connect BOTH already-baselined 2.6 clients as close together as practical (within the 10-second build window).'
     Write-Host 'Let both synchronization attempts finish/restart. Then run -Action Inspect.'
 }
 
@@ -105,15 +105,15 @@ function Inspect-Test {
     Write-Host ''
     Write-Host 'Inspecting real two-client Phase 3 overlap...'
 
-    if($serverText.IndexOf('AutoModSync DEV TEST armed a 5000 ms background bundle-build delay for real two-client overlap validation.',[StringComparison]::OrdinalIgnoreCase)-ge 0){
+    if($serverText.IndexOf('AutoModSync DEV TEST armed a 10000 ms background bundle-build delay for real two-client overlap validation.',[StringComparison]::OrdinalIgnoreCase)-ge 0){
         Write-Host '  PASS the real-client overlap delay was armed.'
     }else{
         Write-Host '  FAIL the real-client overlap delay marker was not consumed.'
         $ok=$false
     }
 
-    if($serverText.IndexOf('AutoModSync DEV TEST delaying one bundle build by 5000 ms to force an overlapping identical acquisition.',[StringComparison]::OrdinalIgnoreCase)-ge 0){
-        Write-Host '  PASS the first production bundle build actually entered the 5-second worker delay.'
+    if($serverText.IndexOf('AutoModSync DEV TEST delaying one bundle build by 10000 ms to force an overlapping identical acquisition.',[StringComparison]::OrdinalIgnoreCase)-ge 0){
+        Write-Host '  PASS the first production bundle build actually entered the 10-second worker delay.'
     }else{
         Write-Host '  FAIL missing evidence that the delayed production build ran.'
         $ok=$false
