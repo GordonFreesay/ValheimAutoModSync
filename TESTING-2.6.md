@@ -138,6 +138,7 @@ Development-only compatibility emulation is available without a second tester. C
 - [ ] With a deliberately lowered aggregate cap, measured one-client payload goodput respects the configured scheduler ceiling within expected framing/timing tolerance.
 - [ ] Steam reliable-queue backpressure can defer a scheduler grant without disconnecting/failing the client; ordinary transfer resumes when the queue falls below the configured envelope.
 - [ ] Idle connected transfer state is reclaimed only when no chunk request is outstanding; queued clients are not expired.
+- [ ] Waiting admission is bounded by `MaxQueuedBundleTransfers`; a request beyond active+queued capacity fails closed without acquiring/building another artifact.
 - [ ] Older AMS4 peers still transfer successfully without `bundle-scheduler1`; they wait silently if queued and never receive the optional `AMS4_QueueStatus` RPC.
 - [ ] Real 2/4/8-client qualification remains pending until multiple independent clients are available. Deterministic emulation proves scheduler policy, not aggregate NIC/Steam/game-loop behavior under true concurrent sockets.
 
