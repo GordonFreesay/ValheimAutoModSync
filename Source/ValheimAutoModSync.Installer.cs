@@ -467,10 +467,290 @@ internal static class AutoModSyncInstaller
             {
                 _busy = false;
                 SetUiEnabled(true);
+                RefreshInstallState();
             }
         }
 
-        // Intent: Prevents role/path changes and duplicate install clicks while filesystem operations are running.
+        // Intent: Confirms and removes the selected complete AutoModSync role while preserving shared BepInEx and, by default, server identity/configuration.
+        private void UninstallClicked(object sender, EventArgs e)
+        {
+            if (_busy) return;
+
+            string root;
+            try { root = Path.GetFullPath((_path.Text ?? "").Trim().Trim('"')); }
+            catch
+            {
+                MessageBox.Show(this, "Choose a valid Valheim folder first.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            InstallationState state = InspectInstallation(root);
+            if (!SelectedRoleComplete(state))
+            {
+                RefreshInstallState();
+                MessageBox.Show(this, "The selected role is not a complete AutoModSync installation, so uninstall is not available.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            bool removeServerIdentity = _removeServerIdentity.Visible && _removeServerIdentity.Checked;
+            StringBuilder prompt = new StringBuilder();
+            prompt.AppendLine("Remove AutoModSync from the selected role?");
+            prompt.AppendLine();
+            prompt.AppendLine("BepInEx and unrelated mods are always preserved.");
+            if (_clientRole.Checked || _hostRole.Checked)
+                prompt.AppendLine("Files that AutoModSync previously installed from trusted servers are removed only when their bytes still match AMS ownership records; locally modified files are preserved.");
+            if (_serverRole.Checked || _hostRole.Checked)
+            {
+                if (removeServerIdentity)
+                    prompt.AppendLine("Server config and signing identity WILL be removed. A later reinstall will create a new server identity.");
+                else
+                    prompt.AppendLine("Server config and signing identity will be preserved for a future reinstall.");
+            }
+
+            if (MessageBox.Show(this, prompt.ToString(), Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return;
+
+            _busy = true;
+            SetUiEnabled(false);
+            ExitCode = 1;
+            try
+            {
+                _log.Clear();
+                ValidateTargetRoot(root);
+
+                if (_clientRole.Checked || _hostRole.Checked)
+                {
+                    EnsureNoPendingApplyForUninstall(root);
+                    UninstallClientRole(root);
+                }
+
+                if (_serverRole.Checked || _hostRole.Checked)
+                    UninstallServerRole(root, removeServerIdentity);
+
+                AppendLog("");
+                AppendLog("UNINSTALL COMPLETE");
+                ExitCode = 0;
+                MessageBox.Show(this, "AutoModSync was removed from the selected role. Shared BepInEx was preserved.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                AppendLog("");
+                AppendLog("ERROR: " + ex.Message);
+                MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                _busy = false;
+                SetUiEnabled(true);
+                RefreshInstallState();
+            }
+        }
+
+        // Intent: Refuses uninstall while a client apply transaction is pending so the installer cannot destroy rollback/recovery evidence mid-transaction.
+        private void EnsureNoPendingApplyForUninstall(string root)
+        {
+            string amsRoot = Path.Combine(root, "BepInEx", "AutoModSync");
+            if (File.Exists(Path.Combine(amsRoot, "pending.txt")) || Directory.Exists(Path.Combine(amsRoot, "apply-transaction")))
+                throw new InvalidOperationException("AutoModSync has a pending/recovery apply transaction. Start Valheim once and let AutoModSync finish recovery before uninstalling.");
+        }
+
+        // Intent: Removes the AutoModSync client role, exact still-owned synchronized files, client state, and helper while preserving BepInEx and unrelated/local modifications.
+        private void UninstallClientRole(string root)
+        {
+            AppendLog("Removing AutoModSync client role...");
+            RetireOwnedClientFiles(root);
+
+            string bep = Path.Combine(root, "BepInEx");
+            string ams = Path.Combine(bep, "AutoModSync");
+            DeleteFileIfExists(Path.Combine(bep, "plugins", "ValheimAutoModSync.Client.dll"), "client plugin");
+            DeleteFileIfExists(Path.Combine(ams, "ValheimAutoModSync.Apply.exe"), "apply helper");
+            DeleteFileIfExists(Path.Combine(ams, "ValheimAutoModSync.Apply.ico"), "apply helper icon");
+            DeleteFileIfExists(Path.Combine(bep, "config", "com.gordonfreesay.valheimautomodsync.client.cfg"), "client config");
+
+            string[] clientFiles = new string[]
+            {
+                "trusted-servers.txt",
+                "last-successful-server.txt",
+                "ownership-next.txt",
+                "reconnect.txt",
+                "launch-context.txt",
+                "apply.log"
+            };
+            int i;
+            for (i = 0; i < clientFiles.Length; i++)
+                DeleteFileIfExists(Path.Combine(ams, clientFiles[i]), "client state " + clientFiles[i]);
+
+            DeleteDirectoryIfExists(Path.Combine(ams, "resume"), "client resume state");
+            DeleteDirectoryIfExists(Path.Combine(ams, "staging"), "client staging state");
+            DeleteDirectoryIfExists(Path.Combine(ams, "ownership"), "client ownership metadata");
+
+            if (Directory.Exists(ams))
+            {
+                string[] markers = Directory.GetFiles(ams, "*.once", SearchOption.TopDirectoryOnly);
+                for (i = 0; i < markers.Length; i++) DeleteFileIfExists(markers[i], "development marker");
+            }
+
+            TryDeleteEmptyDirectory(ams);
+            AppendLog("BepInEx and unrelated mods were preserved.");
+        }
+
+        // Intent: Removes the AutoModSync server plugin/release cache while preserving operator-owned ClientPayload and server identity/config unless explicitly requested.
+        private void UninstallServerRole(string root, bool removeIdentity)
+        {
+            AppendLog("Removing AutoModSync server role...");
+            string bep = Path.Combine(root, "BepInEx");
+            string ams = Path.Combine(bep, "AutoModSync");
+            string config = Path.Combine(bep, "config");
+
+            DeleteFileIfExists(Path.Combine(bep, "plugins", "ValheimAutoModSync.Server.dll"), "server plugin");
+            DeleteFileIfExists(Path.Combine(ams, "release", "ValheimAutoModSync.Client.dll"), "server release client payload");
+            DeleteDirectoryIfExists(Path.Combine(ams, "cache"), "server bundle cache");
+            TryDeleteEmptyDirectory(Path.Combine(ams, "release"));
+
+            if (Directory.Exists(Path.Combine(ams, "ClientPayload")))
+                AppendLog("Preserved operator-managed BepInEx\AutoModSync\ClientPayload content.");
+
+            if (removeIdentity)
+            {
+                DeleteFileIfExists(Path.Combine(config, "com.gordonfreesay.valheimautomodsync.server.cfg"), "server config");
+                DeleteFileIfExists(Path.Combine(config, "ValheimAutoModSync.private.xml"), "server private signing identity");
+                DeleteFileIfExists(Path.Combine(config, "ValheimAutoModSync.public.xml"), "server public signing identity");
+            }
+            else
+            {
+                AppendLog("Preserved server config and signing identity.");
+            }
+
+            TryDeleteEmptyDirectory(ams);
+            AppendLog("BepInEx and unrelated mods were preserved.");
+        }
+
+        // Intent: Removes client files previously installed by AutoModSync only when a strict ownership ledger parses and the live size/SHA-256 still match its last-owned bytes.
+        private void RetireOwnedClientFiles(string root)
+        {
+            string bep = Path.Combine(root, "BepInEx");
+            string ams = Path.Combine(bep, "AutoModSync");
+            string ownership = Path.Combine(ams, "ownership");
+            if (!Directory.Exists(ownership)) return;
+
+            string[] ledgers = Directory.GetFiles(ownership, "*.txt", SearchOption.TopDirectoryOnly);
+            HashSet<string> considered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int removed = 0;
+            int preserved = 0;
+            int i;
+            for (i = 0; i < ledgers.Length; i++)
+            {
+                List<ValheimAutoModSync.AutoModSyncOwnershipEntry> entries;
+                string fingerprint;
+                try
+                {
+                    entries = ValheimAutoModSync.AutoModSyncOwnershipState.ReadFile(ledgers[i], "", out fingerprint);
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("WARNING: preserved synchronized files for unreadable ownership ledger " + Path.GetFileName(ledgers[i]) + ": " + ex.Message);
+                    continue;
+                }
+
+                int j;
+                for (j = 0; j < entries.Count; j++)
+                {
+                    ValheimAutoModSync.AutoModSyncOwnershipEntry entry = entries[j];
+                    string destinationRoot = entry.Kind == 'P'
+                        ? Path.Combine(bep, "plugins")
+                        : entry.Kind == 'R' ? Path.Combine(bep, "patchers") : Path.Combine(bep, "config");
+                    string destination;
+                    try { destination = ValheimAutoModSync.AutoModSyncPathSafety.SafeUnderRoot(destinationRoot, entry.RelativePath, true); }
+                    catch
+                    {
+                        preserved++;
+                        continue;
+                    }
+
+                    if (!considered.Add(destination)) continue;
+                    if (!File.Exists(destination)) continue;
+
+                    FileInfo info = new FileInfo(destination);
+                    bool exact = info.Length == entry.Size;
+                    if (exact)
+                    {
+                        string actual;
+                        try { actual = Sha256File(destination); }
+                        catch { actual = ""; }
+                        exact = String.Equals(actual, entry.Sha256, StringComparison.OrdinalIgnoreCase);
+                    }
+
+                    if (exact)
+                    {
+                        File.Delete(destination);
+                        removed++;
+                        AppendLog("Removed AMS-owned synchronized file: " + entry.Kind + ":" + entry.RelativePath);
+                        TryDeleteEmptyParents(Path.GetDirectoryName(destination), destinationRoot);
+                    }
+                    else
+                    {
+                        preserved++;
+                        AppendLog("Preserved locally changed synchronized file: " + entry.Kind + ":" + entry.RelativePath);
+                    }
+                }
+            }
+
+            AppendLog("Ownership cleanup: removed " + removed.ToString(CultureInfo.InvariantCulture) +
+                      " exact AMS-owned file(s), preserved " + preserved.ToString(CultureInfo.InvariantCulture) + " changed/ambiguous file(s).");
+        }
+
+        // Intent: Deletes one known AutoModSync file if present and logs the action; it never treats absence as an error.
+        private void DeleteFileIfExists(string path, string label)
+        {
+            if (!File.Exists(path)) return;
+            File.Delete(path);
+            AppendLog("Removed " + label + ".");
+        }
+
+        // Intent: Deletes one known AutoModSync-generated directory recursively if present; callers use this only for AMS-owned cache/staging/state roots.
+        private void DeleteDirectoryIfExists(string path, string label)
+        {
+            if (!Directory.Exists(path)) return;
+            Directory.Delete(path, true);
+            AppendLog("Removed " + label + ".");
+        }
+
+        // Intent: Removes empty directories created for a synchronized file without walking above the fixed plugins/patchers/config root.
+        private void TryDeleteEmptyParents(string start, string stopRoot)
+        {
+            string current;
+            string stop;
+            try
+            {
+                current = Path.GetFullPath(start ?? "");
+                stop = Path.GetFullPath(stopRoot ?? "").TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            }
+            catch { return; }
+
+            while (!String.IsNullOrEmpty(current) && !String.Equals(current, stop, StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    if (!Directory.Exists(current) || Directory.GetFileSystemEntries(current).Length != 0) break;
+                    Directory.Delete(current);
+                    current = Path.GetDirectoryName(current);
+                }
+                catch { break; }
+            }
+        }
+
+        // Intent: Removes one directory only when it is empty so shared/operator-managed AutoModSync content cannot be deleted accidentally.
+        private void TryDeleteEmptyDirectory(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path) && Directory.GetFileSystemEntries(path).Length == 0)
+                    Directory.Delete(path);
+            }
+            catch { }
+        }
+
+        // Intent: Prevents role/path changes and duplicate install/uninstall clicks while filesystem operations are running.
         private void SetUiEnabled(bool enabled)
         {
             _clientRole.Enabled = enabled;
@@ -480,6 +760,8 @@ internal static class AutoModSyncInstaller
             _browse.Enabled = enabled;
             _detect.Enabled = enabled;
             _install.Enabled = enabled;
+            _uninstall.Enabled = enabled && _uninstall.Visible;
+            _removeServerIdentity.Enabled = enabled;
         }
 
         // Intent: Appends one status line and pumps paint events so the log remains visibly current during copies/extraction.
