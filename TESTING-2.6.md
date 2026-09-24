@@ -129,8 +129,10 @@ Additional development-only markers support the remaining adversarial gates: `ap
 
 ## Phase 3 — cached/single-flight bundle construction
 
-- [ ] Dedicated-server startup with `PrebuildFreshClientBundle=true` constructs the nearly-bare-client baseline before normal joins, logs one prewarm MISS/build timing, and retains it for the first real client even if ordinary `BundleCacheSeconds` elapses.
+- [x] Dedicated-server startup with `PrebuildFreshClientBundle=true` constructs the nearly-bare-client baseline before normal joins, logs one prewarm MISS/build timing, and retains it for the first real client even if ordinary `BundleCacheSeconds` elapses.
 - [x] A nearly-bare client with the current AutoModSync client DLL receives a startup-prewarmed `cache=HIT` with no join-time ZIP rebuild.
+
+Live Phase 3 prewarm-retention evidence, 2026-09-24: the dedicated server consumed the development-only process-local zero-TTL marker before cache activity, built the 60-file / 313.4 MB nearly-bare baseline exactly once as a startup `MISS` (`key=a10a8d60f808`) with ZIP-build and SHA-256 timing, and then retained that startup-pinned artifact for 124.928 seconds even though the effective `BundleCacheSeconds` was 0. The first real nearly-bare request returned the same key as `cache=HIT`, no second MISS/build occurred, and the client validated the returned bundle header before the development stop hook aborted the protected session. No vanilla `ServerHandshake` replay or durable pending apply was accepted. This closes the startup-prewarm construction/retention gate without requiring another full payload transfer.
 - [ ] First request for a different changed-file set logs `cache=MISS`, publishes one immutable content-addressed ZIP, and reports ZIP-build/SHA-256 preparation timings.
 - [ ] A second fresh client requesting the identical signed file set within `BundleCacheSeconds` logs `cache=HIT`, uses the same cache key/SHA-256/size, and performs no second ZIP build.
 - [ ] Two overlapping identical fresh-client requests produce one build; the follower logs `WAIT` / `WAIT-HIT` and both transfers read the same published artifact.
