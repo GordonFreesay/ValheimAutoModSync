@@ -415,13 +415,18 @@ namespace ValheimAutoModSync
                 Rect trustBox = new Rect(left + 40f, y, width - 80f, 90f);
                 DrawSolidRect(trustBox, slate);
                 DrawOutlinedRect(trustBox, new Color(1f, 0.36f, 0.055f, 0.55f), 1f);
-                GUI.Label(new Rect(trustBox.x + 10f, trustBox.y + 8f, trustBox.width - 20f, 18f), "SERVER FINGERPRINT", smallStyle);
+                GUI.Label(new Rect(trustBox.x + 10f, trustBox.y + 8f, trustBox.width - 20f, 18f), "SECURITY CODE", smallStyle);
                 GUIStyle fingerprintStyle = new GUIStyle(detailStyle);
-                fingerprintStyle.fontSize = 12;
+                fingerprintStyle.fontSize = 18;
                 fingerprintStyle.fontStyle = FontStyle.Bold;
                 fingerprintStyle.normal.textColor = text;
-                GUI.Label(new Rect(trustBox.x + 12f, trustBox.y + 30f, trustBox.width - 24f, 52f),
-                    FormatFingerprint(_uiState.ServerFingerprint), fingerprintStyle);
+                GUI.Label(new Rect(trustBox.x + 12f, trustBox.y + 29f, trustBox.width - 24f, 30f),
+                    AutoModSyncIdentityDisplay.VerificationCode(_uiState.ServerFingerprint), fingerprintStyle);
+                GUIStyle compareStyle = new GUIStyle(smallStyle);
+                compareStyle.fontSize = 10;
+                compareStyle.normal.textColor = muted;
+                GUI.Label(new Rect(trustBox.x + 12f, trustBox.y + 61f, trustBox.width - 24f, 20f),
+                    "Compare with the server owner if this first contact was unexpected.", compareStyle);
                 y += 104f;
             }
             else if (_uiState.ManifestFiles > 0)
@@ -510,8 +515,10 @@ namespace ValheimAutoModSync
             }
 
             string footer = "AMS " + PluginVersion + "  •  VALHEIM";
-            if (!String.IsNullOrEmpty(_uiState.ServerFingerprint))
-                footer += "  •  SERVER " + ShortFingerprint(_uiState.ServerFingerprint);
+            if (_uiState.Phase == AutoModSyncUiPhase.Trust)
+                footer += "  •  FIRST CONTACT";
+            else if (!String.IsNullOrEmpty(_uiState.ServerFingerprint))
+                footer += "  •  TRUSTED SERVER";
             GUI.Label(new Rect(left + 28f, top + height - 29f, width - 56f, 18f), footer, smallStyle);
 
             GUI.color = previousColor;
@@ -660,14 +667,6 @@ namespace ValheimAutoModSync
             if (minutes < 60) return minutes.ToString(CultureInfo.InvariantCulture) + "m " + remaining.ToString("00", CultureInfo.InvariantCulture) + "s";
             int hours = minutes / 60;
             return hours.ToString(CultureInfo.InvariantCulture) + "h " + (minutes % 60).ToString("00", CultureInfo.InvariantCulture) + "m";
-        }
-
-        // Intent: Produces a compact non-authoritative server identity label for the footer while trust decisions continue using the full fingerprint.
-        private static string ShortFingerprint(string fingerprint)
-        {
-            if (String.IsNullOrEmpty(fingerprint)) return "UNKNOWN";
-            if (fingerprint.Length <= 16) return fingerprint.ToUpperInvariant();
-            return fingerprint.Substring(0, 8).ToUpperInvariant() + "…" + fingerprint.Substring(fingerprint.Length - 8).ToUpperInvariant();
         }
 
         // Intent: Publishes an already-decided lifecycle phase into the policy-free UI model and makes the overlay visible.
@@ -2898,7 +2897,7 @@ namespace ValheimAutoModSync
             _trustPromptPending = true;
             _uiState.SetServerFingerprint(fingerprint);
             ShowSyncOverlay(AutoModSyncUiPhase.Trust, "Trust this server?",
-                "A Windows confirmation dialog is open. Choose Yes only if you intended to join this server.");
+                "A Windows confirmation dialog is open. The short security code is for optional out-of-band comparison; the full identity is pinned internally.");
 
             StartNativeTrustPrompt(fingerprint, generation);
 
@@ -2913,18 +2912,22 @@ namespace ValheimAutoModSync
 #endif
 
             if (_instance != null)
-                _instance.Logger.LogInfo("AutoModSync is waiting for first-contact trust confirmation for server fingerprint " + fingerprint + ".");
+                _instance.Logger.LogInfo("AutoModSync is waiting for first-contact trust confirmation; security code " +
+                    AutoModSyncIdentityDisplay.VerificationCode(fingerprint) + ".");
         }
 
 
-        // Intent: Shows the first-contact trust decision without blocking Unity's main/network thread.
+        // Intent: Shows the first-contact trust decision without blocking Unity's main/network thread while exposing only a short human comparison code.
+        // Security: the 64-bit code is display-only; the client still verifies and pins the complete 256-bit fingerprint internally.
         // Cursor ownership stays entirely with Valheim; the native dialog receives normal Windows mouse input independently.
         private static void StartNativeTrustPrompt(string fingerprint, int generation)
         {
-            string pretty = FormatFingerprint(fingerprint).Replace("\n", "\r\n");
+            string code = AutoModSyncIdentityDisplay.VerificationCode(fingerprint);
             string message = "This Valheim server wants AutoModSync permission to install or update executable mod files on this PC.\r\n\r\n" +
-                             "Server fingerprint:\r\n" + pretty + "\r\n\r\n" +
-                             "Choose Yes only if you intended to join this server. You will only be asked again if its server identity changes.";
+                             "Security code: " + code + "\r\n\r\n" +
+                             "This short code is derived from the server's full signing-key fingerprint for human comparison only. " +
+                             "AutoModSync verifies and pins the complete identity internally.\r\n\r\n" +
+                             "Choose Yes only if you intended to join this server. If this first contact was unexpected, compare the code with one published by the server owner.";
 
             Thread thread = new Thread(delegate()
             {
@@ -3035,7 +3038,8 @@ namespace ValheimAutoModSync
                     File.AppendAllText(trusted, fingerprint.ToLowerInvariant() + Environment.NewLine, new UTF8Encoding(false));
 
                 ClearPendingTrustPrompt();
-                if (_instance != null) _instance.Logger.LogInfo("AutoModSync trusted server fingerprint " + fingerprint + ".");
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync trusted server identity; security code " +
+                    AutoModSyncIdentityDisplay.VerificationCode(fingerprint) + ".");
                 ContinueVerifiedManifest(manifest);
             }
             catch (Exception ex)
@@ -3082,14 +3086,6 @@ namespace ValheimAutoModSync
                     _instance.Logger.LogInfo("AutoModSync invalidated the native trust prompt and requested dismissal" +
                         (found ? "." : "; the client will retry briefly in case the native window is still materializing."));
             }
-        }
-
-        // Intent: Produces a readable two-line fingerprint without changing the exact 64-hex value that is pinned and compared.
-        private static string FormatFingerprint(string fingerprint)
-        {
-            if (String.IsNullOrEmpty(fingerprint) || fingerprint.Length != 64) return fingerprint ?? "";
-            return fingerprint.Substring(0, 8) + "-" + fingerprint.Substring(8, 8) + "-" + fingerprint.Substring(16, 8) + "-" + fingerprint.Substring(24, 8) + "\n" +
-                   fingerprint.Substring(32, 8) + "-" + fingerprint.Substring(40, 8) + "-" + fingerprint.Substring(48, 8) + "-" + fingerprint.Substring(56, 8);
         }
 
         // Intent: Checks the active ZRpc directly so a connection lost during trust/package preparation can clear UI/state immediately.
@@ -3207,7 +3203,7 @@ namespace ValheimAutoModSync
             if (stage == 0)
             {
                 ShowSyncOverlay(AutoModSyncUiPhase.Trust, "Trust this server?",
-                    "Preview: the real trust state appears while the native Windows Yes/No confirmation remains open.");
+                    "Preview: first contact exposes only the short security code while the full identity remains internal.");
             }
             else if (stage == 1)
             {
