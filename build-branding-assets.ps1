@@ -25,7 +25,7 @@ try {
     $sizes = @(16,24,32,48,64,128,256)
 
     foreach ($size in $sizes) {
-        $bitmap = New-Object System.Drawing.Bitmap -ArgumentList $size,$size,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+        $bitmap = [System.Drawing.Bitmap]::new($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
         try {
             $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
             try {
