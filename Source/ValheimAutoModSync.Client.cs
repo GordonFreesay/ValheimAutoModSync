@@ -600,7 +600,36 @@ namespace ValheimAutoModSync
                     }
 
                     Texture2D texture = new Texture2D(2, 2, TextureFormat.ARGB32, false);
-                    if (!ImageConversion.LoadImage(texture, bytes))
+                    Type imageConversionType = Type.GetType("UnityEngine.ImageConversion, UnityEngine.ImageConversionModule");
+                    if (imageConversionType == null)
+                        throw new MissingMemberException("UnityEngine.ImageConversion is unavailable.");
+
+                    MethodInfo loadImage = imageConversionType.GetMethod(
+                        "LoadImage",
+                        BindingFlags.Public | BindingFlags.Static,
+                        null,
+                        new Type[] { typeof(Texture2D), typeof(byte[]), typeof(bool) },
+                        null);
+                    object[] arguments;
+                    if (loadImage != null)
+                    {
+                        arguments = new object[] { texture, bytes, false };
+                    }
+                    else
+                    {
+                        loadImage = imageConversionType.GetMethod(
+                            "LoadImage",
+                            BindingFlags.Public | BindingFlags.Static,
+                            null,
+                            new Type[] { typeof(Texture2D), typeof(byte[]) },
+                            null);
+                        if (loadImage == null)
+                            throw new MissingMethodException("UnityEngine.ImageConversion.LoadImage(Texture2D, byte[])");
+                        arguments = new object[] { texture, bytes };
+                    }
+
+                    object result = loadImage.Invoke(null, arguments);
+                    if (!(result is bool) || !(bool)result)
                         throw new InvalidDataException("Embedded AutoModSync logo PNG could not be decoded.");
                     texture.wrapMode = TextureWrapMode.Clamp;
                     _uiLogoTexture = texture;
