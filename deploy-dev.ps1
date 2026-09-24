@@ -18,8 +18,9 @@ $devRoot = Join-Path $repoRoot 'DevBuild'
 $srcClient = Join-Path $devRoot 'ValheimAutoModSync.Client.dll'
 $srcServer = Join-Path $devRoot 'ValheimAutoModSync.Server.dll'
 $srcApply = Join-Path $devRoot 'ValheimAutoModSync.Apply.exe'
+$srcApplyIcon = Join-Path $devRoot 'ValheimAutoModSync.Apply.ico'
 
-foreach ($path in @($srcClient,$srcServer,$srcApply)) {
+foreach ($path in @($srcClient,$srcServer,$srcApply,$srcApplyIcon)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw ("Development runtime is missing: " + $path + [Environment]::NewLine + "Run .\\build-dev.bat first.")
     }
@@ -79,9 +80,12 @@ if (Test-Path -LiteralPath $packagedApply -PathType Leaf) {
     }
 }
 
+$applyIconTarget = Join-Path (Split-Path -Parent $applyTarget) 'ValheimAutoModSync.Apply.ico'
+
 $rows = @()
 $rows += Copy-Verified $srcClient $clientTarget 'Client'
 $rows += Copy-Verified $srcApply $applyTarget 'Apply helper'
+$rows += Copy-Verified $srcApplyIcon $applyIconTarget 'Apply helper icon'
 
 if (-not [String]::IsNullOrWhiteSpace($ServerBepInEx)) {
     $serverRoot = Normalize-Root $ServerBepInEx 'Server BepInEx root'
