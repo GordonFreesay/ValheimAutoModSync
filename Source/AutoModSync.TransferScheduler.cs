@@ -20,6 +20,7 @@ namespace ValheimAutoModSync
         private readonly List<long> _active = new List<long>();
         private int _roundRobinCursor;
         private int _maxActive;
+        private int _maxQueued;
         private long _aggregateBytesPerSecond;
         private int _maxGrantBytes;
         private double _burstSeconds;
@@ -28,15 +29,16 @@ namespace ValheimAutoModSync
         private long _lastRefillUtcTicks;
 
         // Intent: Creates one bounded scheduler with an explicit active-slot limit, aggregate raw-byte budget, grant size, and short burst envelope.
-        internal AutoModSyncTransferScheduler(int maxActive, long aggregateBytesPerSecond, int maxGrantBytes, double burstSeconds)
+        internal AutoModSyncTransferScheduler(int maxActive, int maxQueued, long aggregateBytesPerSecond, int maxGrantBytes, double burstSeconds)
         {
-            Configure(maxActive, aggregateBytesPerSecond, maxGrantBytes, burstSeconds);
+            Configure(maxActive, maxQueued, aggregateBytesPerSecond, maxGrantBytes, burstSeconds);
         }
 
         // Intent: Applies server configuration while preserving no more than the newly allowed burst of accumulated tokens.
-        internal void Configure(int maxActive, long aggregateBytesPerSecond, int maxGrantBytes, double burstSeconds)
+        internal void Configure(int maxActive, int maxQueued, long aggregateBytesPerSecond, int maxGrantBytes, double burstSeconds)
         {
             _maxActive = Math.Max(1, maxActive);
+            _maxQueued = Math.Max(0, maxQueued);
             _aggregateBytesPerSecond = Math.Max(1L, aggregateBytesPerSecond);
             _maxGrantBytes = Math.Max(4096, maxGrantBytes);
             _burstSeconds = Math.Max(0.05, Math.Min(2.0, burstSeconds));
@@ -50,6 +52,7 @@ namespace ValheimAutoModSync
         {
             if (peerId <= 0L) throw new ArgumentOutOfRangeException("peerId");
             if (_peers.ContainsKey(peerId)) return false;
+            if (_peers.Count >= _maxActive + _maxQueued) return false;
 
             PeerState state = new PeerState();
             state.Id = peerId;
@@ -223,6 +226,17 @@ namespace ValheimAutoModSync
 
         // Intent: Exposes the configured active transfer limit for queue status messages.
         internal int MaxActive { get { return _maxActive; } }
+
+        // Intent: Exposes the configured bounded waiting capacity for admission diagnostics and tests.
+        internal int MaxQueued { get { return _maxQueued; } }
+
+        // Intent: Centralizes active-slot idle expiry semantics so a scheduler-held outstanding request can never be expired merely because rate/backpressure delayed its send.
+        internal static bool ShouldExpireActivePeer(long lastActivityUtcTicks, long nowUtcTicks, int timeoutSeconds, bool hasOutstandingDemand)
+        {
+            if (hasOutstandingDemand || lastActivityUtcTicks <= 0L || nowUtcTicks <= lastActivityUtcTicks) return false;
+            int boundedTimeout = Math.Max(1, timeoutSeconds);
+            return nowUtcTicks - lastActivityUtcTicks >= (long)boundedTimeout * TimeSpan.TicksPerSecond;
+        }
 
         // Intent: Refills the aggregate token bucket according to elapsed UTC ticks while bounding burst accumulation.
         private void Refill(long nowUtcTicks)
