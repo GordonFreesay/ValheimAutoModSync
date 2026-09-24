@@ -17,7 +17,7 @@ if (-not (Test-Path -LiteralPath $amsRoot -PathType Container)) {
 }
 
 $marker = Join-Path $amsRoot 'phase7-test-ui-preview.once'
-[System.IO.File]::WriteAllText($marker, '', (New-Object System.Text.UTF8Encoding($false)))
+[System.IO.File]::WriteAllText($marker, '', [System.Text.UTF8Encoding]::new($false))
 
 Write-Host ''
 Write-Host 'Phase 7 branded UI preview armed:' -ForegroundColor Yellow
