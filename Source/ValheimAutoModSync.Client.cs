@@ -1451,6 +1451,10 @@ namespace ValheimAutoModSync
                 string pending = Path.Combine(amsRoot, "pending.txt");
                 if (PendingRelativePaths.Count == 0)
                     throw new InvalidOperationException("AutoModSync apply/restart was requested without any live file operations.");
+#if AMS_DEV_TESTS
+                if (ConsumeDevelopmentApplyPreparationFailureMarker())
+                    throw new InvalidOperationException("DEV TEST forced apply/restart preparation failure before durable transaction state.");
+#endif
 
                 // ownership-next is written first; pending.txt is the durable trigger observed by startup recovery.
                 // A crash between these writes leaves harmless metadata but never a half-described live transaction.
@@ -2512,6 +2516,9 @@ namespace ValheimAutoModSync
         private static bool IsServerTrusted(string fingerprint)
         {
             if (String.IsNullOrEmpty(fingerprint) || fingerprint.Length != 64) return false;
+#if AMS_DEV_TESTS
+            if (ConsumeDevelopmentForceTrustPromptMarker()) return false;
+#endif
             string trusted = Path.Combine(GetAutoModSyncRoot(), "trusted-servers.txt");
             try
             {
@@ -2724,6 +2731,44 @@ namespace ValheimAutoModSync
         }
 
 #if AMS_DEV_TESTS
+        // Intent: Forces exactly one verified server identity through first-contact trust UI without altering the existing trust store.
+        // Scope: used only to validate that explicit user rejection remains fail-closed on an otherwise already-pinned development server.
+        private static bool ConsumeDevelopmentForceTrustPromptMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase1-test-force-trust-prompt.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED forcing first-contact trust prompt for this verified session.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV trust-prompt marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
+        // Intent: Forces one apply/restart preparation failure after a bundle has been verified/extracted but before durable pending state exists.
+        // Safety: the test leaves live BepInEx files untouched and exercises the production fail-closed abort path.
+        private static bool ConsumeDevelopmentApplyPreparationFailureMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase1-test-fail-apply-prep.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED forcing apply/restart preparation failure before pending state.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV apply-preparation marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
         // Intent: Consumes a one-shot marker that makes the current connection behave like a pre-resume AMS4/2.5 client.
         // Scope: it keeps roots1 and the existing AMS4 protocol, omits bundle-resume1/bundle-scheduler1 from Hello, and ignores those server advertisements.
         private static bool ConsumeDevelopmentLegacyClientMarker()
