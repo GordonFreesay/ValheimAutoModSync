@@ -25,6 +25,7 @@ $clientFixture = Join-Path $clientFixtureDir 'payload.txt'
 $clientStagedDir = Join-Path (Join-Path (Join-Path $clientAms 'staging') 'plugins') '__AMS_PHASE1_LEGACY25__'
 $clientStagedFixture = Join-Path $clientStagedDir 'payload.txt.amsnew'
 $clientPending = Join-Path $clientAms 'pending.txt'
+$clientReconnect = Join-Path $clientAms 'reconnect.txt'
 $clientLog = Join-Path $ClientBepInEx 'LogOutput.log'
 $serverLog = Join-Path $ServerBepInEx 'LogOutput.log'
 
@@ -80,6 +81,9 @@ function Prepare-Test {
     if (Test-Path -LiteralPath $clientPending -PathType Leaf) {
         throw "Client has an existing pending apply: $clientPending . Resolve that recovery state before the 2.5 compatibility test."
     }
+    if (Test-Path -LiteralPath $clientReconnect -PathType Leaf) {
+        throw "Client has an existing AutoModSync reconnect token: $clientReconnect . Do not arm this one-shot test while an automatic reconnect is pending; let that reconnect complete (or otherwise resolve it) first."
+    }
     if (Test-Path -LiteralPath $clientFixture -PathType Leaf) {
         throw "Reserved client live fixture already exists: $clientFixture . Run Cleanup and investigate before testing."
     }
@@ -128,7 +132,7 @@ function Inspect-Test {
         @('server', "AutoModSync DEV TEST emulating a pre-resume AMS4 server for this peer.", 'server selected the 2.5 wire-shape emulator'),
         @('server', "AutoModSync DEV TEST legacy-server compatibility confirmed: original AMS4 bundle request/header shape active.", 'server observed the original 2.5 bundle request/header shape'),
         @('client', "AutoModSync DEV TEST legacy-server compatibility confirmed: 2.5 AMS4 capability set accepted; resume/scheduler extensions remain disabled.", '2.6 client accepted the 2.5 capability set'),
-        @('client', "AutoModSync using pipelined binary bundle transfer", '2.6 client selected the existing 2.5 pipelined transfer fallback'),
+        @('client', "AutoModSync DEV TEST legacy-server compatibility confirmed: using the 2.5 pipelined binary bundle transfer fallback.", '2.6 client selected the existing 2.5 pipelined transfer fallback'),
         @('client', "AutoModSync compressed package verified and unpacked:", 'legacy-shaped bundle completed full verification/extraction'),
         @('client', "Mods downloaded but automatic apply/restart failed: DEV TEST forced apply/restart preparation failure", 'test stopped before durable/live apply')
     )
