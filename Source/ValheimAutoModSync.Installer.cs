@@ -797,10 +797,12 @@ internal static class AutoModSyncInstaller
             string clientDir = Path.Combine(PackageRoot(), "Client");
             string clientDll = Path.Combine(clientDir, "ValheimAutoModSync.Client.dll");
             string applyExe = Path.Combine(clientDir, "BepInEx", "AutoModSync", "ValheimAutoModSync.Apply.exe");
+            string applyIcon = Path.Combine(clientDir, "BepInEx", "AutoModSync", "ValheimAutoModSync.Apply.ico");
             string sourceCore = Path.Combine(clientDir, "BepInEx", "core");
 
             RequireFile(clientDll);
             RequireFile(applyExe);
+            RequireFile(applyIcon);
             RequireFile(Path.Combine(clientDir, "winhttp.dll"));
             RequireFile(Path.Combine(clientDir, "doorstop_config.ini"));
             RequireFile(Path.Combine(sourceCore, "BepInEx.dll"));
@@ -821,7 +823,8 @@ internal static class AutoModSyncInstaller
 
             CopyFile(clientDll, Path.Combine(root, "BepInEx", "plugins", "ValheimAutoModSync.Client.dll"));
             CopyFile(applyExe, Path.Combine(root, "BepInEx", "AutoModSync", "ValheimAutoModSync.Apply.exe"));
-            AppendLog("Installed AutoModSync client plugin and apply helper.");
+            CopyFile(applyIcon, Path.Combine(root, "BepInEx", "AutoModSync", "ValheimAutoModSync.Apply.ico"));
+            AppendLog("Installed AutoModSync client plugin, apply helper, and helper icon.");
         }
 
         // Intent: Installs the server plugin/config/release payload and preserves an existing BepInEx install, server config, and server signing identity.
@@ -922,7 +925,11 @@ internal static class AutoModSyncInstaller
                 publicXml = rsa.ToXmlString(false);
             }
             File.WriteAllText(publicPath, publicXml + Environment.NewLine, new UTF8Encoding(false));
-            using (SHA256 sha = SHA256.Create()) AppendLog("Server fingerprint: " + ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(publicXml))));
+            using (SHA256 sha = SHA256.Create())
+            {
+                string fingerprint = ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(publicXml)));
+                AppendLog("Server identity verification code: " + ValheimAutoModSync.AutoModSyncIdentityDisplay.VerificationCode(fingerprint));
+            }
         }
 
         // Intent: Copies one required package file to one explicit destination and creates only that destination's parent directory.
