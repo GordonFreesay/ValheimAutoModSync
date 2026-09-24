@@ -511,7 +511,7 @@ namespace ValheimAutoModSync
         // Compatibility: arbitrary partial/delta clients still use the normal content-keyed lazy cache; Host & Play remains lazy so opening Valheim does not incur dedicated-server prewarm cost.
         private void Start()
         {
-            if (_enabled == null || !_enabled.Value || _prebuildFreshClientBundle == null || !_prebuildFreshClientBundle.Value) return;
+            if (_enabled == null || !_enabled.Value) return;
             if (!IsDedicatedServerProcess()) return;
 #if AMS_DEV_TESTS
             if (DevelopmentDisableStartupPrewarm)
@@ -520,6 +520,7 @@ namespace ValheimAutoModSync
                 return;
             }
 #endif
+            if (_prebuildFreshClientBundle == null || !_prebuildFreshClientBundle.Value) return;
 
             try
             {
@@ -637,6 +638,7 @@ namespace ValheimAutoModSync
                 if (!File.Exists(marker)) return;
                 try { File.Delete(marker); } catch { }
                 DevelopmentDisableStartupPrewarm = true;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST armed startup-prewarm disable for this server process.");
             }
             catch (Exception ex)
             {
