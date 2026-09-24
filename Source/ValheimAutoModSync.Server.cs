@@ -2026,39 +2026,12 @@ namespace ValheimAutoModSync
         // Security: a junction/symlink inside plugins, patchers, or config must never expand the server's distributable source boundary.
         private static List<string> EnumerateManifestFiles(string root)
         {
-            List<string> files = new List<string>();
-            Stack<string> pending = new Stack<string>();
-            string rootFull = Path.GetFullPath(root);
-            pending.Push(rootFull);
-
-            while (pending.Count > 0)
-            {
-                string current = pending.Pop();
-                string[] currentFiles = Directory.GetFiles(current, "*", SearchOption.TopDirectoryOnly);
-                int i;
-                for (i = 0; i < currentFiles.Length; i++)
+            return AutoModSyncManifestScanner.EnumerateFiles(
+                root,
+                delegate(string message)
                 {
-                    if (AutoModSyncPathSafety.IsReparsePoint(currentFiles[i]))
-                    {
-                        if (_instance != null) _instance.Logger.LogWarning("AutoModSync skipped reparse-point source file: " + currentFiles[i]);
-                        continue;
-                    }
-                    files.Add(currentFiles[i]);
-                }
-
-                string[] directories = Directory.GetDirectories(current, "*", SearchOption.TopDirectoryOnly);
-                for (i = 0; i < directories.Length; i++)
-                {
-                    if (AutoModSyncPathSafety.IsReparsePoint(directories[i]))
-                    {
-                        if (_instance != null) _instance.Logger.LogWarning("AutoModSync skipped reparse-point source directory: " + directories[i]);
-                        continue;
-                    }
-                    pending.Push(directories[i]);
-                }
-            }
-
-            return files;
+                    if (_instance != null) _instance.Logger.LogWarning(message);
+                });
         }
 
         // Intent: Hard-blocks AutoModSync identity files and BepInEx's loader-wide config from remote config synchronization even when an administrator uses a broad allowlist.
