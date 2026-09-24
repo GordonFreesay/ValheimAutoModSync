@@ -79,109 +79,189 @@ internal static class AutoModSyncInstaller
         private readonly Button _browse;
         private readonly Button _detect;
         private readonly Button _install;
+        private readonly Button _uninstall;
+        private readonly Label _status;
+        private readonly CheckBox _removeServerIdentity;
         private readonly TextBox _log;
+        private Image _brandLogo;
         private bool _busy;
+
+        private static readonly Color WindowBack = Color.FromArgb(18, 20, 22);
+        private static readonly Color PanelBack = Color.FromArgb(27, 30, 33);
+        private static readonly Color FieldBack = Color.FromArgb(35, 39, 43);
+        private static readonly Color TextMain = Color.FromArgb(235, 237, 239);
+        private static readonly Color TextMuted = Color.FromArgb(155, 162, 170);
+        private static readonly Color Accent = Color.FromArgb(255, 112, 20);
 
         public int ExitCode { get; private set; }
 
-        // Intent: Constructs the installer UI, defaults to the Client role, and performs read-only path auto-detection.
+        // Intent: Constructs the branded installer UI, defaults to the Client role, performs read-only path detection, and exposes uninstall only for a complete selected-role install.
         internal InstallerForm()
         {
             Text = "Valheim AutoModSync " + ProductVersion + " Installer";
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(700, 515);
-            MinimumSize = new Size(700, 515);
+            ClientSize = new Size(760, 600);
+            MinimumSize = new Size(760, 600);
             Font = new Font("Segoe UI", 9F);
             MaximizeBox = false;
+            BackColor = WindowBack;
+            ForeColor = TextMain;
+
+            PictureBox logo = new PictureBox();
+            logo.Location = new Point(22, 18);
+            logo.Size = new Size(58, 58);
+            logo.SizeMode = PictureBoxSizeMode.Zoom;
+            _brandLogo = LoadBrandLogo();
+            if (_brandLogo != null) logo.Image = _brandLogo;
+            Controls.Add(logo);
 
             Label title = new Label();
-            title.Text = "Valheim AutoModSync " + ProductVersion;
-            title.Font = new Font(Font.FontFamily, 16F, FontStyle.Bold);
+            title.Text = "AUTOMODSYNC";
+            title.Font = new Font(Font.FontFamily, 19F, FontStyle.Bold);
+            title.ForeColor = TextMain;
             title.AutoSize = true;
-            title.Location = new Point(20, 18);
+            title.Location = new Point(92, 18);
             Controls.Add(title);
 
+            Label subtitle = new Label();
+            subtitle.Text = "VALHEIM  •  VERIFIED MOD SYNCHRONIZATION";
+            subtitle.Font = new Font(Font.FontFamily, 9F, FontStyle.Bold);
+            subtitle.ForeColor = Accent;
+            subtitle.AutoSize = true;
+            subtitle.Location = new Point(95, 53);
+            Controls.Add(subtitle);
+
             Label intro = new Label();
-            intro.Text = "Choose where AutoModSync should be installed. Close Valheim and any dedicated server first.\r\n" +
+            intro.Text = "Install, repair, update, or safely remove AutoModSync. Close Valheim and any dedicated server first.\r\n" +
                          "This installer uses only files included in this release package; it performs no network downloads.";
-            intro.Size = new Size(650, 44);
-            intro.Location = new Point(22, 56);
+            intro.ForeColor = TextMuted;
+            intro.Size = new Size(690, 44);
+            intro.Location = new Point(24, 87);
             Controls.Add(intro);
 
             GroupBox roles = new GroupBox();
             roles.Text = "Installation type";
-            roles.Location = new Point(22, 105);
-            roles.Size = new Size(650, 90);
+            roles.ForeColor = TextMain;
+            roles.BackColor = PanelBack;
+            roles.Location = new Point(22, 135);
+            roles.Size = new Size(716, 92);
             Controls.Add(roles);
 
             _clientRole = MakeRole("Client", 20);
             _clientRole.Checked = true;
             roles.Controls.Add(_clientRole);
 
-            _serverRole = MakeRole("Dedicated Server", 165);
+            _serverRole = MakeRole("Dedicated Server", 170);
             roles.Controls.Add(_serverRole);
 
-            _hostRole = MakeRole("Host & Play", 365);
+            _hostRole = MakeRole("Host & Play", 385);
             roles.Controls.Add(_hostRole);
 
             Label roleHelp = new Label();
             roleHelp.Text = "Client joins synchronized servers. Dedicated Server serves its plugin set. Host & Play installs both roles.";
-            roleHelp.Location = new Point(20, 55);
-            roleHelp.Size = new Size(610, 22);
+            roleHelp.ForeColor = TextMuted;
+            roleHelp.Location = new Point(20, 56);
+            roleHelp.Size = new Size(660, 22);
             roles.Controls.Add(roleHelp);
 
             Label pathLabel = new Label();
-            pathLabel.Text = "Valheim folder:";
+            pathLabel.Text = "Valheim folder";
+            pathLabel.ForeColor = TextMain;
             pathLabel.AutoSize = true;
-            pathLabel.Location = new Point(22, 210);
+            pathLabel.Location = new Point(22, 242);
             Controls.Add(pathLabel);
 
             _path = new TextBox();
-            _path.Location = new Point(22, 232);
-            _path.Size = new Size(500, 23);
+            _path.Location = new Point(22, 264);
+            _path.Size = new Size(552, 23);
+            _path.BackColor = FieldBack;
+            _path.ForeColor = TextMain;
+            _path.BorderStyle = BorderStyle.FixedSingle;
+            _path.TextChanged += new EventHandler(PathChanged);
             Controls.Add(_path);
 
             _browse = new Button();
             _browse.Text = "Browse...";
-            _browse.Location = new Point(530, 230);
-            _browse.Size = new Size(75, 27);
+            _browse.Location = new Point(582, 262);
+            _browse.Size = new Size(78, 27);
+            StyleSecondaryButton(_browse);
             _browse.Click += new EventHandler(BrowseClicked);
             Controls.Add(_browse);
 
             _detect = new Button();
             _detect.Text = "Detect";
-            _detect.Location = new Point(611, 230);
-            _detect.Size = new Size(61, 27);
+            _detect.Location = new Point(666, 262);
+            _detect.Size = new Size(72, 27);
+            StyleSecondaryButton(_detect);
             _detect.Click += new EventHandler(DetectClicked);
             Controls.Add(_detect);
+
+            _status = new Label();
+            _status.Text = "Checking installation state...";
+            _status.ForeColor = TextMuted;
+            _status.Location = new Point(22, 298);
+            _status.Size = new Size(716, 24);
+            Controls.Add(_status);
+
+            _removeServerIdentity = new CheckBox();
+            _removeServerIdentity.Text = "Also remove server config + signing identity";
+            _removeServerIdentity.ForeColor = Color.FromArgb(255, 165, 105);
+            _removeServerIdentity.BackColor = WindowBack;
+            _removeServerIdentity.AutoSize = true;
+            _removeServerIdentity.Location = new Point(22, 326);
+            _removeServerIdentity.Visible = false;
+            Controls.Add(_removeServerIdentity);
 
             _log = new TextBox();
             _log.Multiline = true;
             _log.ReadOnly = true;
             _log.ScrollBars = ScrollBars.Vertical;
-            _log.Location = new Point(22, 275);
-            _log.Size = new Size(650, 165);
+            _log.BackColor = FieldBack;
+            _log.ForeColor = TextMain;
+            _log.BorderStyle = BorderStyle.FixedSingle;
+            _log.Location = new Point(22, 357);
+            _log.Size = new Size(716, 170);
             _log.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
             Controls.Add(_log);
+
+            _uninstall = new Button();
+            _uninstall.Text = "Uninstall";
+            _uninstall.Font = new Font(Font.FontFamily, 10F, FontStyle.Bold);
+            _uninstall.Location = new Point(500, 542);
+            _uninstall.Size = new Size(112, 36);
+            _uninstall.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+            _uninstall.BackColor = Color.FromArgb(96, 45, 31);
+            _uninstall.ForeColor = TextMain;
+            _uninstall.FlatStyle = FlatStyle.Flat;
+            _uninstall.FlatAppearance.BorderColor = Color.FromArgb(190, 75, 40);
+            _uninstall.Visible = false;
+            _uninstall.Click += new EventHandler(UninstallClicked);
+            Controls.Add(_uninstall);
 
             _install = new Button();
             _install.Text = "Install";
             _install.Font = new Font(Font.FontFamily, 10F, FontStyle.Bold);
-            _install.Location = new Point(562, 455);
-            _install.Size = new Size(110, 35);
+            _install.Location = new Point(620, 542);
+            _install.Size = new Size(118, 36);
             _install.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+            _install.BackColor = Accent;
+            _install.ForeColor = Color.Black;
+            _install.FlatStyle = FlatStyle.Flat;
+            _install.FlatAppearance.BorderColor = Color.FromArgb(255, 145, 70);
             _install.Click += new EventHandler(InstallClicked);
             Controls.Add(_install);
 
             Label note = new Label();
-            note.Text = "install.bat remains included as a readable/manual fallback.";
-            note.Location = new Point(22, 464);
+            note.Text = "BepInEx is treated as a shared dependency and is preserved during uninstall.";
+            note.ForeColor = TextMuted;
+            note.Location = new Point(22, 553);
             note.AutoSize = true;
             note.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             Controls.Add(note);
 
             ExitCode = 0;
             DetectSuggestedPath();
+            RefreshInstallState();
         }
 
         // Intent: Creates one role-selection radio button and wires it to path re-detection when selected.
