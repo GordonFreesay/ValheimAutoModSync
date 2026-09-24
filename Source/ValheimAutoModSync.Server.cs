@@ -1777,6 +1777,16 @@ namespace ValheimAutoModSync
             BundleTransfer transfer;
             if (!BundleTransfers.TryGetValue(rpc, out transfer)) return;
             BundleTransfers.Remove(rpc);
+
+            if (transfer != null)
+            {
+                try { if (transfer.ReadStream != null) transfer.ReadStream.Dispose(); } catch { }
+                transfer.ReadStream = null;
+                transfer.PendingRequest = null;
+                if (_transferScheduler != null && transfer.SchedulerPeerId > 0L)
+                    _transferScheduler.Remove(transfer.SchedulerPeerId);
+            }
+
             RestoreTransferTransport(transfer);
 
             if (transfer != null && transfer.Artifact != null)
