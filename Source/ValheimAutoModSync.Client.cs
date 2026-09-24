@@ -7,11 +7,14 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using Steamworks;
 using UnityEngine;
 
 [assembly: AssemblyTitle("Valheim AutoModSync Client")]
@@ -131,6 +134,14 @@ namespace ValheimAutoModSync
         private static DateTime _overlayHideUtc = DateTime.MinValue;
         private static Texture2D _uiLogoTexture;
         private static bool _uiLogoLoadAttempted;
+        private static Sprite _serverBrowserBadgeSprite;
+        private static BepInEx.Configuration.ConfigEntry<bool> _showServerBadges;
+        private static DateTime _nextServerBrowserBadgeRefreshUtc = DateTime.MinValue;
+        private static readonly Dictionary<string, ServerBrowserPresence> ServerBrowserPresenceCache = new Dictionary<string, ServerBrowserPresence>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<int, Vector4> ServerBrowserOriginalNameMargins = new Dictionary<int, Vector4>();
+        private static FieldInfo _serverBrowserFilteredListField;
+        private static Type _serverBrowserImageType;
+        private static Type _serverBrowserTextType;
         private static string _startupReconnectTarget = "";
         private static DateTime _startupReconnectNextUtc = DateTime.MinValue;
         private static int _startupReconnectAttempts;
@@ -152,6 +163,19 @@ namespace ValheimAutoModSync
             public string RelativePath;
         }
 
+        private sealed class ServerBrowserPresence
+        {
+            public string Key = "";
+            public DateTime StartedUtc = DateTime.MinValue;
+            public DateTime ExpiresUtc = DateTime.MinValue;
+            public bool Completed;
+            public bool IsAutoModSync;
+            public string Version = "";
+            public string Protocol = "";
+            public HServerQuery Query;
+            public ISteamMatchmakingRulesResponse Response;
+        }
+
         // Intent: BepInEx client entry point; initializes only on the playable Valheim process, hands any interrupted apply back to the out-of-process transaction helper, restores reconnect state, and installs synchronization hooks.
         // Recovery safety: the running game never mutates live synchronized DLL/config destinations itself. A pending/journaled transaction causes an immediate helper-owned recovery restart before AMS can join a server.
         private void Awake()
@@ -164,6 +188,8 @@ namespace ValheimAutoModSync
             }
             try
             {
+                _showServerBadges = Config.Bind("Discovery", "ShowServerBadges", true,
+                    "Show a small AMS logo beside Steam-backed servers that passively advertise AutoModSync in Valheim's Join Game browser.");
                 HideBepInExConsoleAndDisableFutureConsole();
                 if (HasPendingApplyRecovery())
                 {
@@ -212,6 +238,7 @@ namespace ValheimAutoModSync
             if (_devUiPreviewActive) UpdateDevelopmentUiPreview();
             TryRunDevelopmentServerBrowserProbe();
 #endif
+            UpdateServerBrowserBadges();
             if (_restartRequested && !_quitIssued && _quitAfterUtc != DateTime.MinValue && DateTime.UtcNow >= _quitAfterUtc)
             {
                 _quitIssued = true;
@@ -3147,6 +3174,441 @@ namespace ValheimAutoModSync
             if (_devEmulateLegacyClient) return "roots1";
 #endif
             return ClientCapabilities;
+        }
+
+        // Intent: Refreshes AMS badges only while Valheim's Join Game browser is visible, using the live row/index structure confirmed by the Phase 7 browser probe.
+        // Network scope: only currently visible dedicated rows are considered, Steam rule lookups are cached, and at most four rule queries can be outstanding at once.
+        private static void UpdateServerBrowserBadges()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (_nextServerBrowserBadgeRefreshUtc != DateTime.MinValue && now < _nextServerBrowserBadgeRefreshUtc) return;
+            _nextServerBrowserBadgeRefreshUtc = now.AddMilliseconds(400.0);
+
+            GameObject panel = null;
+            try { panel = GameObject.Find("GUI/StartGui/StartGame/Panel/JoinPanel"); } catch { }
+            if (panel == null || !panel.activeInHierarchy) return;
+
+            ServerListGui browser = null;
+            try { browser = panel.GetComponent<ServerListGui>(); } catch { }
+            if (browser == null) return;
+
+            Transform listRoot = null;
+            try { listRoot = panel.transform.Find("ServerList/ListRoot"); } catch { }
+            if (listRoot == null) return;
+
+            if (_serverBrowserFilteredListField == null)
+                _serverBrowserFilteredListField = typeof(ServerListGui).GetField("m_filteredList", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (_serverBrowserFilteredListField == null) return;
+
+            IList filtered = null;
+            try { filtered = _serverBrowserFilteredListField.GetValue(browser) as IList; } catch { }
+            if (filtered == null) return;
+
+            bool enabled = _showServerBadges == null || _showServerBadges.Value;
+            RectTransform viewport = listRoot.parent as RectTransform;
+            int rowCount = Math.Min(listRoot.childCount, filtered.Count);
+            int i;
+            for (i = 0; i < rowCount; i++)
+            {
+                Transform row = listRoot.GetChild(i);
+                if (row == null) continue;
+
+                if (!enabled)
+                {
+                    SetServerBrowserBadge(row, false, "");
+                    continue;
+                }
+
+                if (!IsServerBrowserRowVisible(row as RectTransform, viewport)) continue;
+
+                string host;
+                int gamePort;
+                if (!TryGetServerBrowserEndpoint(filtered[i], out host, out gamePort))
+                {
+                    SetServerBrowserBadge(row, false, "");
+                    continue;
+                }
+
+                ServerBrowserPresence presence = GetOrStartServerBrowserPresence(host, gamePort, now);
+                bool show = presence != null && presence.Completed && presence.IsAutoModSync;
+                SetServerBrowserBadge(row, show, show ? presence.Version : "");
+            }
+
+            PruneServerBrowserPresenceCache(now);
+        }
+
+        // Intent: Restricts passive discovery to rows that overlap the browser viewport so opening a large Community list cannot fan out rule queries to every listed server.
+        private static bool IsServerBrowserRowVisible(RectTransform row, RectTransform viewport)
+        {
+            if (row == null || !row.gameObject.activeInHierarchy) return false;
+            if (viewport == null) return true;
+
+            Vector3[] rowCorners = new Vector3[4];
+            Vector3[] viewCorners = new Vector3[4];
+            try
+            {
+                row.GetWorldCorners(rowCorners);
+                viewport.GetWorldCorners(viewCorners);
+            }
+            catch
+            {
+                return true;
+            }
+
+            return rowCorners[2].x >= viewCorners[0].x &&
+                   rowCorners[0].x <= viewCorners[2].x &&
+                   rowCorners[2].y >= viewCorners[0].y &&
+                   rowCorners[0].y <= viewCorners[2].y;
+        }
+
+        // Intent: Extracts the dedicated host/game-port pair from Valheim's ServerListEntryData without depending on a private field name that may change between game builds.
+        private static bool TryGetServerBrowserEndpoint(object entry, out string host, out int gamePort)
+        {
+            host = "";
+            gamePort = 0;
+
+            ServerJoinData joinData;
+            if (!TryExtractServerJoinData(entry, 0, out joinData) || !joinData.IsValid || (int)joinData.m_type != 3) return false;
+
+            try
+            {
+                ServerJoinDataDedicated dedicated = joinData.Dedicated;
+                host = (dedicated.GetHost() ?? "").Trim();
+                gamePort = dedicated.m_port;
+                return host.Length > 0 && gamePort > 0 && gamePort < 65535;
+            }
+            catch
+            {
+                host = "";
+                gamePort = 0;
+                return false;
+            }
+        }
+
+        // Intent: Finds a boxed ServerJoinData inside one browser-entry object using a bounded two-level reflection walk, allowing the badge feature to survive harmless private-field renames.
+        private static bool TryExtractServerJoinData(object value, int depth, out ServerJoinData joinData)
+        {
+            joinData = default(ServerJoinData);
+            if (value == null || depth > 2) return false;
+            if (value is ServerJoinData)
+            {
+                joinData = (ServerJoinData)value;
+                return true;
+            }
+
+            Type type = value.GetType();
+            FieldInfo[] fields;
+            try { fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic); }
+            catch { fields = new FieldInfo[0]; }
+
+            int i;
+            for (i = 0; i < fields.Length; i++)
+            {
+                FieldInfo field = fields[i];
+                object child = null;
+                try { child = field.GetValue(value); } catch { continue; }
+                if (child is ServerJoinData)
+                {
+                    joinData = (ServerJoinData)child;
+                    return true;
+                }
+
+                if (depth < 2 && child != null && ShouldInspectServerBrowserMember(field.FieldType) &&
+                    TryExtractServerJoinData(child, depth + 1, out joinData))
+                    return true;
+            }
+
+            PropertyInfo[] properties;
+            try { properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic); }
+            catch { properties = new PropertyInfo[0]; }
+
+            for (i = 0; i < properties.Length; i++)
+            {
+                PropertyInfo property = properties[i];
+                if (!property.CanRead || property.GetIndexParameters().Length != 0) continue;
+                object child = null;
+                try { child = property.GetValue(value, null); } catch { continue; }
+                if (child is ServerJoinData)
+                {
+                    joinData = (ServerJoinData)child;
+                    return true;
+                }
+
+                if (depth < 2 && child != null && ShouldInspectServerBrowserMember(property.PropertyType) &&
+                    TryExtractServerJoinData(child, depth + 1, out joinData))
+                    return true;
+            }
+
+            return false;
+        }
+
+        // Intent: Bounds browser-entry reflection to Valheim server/join container types and avoids traversing arbitrary framework/Unity object graphs.
+        private static bool ShouldInspectServerBrowserMember(Type type)
+        {
+            if (type == null || type.IsPrimitive || type.IsEnum || type == typeof(string)) return false;
+            string name = type.FullName ?? type.Name ?? "";
+            return name.IndexOf("Server", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   name.IndexOf("Join", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // Intent: Returns a cached passive AMS-presence result or starts one bounded Steam rules query against Valheim's dedicated query port (game port + 1).
+        // Privacy: the response is used only for the public automodsync/version/protocol capability marker; no fingerprint or player identity is requested or stored.
+        private static ServerBrowserPresence GetOrStartServerBrowserPresence(string host, int gamePort, DateTime now)
+        {
+            string key = host.ToLowerInvariant() + ":" + gamePort.ToString(CultureInfo.InvariantCulture);
+            ServerBrowserPresence existing;
+            if (ServerBrowserPresenceCache.TryGetValue(key, out existing))
+            {
+                if (!existing.Completed) return existing;
+                if (existing.ExpiresUtc > now) return existing;
+                ServerBrowserPresenceCache.Remove(key);
+            }
+
+            if (CountActiveServerBrowserPresenceQueries() >= 4) return null;
+
+            uint ip;
+            if (!TryResolveSteamQueryAddress(host, out ip))
+            {
+                ServerBrowserPresence failedResolve = new ServerBrowserPresence();
+                failedResolve.Key = key;
+                failedResolve.Completed = true;
+                failedResolve.ExpiresUtc = now.AddSeconds(30.0);
+                ServerBrowserPresenceCache[key] = failedResolve;
+                return failedResolve;
+            }
+
+            ServerBrowserPresence state = new ServerBrowserPresence();
+            state.Key = key;
+            state.StartedUtc = now;
+            state.ExpiresUtc = now.AddSeconds(10.0);
+            ServerBrowserPresenceCache[key] = state;
+
+            try
+            {
+                state.Response = new ISteamMatchmakingRulesResponse(
+                    delegate(string rule, string value)
+                    {
+                        if (String.Equals(rule, "automodsync", StringComparison.OrdinalIgnoreCase))
+                        {
+                            state.Version = (value ?? "").Trim();
+                            state.IsAutoModSync = state.Version.Length > 0;
+                        }
+                        else if (String.Equals(rule, "automodsync_protocol", StringComparison.OrdinalIgnoreCase))
+                        {
+                            state.Protocol = (value ?? "").Trim();
+                        }
+                    },
+                    delegate()
+                    {
+                        state.Completed = true;
+                        state.IsAutoModSync = false;
+                        state.ExpiresUtc = DateTime.UtcNow.AddSeconds(45.0);
+                    },
+                    delegate()
+                    {
+                        state.Completed = true;
+                        state.ExpiresUtc = DateTime.UtcNow.AddSeconds(state.IsAutoModSync ? 300.0 : 60.0);
+                    });
+
+                state.Query = SteamMatchmakingServers.ServerRules(ip, (ushort)(gamePort + 1), state.Response);
+            }
+            catch (Exception ex)
+            {
+                state.Completed = true;
+                state.IsAutoModSync = false;
+                state.ExpiresUtc = now.AddSeconds(45.0);
+                if (_instance != null)
+                    _instance.Logger.LogDebug("AutoModSync server-browser rule query could not start: " + ex.Message);
+            }
+
+            return state;
+        }
+
+        // Intent: Resolves one visible dedicated hostname to Steam's big-endian IPv4 integer format; resolution is cached by the surrounding presence state.
+        private static bool TryResolveSteamQueryAddress(string host, out uint value)
+        {
+            value = 0u;
+            try
+            {
+                IPAddress address;
+                if (!IPAddress.TryParse(host, out address))
+                {
+                    IPAddress[] addresses = Dns.GetHostAddresses(host);
+                    int i;
+                    address = null;
+                    for (i = 0; i < addresses.Length; i++)
+                    {
+                        if (addresses[i].AddressFamily == AddressFamily.InterNetwork)
+                        {
+                            address = addresses[i];
+                            break;
+                        }
+                    }
+                    if (address == null) return false;
+                }
+
+                if (address.AddressFamily != AddressFamily.InterNetwork) return false;
+                byte[] bytes = address.GetAddressBytes();
+                if (bytes.Length != 4) return false;
+                value = ((uint)bytes[0] << 24) | ((uint)bytes[1] << 16) | ((uint)bytes[2] << 8) | bytes[3];
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // Intent: Counts only unfinished Steam rule requests so the browser never has more than four AMS capability probes outstanding at once.
+        private static int CountActiveServerBrowserPresenceQueries()
+        {
+            int count = 0;
+            foreach (ServerBrowserPresence state in ServerBrowserPresenceCache.Values)
+                if (state != null && !state.Completed) count++;
+            return count;
+        }
+
+        // Intent: Times out abandoned rule queries and removes old cached results so browser discovery stays bounded across long menu sessions.
+        private static void PruneServerBrowserPresenceCache(DateTime now)
+        {
+            List<string> remove = new List<string>();
+            foreach (KeyValuePair<string, ServerBrowserPresence> pair in ServerBrowserPresenceCache)
+            {
+                ServerBrowserPresence state = pair.Value;
+                if (state == null)
+                {
+                    remove.Add(pair.Key);
+                    continue;
+                }
+
+                if (!state.Completed && state.StartedUtc != DateTime.MinValue && (now - state.StartedUtc).TotalSeconds >= 10.0)
+                {
+                    try { SteamMatchmakingServers.CancelServerQuery(state.Query); } catch { }
+                    state.Completed = true;
+                    state.IsAutoModSync = false;
+                    state.ExpiresUtc = now.AddSeconds(30.0);
+                }
+                else if (state.Completed && state.ExpiresUtc != DateTime.MinValue && now > state.ExpiresUtc.AddMinutes(5.0))
+                {
+                    remove.Add(pair.Key);
+                }
+            }
+
+            int i;
+            for (i = 0; i < remove.Count; i++) ServerBrowserPresenceCache.Remove(remove[i]);
+        }
+
+        // Intent: Adds or hides one non-interactive AMS logo inside Valheim's existing server-name field, preserving and restoring the name's original text margin when pooled rows are reused.
+        private static void SetServerBrowserBadge(Transform row, bool visible, string version)
+        {
+            if (row == null) return;
+            Transform nameTransform = row.Find("name");
+            if (nameTransform == null) return;
+
+            if (_serverBrowserTextType == null)
+                _serverBrowserTextType = Type.GetType("TMPro.TextMeshProUGUI, Unity.TextMeshPro");
+            if (_serverBrowserImageType == null)
+                _serverBrowserImageType = Type.GetType("UnityEngine.UI.Image, UnityEngine.UI");
+
+            Component textComponent = null;
+            if (_serverBrowserTextType != null)
+            {
+                try { textComponent = nameTransform.GetComponent(_serverBrowserTextType); } catch { }
+            }
+
+            int nameId = nameTransform.gameObject.GetInstanceID();
+            PropertyInfo marginProperty = _serverBrowserTextType == null ? null : _serverBrowserTextType.GetProperty("margin", BindingFlags.Instance | BindingFlags.Public);
+            Vector4 originalMargin = Vector4.zero;
+            bool haveOriginalMargin = false;
+            if (textComponent != null && marginProperty != null)
+            {
+                try
+                {
+                    object current = marginProperty.GetValue(textComponent, null);
+                    if (current is Vector4)
+                    {
+                        Vector4 currentMargin = (Vector4)current;
+                        if (!ServerBrowserOriginalNameMargins.TryGetValue(nameId, out originalMargin))
+                        {
+                            originalMargin = currentMargin;
+                            ServerBrowserOriginalNameMargins[nameId] = originalMargin;
+                        }
+                        haveOriginalMargin = true;
+                    }
+                }
+                catch { }
+            }
+
+            Transform existing = nameTransform.Find("AutoModSyncBadge");
+            GameObject badgeObject = existing == null ? null : existing.gameObject;
+
+            if (visible && badgeObject == null && _serverBrowserImageType != null)
+            {
+                EnsureServerBrowserBadgeSprite();
+                if (_serverBrowserBadgeSprite != null)
+                {
+                    badgeObject = new GameObject("AutoModSyncBadge", typeof(RectTransform), typeof(CanvasRenderer));
+                    badgeObject.transform.SetParent(nameTransform, false);
+                    RectTransform badgeRect = badgeObject.GetComponent<RectTransform>();
+                    badgeRect.anchorMin = new Vector2(0f, 0.5f);
+                    badgeRect.anchorMax = new Vector2(0f, 0.5f);
+                    badgeRect.pivot = new Vector2(0f, 0.5f);
+                    badgeRect.anchoredPosition = new Vector2(2f, 0f);
+                    badgeRect.sizeDelta = new Vector2(18f, 18f);
+
+                    Component image = badgeObject.AddComponent(_serverBrowserImageType);
+                    TrySetServerBrowserImageProperty(image, "sprite", _serverBrowserBadgeSprite);
+                    TrySetServerBrowserImageProperty(image, "preserveAspect", true);
+                    TrySetServerBrowserImageProperty(image, "raycastTarget", false);
+                }
+            }
+
+            if (badgeObject != null) badgeObject.SetActive(visible);
+
+            if (textComponent != null && marginProperty != null && haveOriginalMargin)
+            {
+                try
+                {
+                    Vector4 desired = originalMargin;
+                    if (visible) desired.x = Math.Max(desired.x, 23f);
+                    marginProperty.SetValue(textComponent, desired, null);
+                }
+                catch { }
+            }
+        }
+
+        // Intent: Creates one Unity Sprite from the same embedded AMS PNG used by the synchronization overlay so server-browser branding has no extra runtime asset file.
+        private static void EnsureServerBrowserBadgeSprite()
+        {
+            if (_serverBrowserBadgeSprite != null) return;
+            EnsureUiLogoTexture();
+            if (_uiLogoTexture == null) return;
+
+            try
+            {
+                _serverBrowserBadgeSprite = Sprite.Create(
+                    _uiLogoTexture,
+                    new Rect(0f, 0f, _uiLogoTexture.width, _uiLogoTexture.height),
+                    new Vector2(0.5f, 0.5f),
+                    100f);
+                _serverBrowserBadgeSprite.name = "AutoModSyncServerBadge";
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync could not create the server-browser badge sprite: " + ex.Message);
+            }
+        }
+
+        // Intent: Sets one reflected Unity UI Image property without introducing a new compile-time UnityEngine.UI dependency into the legacy compiler path.
+        private static void TrySetServerBrowserImageProperty(Component image, string propertyName, object value)
+        {
+            if (image == null || String.IsNullOrEmpty(propertyName)) return;
+            try
+            {
+                PropertyInfo property = image.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
+                if (property != null && property.CanWrite) property.SetValue(image, value, null);
+            }
+            catch { }
         }
 
 #if AMS_DEV_TESTS
