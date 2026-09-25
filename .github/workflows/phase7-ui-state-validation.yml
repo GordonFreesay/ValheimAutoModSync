@@ -6,7 +6,7 @@ on:
       - dev/2.6
     paths:
       - "Source/AutoModSync.SyncUiState.cs"
-      - "test-phase7-ui-state.ps1"
+      - "tests/test-phase7-ui-state.ps1"
       - ".github/workflows/phase7-ui-state-validation.yml"
   workflow_dispatch:
 
@@ -23,4 +23,4 @@ jobs:
 
       - name: Run deterministic Phase 7 UI-state harness
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase7-ui-state.ps1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-phase7-ui-state.ps1"
