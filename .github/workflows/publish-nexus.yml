@@ -87,13 +87,52 @@ jobs:
         shell: pwsh
         env:
           NEXUSMODS_API_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
-          NEXUSMODS_FILE_ID: ${{ vars.NEXUSMODS_FILE_ID }}
-          NEXUSMODS_MOD_ID: ${{ vars.NEXUSMODS_MOD_ID }}
         run: |
-          foreach ($name in 'NEXUSMODS_API_KEY','NEXUSMODS_FILE_ID','NEXUSMODS_MOD_ID') {
-            $value = [Environment]::GetEnvironmentVariable($name)
-            if ([string]::IsNullOrWhiteSpace($value)) { throw "$name is not configured." }
+          if ([string]::IsNullOrWhiteSpace($env:NEXUSMODS_API_KEY)) { throw 'NEXUSMODS_API_KEY secret is not configured.' }
+
+      - name: Resolve Nexus mod and file IDs
+        id: nexus
+        if: ${{ inputs.publish && vars.NEXUS_NETWORK_TOOL_CLEARANCE == 'approved' }}
+        shell: pwsh
+        env:
+          NEXUSMODS_API_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+          NEXUSMODS_FILE_ID_OVERRIDE: ${{ vars.NEXUSMODS_FILE_ID }}
+          NEXUSMODS_GAME_DOMAIN: valheim
+          NEXUSMODS_GAME_SCOPED_MOD_ID: "3863"
+        run: |
+          $headers = @{
+            apikey = $env:NEXUSMODS_API_KEY
+            'User-Agent' = 'ValheimAutoModSync-GitHubActions'
           }
+
+          $mod = Invoke-RestMethod -Method Get -Uri "https://api.nexusmods.com/v3/games/$env:NEXUSMODS_GAME_DOMAIN/mods/$env:NEXUSMODS_GAME_SCOPED_MOD_ID" -Headers $headers
+          $modId = [string]$mod.data.id
+          if ([string]::IsNullOrWhiteSpace($modId)) { throw 'Nexus mod lookup returned no internal mod ID.' }
+
+          $fileResponse = Invoke-RestMethod -Method Get -Uri "https://api.nexusmods.com/v3/mods/$modId/files" -Headers $headers
+          $files = @($fileResponse.data.mod_files)
+
+          if (-not [string]::IsNullOrWhiteSpace($env:NEXUSMODS_FILE_ID_OVERRIDE)) {
+            $match = @($files | Where-Object { [string]$_.id -eq $env:NEXUSMODS_FILE_ID_OVERRIDE })
+            if ($match.Count -ne 1) { throw 'NEXUSMODS_FILE_ID override does not match a file belonging to this Nexus mod.' }
+            $fileId = $env:NEXUSMODS_FILE_ID_OVERRIDE
+          }
+          else {
+            $active = @($files | Where-Object { $_.is_active -eq $true })
+            if ($active.Count -eq 1) {
+              $fileId = [string]$active[0].id
+            }
+            elseif ($active.Count -eq 0) {
+              throw 'No active Nexus file exists for AutoModSync. The official Nexus upload action creates versions of an existing file, so an initial file must exist first.'
+            }
+            else {
+              throw "AutoModSync has $($active.Count) active Nexus files. Set repository variable NEXUSMODS_FILE_ID to select the file slot to update."
+            }
+          }
+
+          "mod_id=$modId" >> $env:GITHUB_OUTPUT
+          "file_id=$fileId" >> $env:GITHUB_OUTPUT
+          Write-Host "Resolved Nexus internal mod ID $modId and file ID $fileId from /valheim/mods/3863."
 
       - name: Read current changelog
         id: changelog
@@ -113,8 +152,8 @@ jobs:
         uses: Nexus-Mods/upload-action@98532f7670c27cbecc78fae03fa3e278147827e2
         with:
           api_key: ${{ secrets.NEXUSMODS_API_KEY }}
-          file_id: ${{ vars.NEXUSMODS_FILE_ID }}
-          mod_id: ${{ vars.NEXUSMODS_MOD_ID }}
+          file_id: ${{ steps.nexus.outputs.file_id }}
+          mod_id: ${{ steps.nexus.outputs.mod_id }}
           filename: Dist/ValheimAutoModSync-${{ steps.meta.outputs.version }}-Nexus.zip
           display_name: Valheim AutoModSync ${{ steps.meta.outputs.version }}
           description: Lightweight Nexus package. Requires BepInEx. AutoModSync synchronizes signed and SHA-256-verified mod files over the Valheim server connection selected by the user.
