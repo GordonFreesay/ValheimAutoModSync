@@ -9,7 +9,7 @@ Set-StrictMode -Version 2.0
 # Compiles the production ClientPayload, OwnershipState, and PathSafety sources into an isolated harness.
 # No Valheim installation, BepInEx profile, trust store, or server file is touched.
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $root 'Source'
 $payloadSource = Join-Path $source 'AutoModSync.ClientPayload.cs'
 $ownershipSource = Join-Path $source 'AutoModSync.OwnershipState.cs'

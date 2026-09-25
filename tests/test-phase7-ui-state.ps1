@@ -9,7 +9,7 @@ Set-StrictMode -Version 2.0
 # Compiles only the production UI-state model with a tiny isolated harness.
 # It does not load Valheim, open sockets, touch BepInEx, or build release artifacts.
 
-$root=Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $PSScriptRoot
 $source=Join-Path $root 'Source'
 $stateSource=Join-Path $source 'AutoModSync.SyncUiState.cs'
 if(-not(Test-Path -LiteralPath $stateSource)){throw "Missing source: $stateSource"}

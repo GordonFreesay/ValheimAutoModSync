@@ -3,7 +3,7 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $PSScriptRoot
 
 function Read-Text([string]$Relative) {
     $path = Join-Path $root $Relative
@@ -59,21 +59,21 @@ if ($LASTEXITCODE -ne 0) { throw 'First-party PII validation failed.' }
 Write-Host '  PASS'
 
 Write-Host '[4/6] Validating release provenance contract...'
-& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'test-release-provenance.ps1')
+& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test-release-provenance.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Release provenance contract failed.' }
 Write-Host '  PASS'
 
 Write-Host '[5/6] Validating installer release contract...'
-& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'test-installer-contract.ps1')
+& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test-installer-contract.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Installer contract failed.' }
 Write-Host '  PASS'
 
 Write-Host '[6/6] Validating freeze state and final pending gate...'
 $unchecked = @([regex]::Matches($testing,'(?m)^- \[ \] .+$') | ForEach-Object { $_.Value })
-if ($unchecked.Count -ne 1) {
-    throw ('Expected exactly one unchecked TESTING-2.6 gate at release freeze; found ' + $unchecked.Count + ': ' + ($unchecked -join ' | '))
+if ($unchecked.Count -gt 1) {
+    throw ('Expected at most the final tagged-artifact gate to remain unchecked; found ' + $unchecked.Count + ': ' + ($unchecked -join ' | '))
 }
-if ($unchecked[0].IndexOf('Real tag/release workflow creates retrievable attestations',[StringComparison]::Ordinal) -lt 0) {
+if ($unchecked.Count -eq 1 -and $unchecked[0].IndexOf('Real tag/release workflow creates retrievable attestations',[StringComparison]::Ordinal) -lt 0) {
     throw ('Unexpected remaining TESTING-2.6 gate: ' + $unchecked[0])
 }
 
@@ -85,4 +85,4 @@ Assert-Contains $releaseBuild 'SHA256SUMS.txt' 'Release build'
 Write-Host '  PASS'
 
 Write-Host ''
-Write-Host 'PASS: AutoModSync 2.6.0 source is release-frozen; only final tagged-artifact attestation verification remains.'
+if ($unchecked.Count -eq 0) { Write-Host 'PASS: AutoModSync 2.6.0 source and tagged-artifact qualification gates are complete.' } else { Write-Host 'PASS: AutoModSync 2.6.0 source is release-frozen; only final tagged-artifact attestation verification remains.' }

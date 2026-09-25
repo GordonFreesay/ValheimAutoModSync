@@ -3,7 +3,7 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $PSScriptRoot
 $temp = Join-Path $env:TEMP ('AMS26-Provenance-' + $PID)
 New-Item -ItemType Directory -Path $temp -Force | Out-Null
 

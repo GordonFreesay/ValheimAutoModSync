@@ -9,7 +9,7 @@ Set-StrictMode -Version 2.0
 # Compiles the production Apply helper + ownership/path-safety sources and runs only inside an isolated temporary BepInEx tree.
 # It never reads or modifies the user's real Valheim installation, trust files, server files, or release artifacts.
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repoRoot 'Source'
 $applySource = Join-Path $sourceRoot 'ValheimAutoModSync.Apply.cs'
 $pathSource = Join-Path $sourceRoot 'AutoModSync.PathSafety.cs'

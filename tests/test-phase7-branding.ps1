@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $PSScriptRoot
 $sandbox = Join-Path $env:TEMP ('AMS26-Phase7-Branding-' + $PID)
 New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
 $ico = Join-Path $sandbox 'ValheimAutoModSync.Apply.ico'

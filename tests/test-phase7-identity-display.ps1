@@ -3,7 +3,7 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $root 'Source\AutoModSync.IdentityDisplay.cs'
 $client = Join-Path $root 'Source\ValheimAutoModSync.Client.cs'
 $server = Join-Path $root 'Source\ValheimAutoModSync.Server.cs'
