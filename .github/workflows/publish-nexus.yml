@@ -98,7 +98,7 @@ jobs:
           NEXUSMODS_API_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
           NEXUSMODS_FILE_ID_OVERRIDE: ${{ vars.NEXUSMODS_FILE_ID }}
           NEXUSMODS_GAME_DOMAIN: valheim
-          NEXUSMODS_GAME_SCOPED_MOD_ID: "3863"
+          NEXUSMODS_GAME_SCOPED_MOD_ID: "4006"
         run: |
           $headers = @{
             apikey = $env:NEXUSMODS_API_KEY
@@ -132,7 +132,7 @@ jobs:
 
           "mod_id=$modId" >> $env:GITHUB_OUTPUT
           "file_id=$fileId" >> $env:GITHUB_OUTPUT
-          Write-Host "Resolved Nexus internal mod ID $modId and file ID $fileId from /valheim/mods/3863."
+          Write-Host "Resolved Nexus internal mod ID $modId and file ID $fileId from /valheim/mods/4006."
 
       - name: Read current changelog
         id: changelog
