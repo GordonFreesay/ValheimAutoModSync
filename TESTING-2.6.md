@@ -1,6 +1,6 @@
 ## Release provenance / public verification
 
-Final v2.6.0 attestation evidence, 2026-09-24: tag `v2.6.0` resolved to frozen commit `0da61e625220766aca6c47bd990e063d000d3bea`. Distribution Packages run `36092389317` completed successfully, built all four package variants plus `SHA256SUMS.txt`, attested all four package digests and the checksum manifest with GitHub/Sigstore, and uploaded all artifacts. Independent GitHub CLI verification then succeeded for `ValheimAutoModSync-2.6.0.zip` and `SHA256SUMS.txt` under repository policy `GordonFreesay/ValheimAutoModSync`; the canonical standalone digest was independently confirmed as `270b6a401364cf65446df05460b26a6c7c0e9f9901b13278365b0b8992cb67f8`.
+Superseded pre-publication attestation evidence, 2026-09-24: tag `v2.6.0` initially resolved to commit `0da61e625220766aca6c47bd990e063d000d3bea`; Distribution Packages run `36092389317` and independent GitHub CLI verification passed for those exact bytes. Before publishing a GitHub Release, repository organization/documentation was cleaned up by moving maintainer test harnesses under `tests/` and correcting the public repository layout. Because that changed the tagged source revision before publication, the earlier exact-artifact qualification is retained only as historical evidence and must be repeated against the final retagged commit.
 
 Release-provenance CI evidence, 2026-09-24: GitHub Actions run 36075480415 passed the four-part deterministic gate after an earlier harness-only `$LASTEXITCODE` misuse was removed. The passing run generated and verified four sorted SHA-256 subjects, validated `id-token: write` + `attestations: write` + `actions/attest@v4` wiring, proved all three store publishing workflows target their exact upload ZIP paths with no escaped GitHub-expression regression, and verified that local release builds explicitly state they are not GitHub-attested.
 
@@ -10,7 +10,7 @@ Release-provenance CI evidence, 2026-09-24: GitHub Actions run 36075480415 passe
 - [x] Local release builds generate SHA-256 output but explicitly state they are not GitHub-attested.
 - [x] Public verification documentation distinguishes GitHub/Sigstore provenance from Authenticode/SmartScreen trust and provides direct `gh attestation verify` commands.
 - [x] GitHub-hosted provenance validation workflow passes: checksum generation, canonical/tag attestation wiring, exact store-package attestation coverage, and local-build non-attestation wording all passed on Windows CI.
-- [x] Real `v2.6.0` tag workflow produced retrievable attestations for the exact final package digests and `SHA256SUMS.txt`. Independent `gh attestation verify` checks passed for the canonical standalone ZIP and checksum manifest, and the standalone SHA-256 matched `270b6a401364cf65446df05460b26a6c7c0e9f9901b13278365b0b8992cb67f8`.
+- [ ] Real `v2.6.0` tag workflow must be rerun after the pre-publication repository-layout cleanup, then independent `gh attestation verify` must pass again for the exact final standalone ZIP and `SHA256SUMS.txt` before publication.
 
 ## Standalone installer polish / uninstall
 
@@ -34,9 +34,9 @@ Installer server-uninstall live evidence, 2026-09-24: the isolated Dedicated Ser
 
 # AutoModSync 2.6 validation checklist
 
-**Status:** RELEASE QUALIFICATION COMPLETE. All implementation/runtime gates and the final tagged-artifact GitHub/Sigstore verification gate have passed. The frozen v2.6.0 package bytes are ready for publication without rebuilding or repackaging.
+**Status:** RUNTIME VALIDATION COMPLETE; FINAL ARTIFACT QUALIFICATION PENDING. All implementation/runtime gates remain passed. A pre-publication repository-layout/documentation cleanup changed the source revision after the first successful tag attestation, so the `v2.6.0` tag must be moved to the final cleaned commit and the exact-artifact GitHub/Sigstore verification gate repeated once before publication.
 
-Publication must use the exact attested workflow-produced artifacts recorded below.
+Do not publish or reuse the earlier pre-cleanup package bytes.
 
 ## Baseline
 
