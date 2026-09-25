@@ -73,8 +73,12 @@ $unchecked = @([regex]::Matches($testing,'(?m)^- \[ \] .+$') | ForEach-Object { 
 if ($unchecked.Count -gt 1) {
     throw ('Expected at most the final tagged-artifact gate to remain unchecked; found ' + $unchecked.Count + ': ' + ($unchecked -join ' | '))
 }
-if ($unchecked.Count -eq 1 -and $unchecked[0].IndexOf('Real tag/release workflow creates retrievable attestations',[StringComparison]::Ordinal) -lt 0) {
-    throw ('Unexpected remaining TESTING-2.6 gate: ' + $unchecked[0])
+if ($unchecked.Count -eq 1) {
+    $pending = $unchecked[0]
+    if ($pending.IndexOf('v2.6.0',[StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        $pending.IndexOf('gh attestation verify',[StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw ('Unexpected remaining TESTING-2.6 gate: ' + $pending)
+    }
 }
 
 $releaseBuild = Read-Text 'build-release.bat'
