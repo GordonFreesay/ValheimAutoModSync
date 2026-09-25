@@ -56,7 +56,7 @@ Before enabling automated publication:
    - variable: `NEXUS_NETWORK_TOOL_CLEARANCE=approved`
 4. Run **Publish Nexus** manually with `publish=true`.
 
-The workflow knows the public AutoModSync Nexus page is Valheim mod `4006`. At publish time it resolves Nexus's internal mod ID and the single active file ID through the v3 API, so a normal update does not require copying either ID into GitHub. If the mod later has multiple active file slots, repository variable `NEXUSMODS_FILE_ID` can be set as an explicit override.
+The workflow knows the public AutoModSync Nexus page is Valheim mod `4006` and pins its persistent Nexus API File ID as `8027793`. At publish time it still validates that this file ID belongs to the mod before creating a new file version.
 
 The official Nexus upload action creates a new version of an existing file slot. The current AutoModSync Nexus page is a fresh 2.6-era page, so it needs one initial file submission before this workflow can update that slot automatically. After that first file exists, normal releases can resolve and update the active file slot through the API.
 
