@@ -225,7 +225,8 @@ if not exist "%ROOT%sign-release.ps1" (
     echo ERROR: sign-release.ps1 is missing but a signed release was required.
     exit /b 1
   )
-  echo WARNING: sign-release.ps1 is missing. AutoModSync binaries will be unsigned.
+  echo WARNING: sign-release.ps1 is missing. AutoModSync PE files will be Authenticode-unsigned.
+  echo Official GitHub Actions packages can still receive SHA-256 + GitHub/Sigstore provenance after build.
   exit /b 0
 )
 
@@ -240,7 +241,8 @@ if not defined HAS_SIGNING_CONFIG (
     echo See SIGNING.md.
     exit /b 1
   )
-  echo WARNING: no signing identity configured. AutoModSync binaries will be unsigned.
+  echo WARNING: no Authenticode signing identity configured. AutoModSync PE files will be Authenticode-unsigned.
+  echo Official GitHub Actions packages can still receive SHA-256 + GitHub/Sigstore provenance after build.
   exit /b 0
 )
 
