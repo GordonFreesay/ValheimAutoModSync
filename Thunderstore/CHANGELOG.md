@@ -1,41 +1,26 @@
 # Changelog
 
-## 2.6.0 (development)
+## 2.6.0
 
-- Official GitHub-built standalone and store packages now generate SHA-256 manifests plus GitHub/Sigstore build-provenance attestations. Users can verify exact downloaded bytes with `gh attestation verify <artifact> -R GordonFreesay/ValheimAutoModSync`; this provenance is separate from Authenticode/SmartScreen trust.
-- The standalone installer now uses the AMS charcoal/orange branding and embedded logo, reports complete/partial install state, exposes Repair/Update for complete installs, and shows Uninstall only when the selected role is complete.
-- Client uninstall is ownership-safe: exact still-owned synchronized files are removed only when their current size/SHA-256 still match AMS records; locally changed files, unrelated mods, and shared BepInEx are preserved. Server uninstall preserves ClientPayload plus signing identity/config by default, with explicit opt-in identity removal.
-
-- First-contact trust now uses a short human-comparison security code instead of displaying the complete signing-key fingerprint; the full 256-bit fingerprint is still verified and pinned internally, while trusted sessions show only a generic trusted-server label.
-- Added a first-party PII guard to development/release builds and Windows CI. It rejects local user-home paths, email addresses, account/SID/Steam identifiers, and public IP literals from project-authored source/build content, then scans printable strings in AutoModSync-authored binaries.
-
-- Added a state-driven in-game synchronization panel using AutoModSync's charcoal/gray/orange branding, with the AMS logo, signed-manifest comparison counts, queue status, transfer progress, current/average throughput, ETA, resume-retained bytes, verification progress, restart/reconnect status, and bounded failure presentation.
-- Kept Phase 7 presentation policy-free: UI state observes decisions already made by trust/network/filesystem/scheduler code and does not control admission, pacing, trust, or fail-open/fail-closed behavior.
-- Added reproducible executable branding from the canonical AMS PNG: development/release builds generate a multi-size ICO, embed it into the Apply helper (and standalone installer on release builds), and package the physical ICO beside the executable.
-- Added deterministic Windows UI-state/branding validation plus a development-only one-shot ten-state visual preview; release client binaries do not contain the preview hook.
-
-- Added conservative trusted-server content ownership. AutoModSync records only files it actually installs/replaces, scoped by the trusted server fingerprint; matching pre-existing local files are not claimed.
-- Added a fixed server-side `BepInEx/AutoModSync/ClientPayload/plugins/**` tree for client-required plugins/assets that the dedicated server must not load. Payload files reuse signed `P` destinations, honor exclusions, and fail explicitly on case-insensitive collisions with normal synchronized plugins.
-- Stale owned deletion now additionally requires the immediately prior successful synchronization to have used the same trusted server fingerprint; a server switch defers exact stale cleanup instead of deleting across server contexts.
-- Added transactional stale-file retirement. A later signed omission can delete only exact bytes still matching that same server's last-owned digest; modified local files are preserved and ownership is relinquished. Write/delete operations share PREPARED/COMMITTED recovery, with AMSTXN2 journals retaining AMSTXN1 recovery compatibility.
-- Added isolated Phase 6 ownership/apply Windows CI covering ownership publication, exact deletion, wrong-digest and cross-server rejection, PREPARED delete rollback, and COMMITTED ownership recovery.
-
-- Added a server-wide concurrent bundle scheduler with FIFO active slots, a bounded waiting queue, round-robin aggregate bandwidth grants, optional client queue-position status, Steam reliable-queue backpressure, per-transfer persistent ZIP streams, and dead/idle slot cleanup. Defaults are four active transfers, 32 additional queued requests, and a 64 MiB/s aggregate raw-payload budget.
-- Added deterministic eight-peer scheduler validation and Windows CI. The first CI run exposed a refill-boundary fairness bug; the scheduler now preserves a peer's turn when tokens are temporarily insufficient and the expanded corrected 8/8 harness passes.
-
-- Added exact-artifact resumable bundle downloads as an optional AMS4 `bundle-resume1` capability. Interrupted clients retain one bounded partial ZIP, and the server independently verifies the exact retained prefix against the current immutable artifact before allowing a nonzero resume offset; mismatches safely restart from zero.
-- Added development-only single-client transfer interruption emulation and an isolated deterministic Phase 4 resume harness. These validation hooks are not compiled into release client binaries.
-
-- Development work is isolated on `dev/2.6`; the current public release remains 2.5.0 until the 2.6 validation gates are complete.
-- 2.6 preserves AMS4/protocol 4 as the compatibility baseline and will add new behavior through negotiated capabilities where possible.
-- Release packaging/publication is intentionally deferred until functional validation is completed.
-- Phase 1 separates non-AMS discovery fail-open behavior from recognized-AMS fail-closed behavior: signature, trust, path, resource, transfer, and apply-preparation failures now abort that join instead of replaying the vanilla handshake.
-- Establishes server fingerprint trust after a valid signed manifest even when the client already has matching files.
-- Adds shared Windows path hardening for client/server/apply: reserved device names, trailing dot/space aliases, invalid/control characters, fixed-root containment, and reparse-point rejection.
-- Adds independent client compressed/expanded/per-file/file-count/chunk-count ceilings and streaming ZIP extraction bounds.
-- Adds server `MaxExpandedBundleMiB` and checks compressed output while constructing the bundle instead of waiting only for the finished ZIP.
-- Replaces destructive per-file apply with a durable transactional helper: old destinations are backed up before a `PREPARED` marker, the complete new set is verified before `COMMITTED`, pre-commit interruption rolls back/retries from retained staging, and post-commit interruption preserves the new set and only finishes cleanup.
-- Client startup no longer copies leftover staging into live plugin/config roots; unfinished pending/journal state is handed back to the out-of-process helper before AMS can attempt a server join.
+- Adds content-addressed bundle caching, startup prewarming, and single-flight construction so identical fresh-client requests reuse one immutable verified ZIP rather than rebuilding it per client.
+- Adds a bounded FIFO bundle scheduler with configurable active/queued limits, round-robin aggregate bandwidth grants, Steam reliable-queue backpressure, persistent per-transfer streams, queue-position telemetry, and dead/idle cleanup.
+- Adds exact-artifact resumable downloads through the optional AMS4 `bundle-resume1` capability. Interrupted clients retain one bounded partial ZIP; the server independently verifies the exact retained prefix against the current immutable artifact before accepting a nonzero resume point.
+- Adds `BepInEx/AutoModSync/ClientPayload/plugins/**` for client-required files/assets that dedicated servers should distribute without loading themselves.
+- Adds conservative fingerprint-scoped ownership. AutoModSync claims only files it actually installs/replaces, does not claim matching pre-existing local files, and retires stale files only when the live bytes still exactly match the same trusted server's last-owned SHA-256/size.
+- Adds same-server continuity requirements for stale deletion so switching trusted servers cannot cause one server's ownership ledger to delete another server's files.
+- Replaces destructive per-file apply with a durable transactional helper. PREPARED transactions back up old destinations and roll back/retry after interruption; COMMITTED transactions preserve the complete new state and finish cleanup.
+- Adds strict client/server resource ceilings, bounded streaming ZIP extraction, fixed-root path containment, Windows reserved-name/trailing-dot-space defenses, and reparse-point rejection across client/server/apply.
+- Separates non-AMS fail-open discovery from recognized-AMS fail-closed behavior. Once a server positively identifies as AMS, signature/trust/path/resource/transfer/apply-preparation failures abort that protected join instead of silently bypassing synchronization.
+- Adds the state-driven AMS synchronization panel with signed-manifest comparison counts, queue state, download progress, current/average throughput, ETA, retained resume bytes, verification progress, apply/restart/reconnect status, and bounded failure presentation.
+- Replaces normal full-fingerprint display with a short first-contact human-comparison security code. The complete 256-bit fingerprint is still used internally for signature verification, trust pinning, server-change detection, and ownership scoping.
+- Adds passive Steam server-browser presence rules and a small client-side AMS badge. Badge binding uses Valheim's exact `m_serverListElements` ownership rather than index pairing, preventing pooled/reused rows from inheriting another server's badge. Server advertisement and client badge display are independently configurable.
+- Polishes the standalone installer with AMS charcoal/orange branding, embedded icons, complete/partial install detection, Repair / Update, and role-aware Uninstall.
+- Client uninstall removes synchronized files only when strict ownership metadata plus live size/SHA-256 prove the bytes are still AMS-owned; locally modified files, unrelated mods, and shared BepInEx are preserved.
+- Server uninstall preserves operator-managed `ClientPayload`, server config, and signing identity by default. Explicit identity removal deletes only the documented AMS server config/private/public identity files while preserving shared BepInEx and operator payloads.
+- Adds first-party PII guards to development/release builds and Windows CI for authored source/text plus printable strings in AutoModSync-authored binaries.
+- Adds reproducible AMS executable branding from the canonical PNG, including multi-size ICO output for the Apply helper and installer.
+- Adds SHA-256 release manifests plus GitHub/Sigstore build-provenance attestations for official GitHub-built standalone and store packages. Users can verify exact downloaded bytes with `gh attestation verify <artifact> -R GordonFreesay/ValheimAutoModSync`; this is separate from Windows Authenticode/SmartScreen trust.
+- Keeps AMS4 / protocol 4 and preserves negotiated compatibility fallbacks for older AMS4 peers.
 
 ## 2.5.0
 
