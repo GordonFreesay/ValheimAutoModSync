@@ -91,7 +91,7 @@ Each manual store-publishing workflow also SHA-256 hashes and attests the exact 
 For a release:
 
 1. Freeze the release branch: update `VERSION`, source/assembly metadata, changelog, README/store copy, and release notes; stop runtime feature changes.
-2. Run `test-release-readiness.ps1` and require the Release Readiness, privacy, installer, branding, and provenance CI gates to pass.
+2. Run `tests/test-release-readiness.ps1` and require the Release Readiness, privacy, installer, branding, and provenance CI gates to pass.
 3. Merge the reviewed release PR into `main` without changing release content after the validated head revision.
 4. Require the `main` Standalone Release Build/readiness workflows to pass.
 5. Tag the exact validated `main` commit as `v<version>`. The tag triggers **Distribution Packages**.
