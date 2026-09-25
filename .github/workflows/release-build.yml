@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
         run: ./.github/scripts/prepare-valheim-build.ps1
 
-      - name: Build unsigned release and distribution packages from source
+      - name: Build Authenticode-unsigned release and distribution packages from source
         shell: pwsh
         env:
           AMS_NO_PAUSE: "1"
@@ -53,7 +53,7 @@ jobs:
           $release = Join-Path $PWD "Dist/ValheimAutoModSync-$env:AMS_VERSION.zip"
           if (-not (Test-Path -LiteralPath $release)) { throw "Standalone release ZIP was not produced: $release" }
           "RELEASE_ZIP=$release" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Unsigned standalone release artifact: $release"
+          Write-Host "Authenticode-unsigned standalone release artifact: $release"
 
       - name: Attest canonical standalone package
         uses: actions/attest@v4
@@ -105,4 +105,4 @@ jobs:
       - name: Optional signing status
         if: ${{ github.event_name == 'workflow_dispatch' && (env.SIGNPATH_API_TOKEN == '' || env.SIGNPATH_ORGANIZATION_ID == '' || env.SIGNPATH_PROJECT_SLUG == '' || env.SIGNPATH_SIGNING_POLICY_SLUG == '') }}
         shell: pwsh
-        run: Write-Host 'Build and GitHub artifact upload succeeded. Public releases are currently unsigned. Optional SignPath signing remains dormant unless valid SignPath credentials are configured in the future.'
+        run: Write-Host 'Build succeeded with SHA-256 + GitHub/Sigstore provenance. PE files remain Authenticode-unsigned. Optional SignPath signing remains dormant unless valid SignPath credentials are configured in the future.'
