@@ -25,7 +25,8 @@ Installer server-uninstall live evidence, 2026-09-24: the isolated Dedicated Ser
 - [x] Final visual recheck after polish: embedded logo/dark-orange layout remain clean, `Host & Play` renders literally, and the widened `Repair / Update` label is no longer clipped at normal Windows scaling.
 - [x] Final window-chrome recheck: the installer title bar uses the embedded AMS ICO instead of the generic WinForms icon.
 - [x] Isolated live uninstall check: complete Client install exposes Uninstall, exact AMS-owned fixture is retired, locally changed fixture is preserved, BepInEx/unrelated mod remain, and disposable test state cleans up successfully.
-- [ ] Isolated server uninstall check: server plugin/cache/release payload are removed while config/key/ClientPayload remain; explicit identity-removal option deletes only the documented server config/key files.
+- [x] Isolated server uninstall preservation check: server runtime/release payload are removed while shared BepInEx, operator ClientPayload, server config, and signing identity remain intact when identity removal is left unchecked.
+- [ ] Isolated server identity-removal check: with the explicit warning option enabled, uninstall deletes only the documented server config/private/public identity files while preserving shared BepInEx and operator ClientPayload.
 
 # AutoModSync 2.6 validation checklist
 
@@ -274,14 +275,14 @@ Development-only compatibility emulation is available without a second tester. C
 - [x] Already-trusted compare/download/reconnect UI footer says `TRUSTED SERVER` without a stable fingerprint fragment.
 - [x] Local 2026-09-24 dev build PII guard passed before compilation over first-party tracked text and again after compilation over the authored Client DLL, Server DLL, and Apply EXE; source documentation validation also passed all 15 C# files before the build.
 - [x] Dedicated Steam server publishes `automodsync=<version>` and `automodsync_protocol=<protocol>` as passive server rules when `Discovery.AdvertiseAutoModSync=true`.
-- [ ] Development server-browser probe captures the exact Valheim 1.0 `ServerListGui` row hierarchy/field layout for Favorite/Recent/Friends/Community without mutating UI or issuing network discovery requests.
+- [x] Development server-browser probe captured the live Valheim 1.0 `ServerListGui` row hierarchy/field layout without mutating UI or issuing network discovery requests; the result drove the exact `m_serverListElements` binding implementation.
 - [x] AMS-aware client renders a small logo badge beside a positively identified AMS Favorite row without altering the advertised server name; Steam-rule discovery is passive and no fingerprint/PII is exposed.
 - [ ] Server-browser pooled-row reuse is clean across Favorite/Recent/Friends/Community: AMS badges follow only positively identified AMS entries, never remain on reused non-AMS rows, and disappear when `Discovery.ShowServerBadges=false`.
 
 False-positive browser regression observed, 2026-09-24: after the first pooled-row fix, AMS branding could appear on non-AMS servers and later disappear globally. Development binding logs showed the same rendered row instance repeatedly associated with unrelated endpoints while Community data churned. Root cause: the client was still pairing `ListRoot.GetChild(i)` with `m_filteredList[i]`, but those collections are not an identity-preserving pair under Valheim's virtualization. The production path now consumes `m_serverListElements`; each badge is allowed only when one ServerListElement wrapper yields both the rendered ServerElement row and its own valid dedicated ServerJoinData. Unbound/ambiguous rows fail closed with no badge, and no index-based fallback remains.
 
 Pooled-row regression observed, 2026-09-24: the AMS badge rendered correctly on the initial Favorite row, but switching to Recent and back caused the badge to disappear; no Community false positives were observed. The refresh path was then changed to use Valheim's probed `m_serverListEnsureVisible`/ServerList viewport rather than `ListRoot.parent`, and transient row/model mismatches during tab reconstruction no longer force-hide an existing badge. Development builds now log only row-to-endpoint rebinding transitions for this gate.
-- [ ] `verify-no-pii.ps1` passes over tracked first-party text and the current AutoModSync-authored dev binaries.
+- [x] `verify-no-pii.ps1` passes over tracked first-party text and the AutoModSync-authored dev binaries in the validated build; current source continues to pass the GitHub privacy workflow.
 - [x] Real changed-file synchronization drives comparison -> queue (when applicable) -> download -> verify -> apply/restart -> reconnect states from production events, with telemetry moving monotonically and the final reconnect remaining one-shot.
 - [ ] A real interrupted/resumed package displays the retained prefix, measures only new session bytes for average rate, completes verification/apply/reconnect, and leaves no stale Phase 7 overlay.
 - [ ] Failure/connection-loss presentation self-clears and never changes the established fail-open/fail-closed policy.
