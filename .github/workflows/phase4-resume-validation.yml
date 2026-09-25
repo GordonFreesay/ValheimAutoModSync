@@ -1,0 +1,27 @@
+name: Phase 4 Resume Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+    paths:
+      - "Source/AutoModSync.ResumeState.cs"
+      - "Source/AutoModSync.PathSafety.cs"
+      - "test-phase4-resume.ps1"
+      - ".github/workflows/phase4-resume-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resume-state:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run deterministic Phase 4 resume harness
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase4-resume.ps1"

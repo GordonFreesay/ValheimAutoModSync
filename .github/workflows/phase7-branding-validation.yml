@@ -1,0 +1,66 @@
+name: Phase 7 Branding Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+    paths:
+      - "Source/ValheimAutoModSync.Client.cs"
+      - "Source/ValheimAutoModSync.Server.cs"
+      - "Source/AutoModSync.SyncUiState.cs"
+      - "Source/AutoModSync.IdentityDisplay.cs"
+      - "Thunderstore/icon.png"
+      - "build-branding-assets.ps1"
+      - "build-dev.bat"
+      - "build-release.bat"
+      - "deploy-dev.ps1"
+      - "build-thunderstore.ps1"
+      - "build-modsite-package.ps1"
+      - "install.bat"
+      - "test-phase7-branding.ps1"
+      - "test-phase7-identity-display.ps1"
+      - "verify-no-pii.ps1"
+      - "test-phase7-ui-preview.ps1"
+      - "test-phase7-live.ps1"
+      - "test-phase7-server-browser-presence.ps1"
+      - ".github/workflows/phase7-branding-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  branding:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify source documentation guard
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\verify-source-docs.ps1"
+
+      - name: Run deterministic Phase 7 UI-state harness
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase7-ui-state.ps1"
+
+      - name: Parse guided Phase 7 live harness
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\test-phase7-live.ps1"), [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Host; throw "Phase 7 live harness has PowerShell parse errors." }
+
+      - name: Parse guided server-browser presence probe
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\test-phase7-server-browser-presence.ps1"), [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Host; throw "Server-browser presence probe has PowerShell parse errors." }
+
+      - name: Run deterministic Phase 7 branding/package harness
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase7-branding.ps1"

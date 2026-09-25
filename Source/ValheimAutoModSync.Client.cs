@@ -1,23 +1,28 @@
 using BepInEx;
 using HarmonyLib;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
+using Steamworks;
 using UnityEngine;
 
 [assembly: AssemblyTitle("Valheim AutoModSync Client")]
 [assembly: AssemblyDescription("Client-side Valheim plugin synchronization, trust, verification, restart, and reconnect component.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyVersion("2.6.0.0")]
+[assembly: AssemblyFileVersion("2.6.0.0")]
 
 namespace ValheimAutoModSync
 {
@@ -26,7 +31,7 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.client";
         public const string PluginName = "Valheim AutoModSync Client";
-        public const string PluginVersion = "2.5.0";
+        public const string PluginVersion = "2.6.0";
         public const int ProtocolVersion = 4;
 
         private const string RpcHello = "AMS4_Hello";
@@ -41,10 +46,19 @@ namespace ValheimAutoModSync
         private const string RpcBundleChunk = "AMS4_BundleChunk";
         private const string RpcBundleBatch = "AMS4_BundleBatch";
         private const string RpcBundleEnd = "AMS4_BundleEnd";
+        private const string RpcQueueStatus = "AMS4_QueueStatus";
         private const string RpcError = "AMS4_Error";
         private const int BundleBatchChunks = 16;
         private const int BundlePipelineChunks = 128;
-        private const string RootSyncCapability = "roots1";
+        private const string ClientCapabilities = "roots1;bundle-resume1;bundle-scheduler1";
+
+        // 2.6 client-side hard ceilings are deliberately independent of server configuration.
+        // A trusted server may choose smaller limits, but it cannot make this client allocate/write unbounded payloads.
+        private const int MaxBundleFiles = AutoModSyncClientResourceSafety.MaxBundleFiles;
+        private const int MaxBundleChunks = AutoModSyncClientResourceSafety.MaxBundleChunks;
+        private const long MaxIncomingBundleBytes = AutoModSyncClientResourceSafety.MaxIncomingBundleBytes;
+        private const long MaxExpandedSyncBytes = AutoModSyncClientResourceSafety.MaxExpandedSyncBytes;
+        private const long MaxIndividualSyncFileBytes = AutoModSyncClientResourceSafety.MaxIndividualSyncFileBytes;
 
         private static ClientPlugin _instance;
         private static ZRpc _pendingRpc;
@@ -59,6 +73,8 @@ namespace ValheimAutoModSync
         private static bool _serverSupportsBundleWindow;
         private static bool _serverSupportsBundleBatch;
         private static bool _serverSupportsBundlePipeline;
+        private static bool _serverSupportsBundleResume;
+        private static bool _serverSupportsBundleScheduler;
         private static bool _allowPeerInfo;
         private static bool _preflightGateActive;
         private static bool _allowServerHandshake;
@@ -74,6 +90,17 @@ namespace ValheimAutoModSync
         private static string _manifestSignature = "";
         private static string _serverPublicKeyXml = "";
         private static string _serverFingerprint = "";
+        private const string TrustPromptCaption = "Valheim AutoModSync - Trust Server";
+        private static bool _trustPromptPending;
+        private static string _trustPromptFingerprint = "";
+        private static string _trustPromptManifest = "";
+        private static ZRpc _trustPromptRpc;
+        private static volatile int _trustPromptDecision;
+        private static volatile int _trustPromptGeneration;
+        private static volatile int _trustPromptNativeThreadId;
+        private static int _staleTrustPromptThreadId;
+        private static DateTime _staleTrustPromptDismissUntilUtc = DateTime.MinValue;
+        private static DateTime _staleTrustPromptNextDismissUtc = DateTime.MinValue;
         private static readonly Dictionary<int, string> ManifestParts = new Dictionary<int, string>();
         private static readonly List<ManifestEntry> NeededFiles = new List<ManifestEntry>();
         private static FileStream _bundleStream;
@@ -81,22 +108,42 @@ namespace ValheimAutoModSync
         private static string _bundleSha256 = "";
         private static long _bundleSize;
         private static long _bundleBytesReceived;
+        private static long _bundleSessionStartBytes;
         private static DateTime _bundleStartedUtc = DateTime.MinValue;
         private static int _bundleNextChunk;
         private static int _bundleTotalChunks;
         private static int _bundleWindowEndExclusive;
+        private static int _bundleChunkBytes;
+        private static string _bundleRequestKey = "";
+        private static AutoModSyncResumeCandidate _resumeOfferedCandidate;
+        private static bool _bundleResumeSlotActive;
+#if AMS_DEV_TESTS
+        private static readonly Dictionary<int, string> DevServerBrowserRowKeys = new Dictionary<int, string>();
+        private static int _devDisconnectAfterChunk;
+        private static bool _devEmulateLegacyClient;
+        private static int _devTrustDisconnectGeneration;
+        private static DateTime _devTrustDisconnectUtc = DateTime.MinValue;
+        private static bool _devUiPreviewActive;
+        private static int _devUiPreviewIndex;
+        private static DateTime _devUiPreviewNextUtc = DateTime.MinValue;
+#endif
         private static bool _restartRequested;
         private static DateTime _quitAfterUtc = DateTime.MinValue;
         private static bool _quitIssued;
+        private static readonly AutoModSyncUiState _uiState = new AutoModSyncUiState();
         private static bool _overlayVisible;
-        private static string _overlayStatus = "";
-        private static string _overlayCurrentFile = "";
-        private static int _overlayTotalFiles;
-        private static int _overlayCompletedFiles;
-        private static float _overlayFileProgress;
-        private static bool _overlayBundleMode;
-        private static long _overlayBytesReceived;
-        private static long _overlayBytesTotal;
+        private static DateTime _overlayHideUtc = DateTime.MinValue;
+        private static Texture2D _uiLogoTexture;
+        private static bool _uiLogoLoadAttempted;
+        private static Sprite _serverBrowserBadgeSprite;
+        private static BepInEx.Configuration.ConfigEntry<bool> _showServerBadges;
+        private static DateTime _nextServerBrowserBadgeRefreshUtc = DateTime.MinValue;
+        private static readonly Dictionary<string, ServerBrowserPresence> ServerBrowserPresenceCache = new Dictionary<string, ServerBrowserPresence>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<int, Vector4> ServerBrowserOriginalNameMargins = new Dictionary<int, Vector4>();
+        private static FieldInfo _serverBrowserElementsField;
+        private static FieldInfo _serverBrowserEnsureVisibleField;
+        private static Type _serverBrowserImageType;
+        private static Type _serverBrowserTextType;
         private static string _startupReconnectTarget = "";
         private static DateTime _startupReconnectNextUtc = DateTime.MinValue;
         private static int _startupReconnectAttempts;
@@ -107,6 +154,8 @@ namespace ValheimAutoModSync
         private static int _startupReconnectBackend = -1;
         private static bool _startupReconnectForceBackend;
         private static readonly List<string> PendingRelativePaths = new List<string>();
+        private static readonly List<AutoModSyncOwnershipEntry> DesiredOwnershipEntries = new List<AutoModSyncOwnershipEntry>();
+        private static bool _ownershipLedgerChanged;
 
         private sealed class ManifestEntry
         {
@@ -116,8 +165,21 @@ namespace ValheimAutoModSync
             public string RelativePath;
         }
 
-        // Intent: BepInEx client entry point; initializes only on the playable Valheim process, applies any safe leftover staging, restores reconnect state, and installs the Harmony hooks that drive synchronization.
-        // Workflow: the network hooks are installed before joining servers so AutoModSync can preflight before third-party compatibility checks.
+        private sealed class ServerBrowserPresence
+        {
+            public string Key = "";
+            public DateTime StartedUtc = DateTime.MinValue;
+            public DateTime ExpiresUtc = DateTime.MinValue;
+            public bool Completed;
+            public bool IsAutoModSync;
+            public string Version = "";
+            public string Protocol = "";
+            public HServerQuery Query;
+            public ISteamMatchmakingRulesResponse Response;
+        }
+
+        // Intent: BepInEx client entry point; initializes only on the playable Valheim process, hands any interrupted apply back to the out-of-process transaction helper, restores reconnect state, and installs synchronization hooks.
+        // Recovery safety: the running game never mutates live synchronized DLL/config destinations itself. A pending/journaled transaction causes an immediate helper-owned recovery restart before AMS can join a server.
         private void Awake()
         {
             _instance = this;
@@ -128,13 +190,18 @@ namespace ValheimAutoModSync
             }
             try
             {
+                _showServerBadges = Config.Bind("Discovery", "ShowServerBadges", true,
+                    "Show a small AMS logo beside Steam-backed servers that passively advertise AutoModSync in Valheim's Join Game browser.");
                 HideBepInExConsoleAndDisableFutureConsole();
-                if (ApplyPreviouslyStagedFilesIfPossible())
+                if (HasPendingApplyRecovery())
                 {
                     ScheduleRecoveredStagingRestart();
                     return;
                 }
                 LoadStartupReconnectRequest();
+#if AMS_DEV_TESTS
+                TryStartDevelopmentUiPreview();
+#endif
                 Harmony harmony = new Harmony(PluginGuid);
                 harmony.PatchAll(typeof(OnNewConnectionPatch));
                 harmony.PatchAll(typeof(InvokeServerHandshakeGatePatch));
@@ -169,6 +236,11 @@ namespace ValheimAutoModSync
         // Compatibility: non-AutoModSync servers are released after a short discovery window; acknowledged AutoModSync servers get a longer manifest-start window.
         private void Update()
         {
+#if AMS_DEV_TESTS
+            if (_devUiPreviewActive) UpdateDevelopmentUiPreview();
+            TryRunDevelopmentServerBrowserProbe();
+#endif
+            UpdateServerBrowserBadges();
             if (_restartRequested && !_quitIssued && _quitAfterUtc != DateTime.MinValue && DateTime.UtcNow >= _quitAfterUtc)
             {
                 _quitIssued = true;
@@ -198,6 +270,71 @@ namespace ValheimAutoModSync
                 }
             }
 
+            if (_overlayVisible && _overlayHideUtc != DateTime.MinValue && DateTime.UtcNow >= _overlayHideUtc)
+            {
+                HideSyncOverlay();
+            }
+
+            if (_staleTrustPromptThreadId != 0 && _staleTrustPromptDismissUntilUtc != DateTime.MinValue)
+            {
+                DateTime dismissNow = DateTime.UtcNow;
+                if (dismissNow > _staleTrustPromptDismissUntilUtc)
+                {
+                    _staleTrustPromptThreadId = 0;
+                    _staleTrustPromptDismissUntilUtc = DateTime.MinValue;
+                    _staleTrustPromptNextDismissUtc = DateTime.MinValue;
+                }
+                else if (_staleTrustPromptNextDismissUtc == DateTime.MinValue || dismissNow >= _staleTrustPromptNextDismissUtc)
+                {
+                    CloseNativeTrustPromptWindow(_staleTrustPromptThreadId, false);
+                    _staleTrustPromptNextDismissUtc = dismissNow.AddMilliseconds(100.0);
+                }
+            }
+
+#if AMS_DEV_TESTS
+            if (_trustPromptPending && _devTrustDisconnectGeneration == _trustPromptGeneration &&
+                _devTrustDisconnectUtc != DateTime.MinValue && DateTime.UtcNow >= _devTrustDisconnectUtc)
+            {
+                _devTrustDisconnectGeneration = 0;
+                _devTrustDisconnectUtc = DateTime.MinValue;
+                if (_instance != null)
+                    _instance.Logger.LogWarning("AutoModSync DEV TEST closing the protected socket while the native trust dialog is still open.");
+                try
+                {
+                    if (_pendingRpc != null && _pendingRpc.GetSocket() != null) _pendingRpc.GetSocket().Close();
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV TEST could not close the trust-dialog socket: " + ex.Message);
+                }
+            }
+#endif
+
+            if (_trustPromptPending && _trustPromptDecision != 0)
+            {
+                int decision = _trustPromptDecision;
+                _trustPromptDecision = 0;
+
+                if (decision == 1)
+                    AcceptPendingServerTrust();
+                else if (decision == 2)
+                    RejectPendingServerTrust();
+                else
+                {
+                    ClearPendingTrustPrompt();
+                    AbortAutoModSyncJoin("AutoModSync could not open the server trust confirmation.");
+                }
+                return;
+            }
+
+            // Once a server has positively answered AMS, a dead socket is a failed protected session, not a non-AMS fail-open case.
+            // This also guarantees that trust/download UI cannot remain stranded on screen after Valheim has already lost the connection.
+            if (_waitingForServer && _pendingRpc != null && (_serverAcknowledged || _serverRecognized) && !IsRpcConnected(_pendingRpc))
+            {
+                HandleRecognizedConnectionLoss("AutoModSync connection ended before synchronization completed.");
+                return;
+            }
+
             if (_waitingForServer && _pendingRpc != null && _helloSentUtc != DateTime.MinValue)
             {
                 DateTime now = DateTime.UtcNow;
@@ -214,104 +351,376 @@ namespace ValheimAutoModSync
                 }
                 else if (_serverAcknowledged && !_serverRecognized && elapsed > 15.0)
                 {
-                    FailOpen("AutoModSync server acknowledged preflight but did not begin a manifest within 15 seconds.");
+                    AbortAutoModSyncJoin("AutoModSync server acknowledged preflight but did not begin a manifest within 15 seconds.");
                 }
             }
         }
 
-        // Intent: Draws the small in-game synchronization overlay and progress bar without depending on another UI framework.
+        // Intent: Renders the Phase 7 state model as a branded gray/orange AutoModSync panel without owning synchronization policy.
         private void OnGUI()
         {
-            if (!_overlayVisible) return;
+            if (!_overlayVisible || _uiState.Phase == AutoModSyncUiPhase.Hidden) return;
 
-            float width = Mathf.Min(560f, Mathf.Max(320f, Screen.width - 40f));
-            float height = _overlayTotalFiles > 0 ? 190f : 135f;
+            EnsureUiLogoTexture();
+
+            float width = Mathf.Min(720f, Mathf.Max(360f, Screen.width - 32f));
+            float height = UiPanelHeight(_uiState.Phase);
+            height = Mathf.Min(height, Mathf.Max(280f, Screen.height - 24f));
             float left = (Screen.width - width) * 0.5f;
             float top = (Screen.height - height) * 0.5f;
             Rect panel = new Rect(left, top, width, height);
 
             GUI.depth = -1000;
             Color previousColor = GUI.color;
-            Color previousBackground = GUI.backgroundColor;
-            GUI.backgroundColor = new Color(0.08f, 0.08f, 0.08f, 0.96f);
-            GUI.Box(panel, GUIContent.none);
-            GUI.backgroundColor = previousBackground;
 
-            GUIStyle titleStyle = new GUIStyle(GUI.skin.label);
-            titleStyle.alignment = TextAnchor.MiddleCenter;
-            titleStyle.fontSize = 22;
-            titleStyle.fontStyle = FontStyle.Bold;
-            titleStyle.normal.textColor = Color.white;
+            Color charcoal = new Color(0.075f, 0.082f, 0.094f, 0.985f);
+            Color slate = new Color(0.115f, 0.125f, 0.145f, 0.98f);
+            Color orange = new Color(1.00f, 0.36f, 0.055f, 1f);
+            Color ember = new Color(1.00f, 0.56f, 0.12f, 1f);
+            Color text = new Color(0.95f, 0.96f, 0.97f, 1f);
+            Color muted = new Color(0.66f, 0.69f, 0.73f, 1f);
+            Color danger = new Color(1.00f, 0.23f, 0.10f, 1f);
+            Color phaseAccent = _uiState.Phase == AutoModSyncUiPhase.Failed ? danger : orange;
+
+            float pulse = 0.32f + (0.18f * Mathf.PingPong(Time.realtimeSinceStartup * 0.8f, 1f));
+            DrawSolidRect(new Rect(panel.x - 4f, panel.y - 4f, panel.width + 8f, panel.height + 8f),
+                new Color(phaseAccent.r, phaseAccent.g, phaseAccent.b, pulse));
+            DrawSolidRect(panel, charcoal);
+            DrawOutlinedRect(panel, phaseAccent, 2f);
+            DrawSolidRect(new Rect(panel.x + 2f, panel.y + 2f, panel.width - 4f, 4f), ember);
+
+            GUIStyle brandStyle = new GUIStyle(GUI.skin.label);
+            brandStyle.fontSize = 23;
+            brandStyle.fontStyle = FontStyle.Bold;
+            brandStyle.alignment = TextAnchor.MiddleLeft;
+            brandStyle.normal.textColor = text;
+
+            GUIStyle brandSubStyle = new GUIStyle(GUI.skin.label);
+            brandSubStyle.fontSize = 11;
+            brandSubStyle.fontStyle = FontStyle.Bold;
+            brandSubStyle.alignment = TextAnchor.UpperLeft;
+            brandSubStyle.normal.textColor = orange;
 
             GUIStyle statusStyle = new GUIStyle(GUI.skin.label);
+            statusStyle.fontSize = 20;
+            statusStyle.fontStyle = FontStyle.Bold;
             statusStyle.alignment = TextAnchor.MiddleCenter;
-            statusStyle.fontSize = 16;
             statusStyle.wordWrap = true;
-            statusStyle.normal.textColor = Color.white;
+            statusStyle.normal.textColor = text;
 
             GUIStyle detailStyle = new GUIStyle(GUI.skin.label);
-            detailStyle.alignment = TextAnchor.MiddleCenter;
             detailStyle.fontSize = 13;
+            detailStyle.alignment = TextAnchor.UpperCenter;
             detailStyle.wordWrap = true;
-            detailStyle.normal.textColor = new Color(0.86f, 0.86f, 0.86f, 1f);
+            detailStyle.normal.textColor = muted;
 
-            GUI.Label(new Rect(left + 20f, top + 14f, width - 40f, 32f), "AutoModSync", titleStyle);
-            GUI.Label(new Rect(left + 25f, top + 50f, width - 50f, 48f), _overlayStatus ?? "", statusStyle);
+            GUIStyle smallStyle = new GUIStyle(GUI.skin.label);
+            smallStyle.fontSize = 11;
+            smallStyle.alignment = TextAnchor.MiddleCenter;
+            smallStyle.wordWrap = true;
+            smallStyle.normal.textColor = muted;
 
-            if (_overlayTotalFiles > 0)
+            GUIStyle valueStyle = new GUIStyle(GUI.skin.label);
+            valueStyle.fontSize = 17;
+            valueStyle.fontStyle = FontStyle.Bold;
+            valueStyle.alignment = TextAnchor.MiddleCenter;
+            valueStyle.normal.textColor = text;
+
+            float headerY = top + 18f;
+            if (_uiLogoTexture != null)
+                GUI.DrawTexture(new Rect(left + 24f, headerY, 66f, 66f), _uiLogoTexture, ScaleMode.ScaleToFit, true);
+
+            float titleLeft = left + (_uiLogoTexture != null ? 104f : 28f);
+            GUI.Label(new Rect(titleLeft, headerY + 4f, width - (titleLeft - left) - 24f, 32f), "AUTOMODSYNC", brandStyle);
+            GUI.Label(new Rect(titleLeft + 1f, headerY + 38f, width - (titleLeft - left) - 24f, 22f),
+                "VALHEIM  •  VERIFIED MOD SYNCHRONIZATION", brandSubStyle);
+            DrawSolidRect(new Rect(left + 24f, top + 96f, width - 48f, 1f), new Color(1f, 0.36f, 0.055f, 0.38f));
+
+            GUI.Label(new Rect(left + 28f, top + 107f, width - 56f, 36f), _uiState.Status ?? "", statusStyle);
+            GUI.Label(new Rect(left + 42f, top + 145f, width - 84f, 43f), _uiState.Detail ?? "", detailStyle);
+
+            float y = top + 195f;
+
+            if (_uiState.Phase == AutoModSyncUiPhase.Trust)
             {
-                string detail;
-                float overall;
-                if (_overlayBundleMode)
-                {
-                    detail = _overlayTotalFiles.ToString(CultureInfo.InvariantCulture) + " changed file(s)  •  " + FormatBytes(_overlayBytesReceived) + " / " + FormatBytes(_overlayBytesTotal);
-                    overall = _overlayBytesTotal <= 0 ? 0f : Mathf.Clamp01((float)(_overlayBytesReceived / (double)_overlayBytesTotal));
-                }
-                else
-                {
-                    int displayFile = Math.Min(_overlayCompletedFiles + 1, _overlayTotalFiles);
-                    detail = _overlayCurrentFile.Length > 0
-                        ? "File " + displayFile.ToString(CultureInfo.InvariantCulture) + " of " + _overlayTotalFiles.ToString(CultureInfo.InvariantCulture) + ": " + _overlayCurrentFile
-                        : _overlayCompletedFiles.ToString(CultureInfo.InvariantCulture) + " of " + _overlayTotalFiles.ToString(CultureInfo.InvariantCulture) + " files complete";
-                    overall = (_overlayCompletedFiles + Mathf.Clamp01(_overlayFileProgress)) / (float)_overlayTotalFiles;
-                    overall = Mathf.Clamp01(overall);
-                }
-                GUI.Label(new Rect(left + 25f, top + 99f, width - 50f, 34f), detail, detailStyle);
-                Rect bar = new Rect(left + 35f, top + 145f, width - 70f, 18f);
-                GUI.color = new Color(0.20f, 0.20f, 0.20f, 1f);
-                GUI.DrawTexture(bar, Texture2D.whiteTexture);
-                if (overall > 0f)
-                {
-                    GUI.color = new Color(0.72f, 0.72f, 0.72f, 1f);
-                    GUI.DrawTexture(new Rect(bar.x, bar.y, bar.width * overall, bar.height), Texture2D.whiteTexture);
-                }
-                GUI.color = previousColor;
-                GUI.Label(new Rect(left + 35f, top + 164f, width - 70f, 20f), Math.Round(overall * 100f).ToString(CultureInfo.InvariantCulture) + "%", detailStyle);
+                Rect trustBox = new Rect(left + 40f, y, width - 80f, 90f);
+                DrawSolidRect(trustBox, slate);
+                DrawOutlinedRect(trustBox, new Color(1f, 0.36f, 0.055f, 0.55f), 1f);
+                GUI.Label(new Rect(trustBox.x + 10f, trustBox.y + 8f, trustBox.width - 20f, 18f), "SECURITY CODE", smallStyle);
+                GUIStyle fingerprintStyle = new GUIStyle(detailStyle);
+                fingerprintStyle.fontSize = 18;
+                fingerprintStyle.fontStyle = FontStyle.Bold;
+                fingerprintStyle.normal.textColor = text;
+                GUI.Label(new Rect(trustBox.x + 12f, trustBox.y + 29f, trustBox.width - 24f, 30f),
+                    AutoModSyncIdentityDisplay.VerificationCode(_uiState.ServerFingerprint), fingerprintStyle);
+                GUIStyle compareStyle = new GUIStyle(smallStyle);
+                compareStyle.fontSize = 10;
+                compareStyle.normal.textColor = muted;
+                GUI.Label(new Rect(trustBox.x + 12f, trustBox.y + 61f, trustBox.width - 24f, 20f),
+                    "Compare with the server owner if this first contact was unexpected.", compareStyle);
+                y += 104f;
             }
+            else if (_uiState.ManifestFiles > 0)
+            {
+                float gap = 8f;
+                float innerWidth = width - 64f;
+                float tileWidth = (innerWidth - (gap * 3f)) / 4f;
+                DrawStatTile(new Rect(left + 32f, y, tileWidth, 64f), "MATCHED",
+                    _uiState.MatchedFiles.ToString(CultureInfo.InvariantCulture), slate, muted, text);
+                DrawStatTile(new Rect(left + 32f + tileWidth + gap, y, tileWidth, 64f), "CHANGED",
+                    _uiState.ChangedFiles.ToString(CultureInfo.InvariantCulture), slate, muted, orange);
+                DrawStatTile(new Rect(left + 32f + ((tileWidth + gap) * 2f), y, tileWidth, 64f), "REMOVED",
+                    _uiState.RemovedFiles.ToString(CultureInfo.InvariantCulture), slate, muted, text);
+                DrawStatTile(new Rect(left + 32f + ((tileWidth + gap) * 3f), y, tileWidth, 64f), "REQUIRED",
+                    FormatBytes(_uiState.RequiredExpandedBytes), slate, muted, text);
+                y += 78f;
+            }
+
+            if (_uiState.Phase == AutoModSyncUiPhase.Queued)
+            {
+                Rect queueBox = new Rect(left + 42f, y, width - 84f, 58f);
+                DrawSolidRect(queueBox, slate);
+                DrawOutlinedRect(queueBox, new Color(1f, 0.36f, 0.055f, 0.42f), 1f);
+                GUI.Label(new Rect(queueBox.x + 10f, queueBox.y + 6f, queueBox.width * 0.5f - 10f, 22f), "QUEUE POSITION", smallStyle);
+                GUI.Label(new Rect(queueBox.x + 10f, queueBox.y + 25f, queueBox.width * 0.5f - 10f, 27f),
+                    _uiState.QueuePosition.ToString(CultureInfo.InvariantCulture), valueStyle);
+                GUI.Label(new Rect(queueBox.x + queueBox.width * 0.5f, queueBox.y + 6f, queueBox.width * 0.5f - 10f, 22f), "ACTIVE TRANSFERS", smallStyle);
+                GUI.Label(new Rect(queueBox.x + queueBox.width * 0.5f, queueBox.y + 25f, queueBox.width * 0.5f - 10f, 27f),
+                    _uiState.QueueActive.ToString(CultureInfo.InvariantCulture) + " / " + _uiState.QueueMaxActive.ToString(CultureInfo.InvariantCulture), valueStyle);
+                y += 70f;
+            }
+            else if (_uiState.Phase == AutoModSyncUiPhase.Downloading)
+            {
+                float progress = (float)_uiState.TransferProgress();
+                GUI.Label(new Rect(left + 42f, y, width - 84f, 18f),
+                    FormatBytes(_uiState.BytesReceived) + " / " + FormatBytes(_uiState.BundleBytes), smallStyle);
+                y += 21f;
+                DrawProgressBar(new Rect(left + 42f, y, width - 84f, 20f), progress, orange, ember);
+                GUI.Label(new Rect(left + 42f, y, width - 84f, 20f),
+                    Math.Round(progress * 100.0).ToString(CultureInfo.InvariantCulture) + "%", smallStyle);
+                y += 31f;
+
+                float metricWidth = (width - 100f) / 3f;
+                DrawStatTile(new Rect(left + 42f, y, metricWidth, 54f), "CURRENT",
+                    FormatRate(_uiState.CurrentBytesPerSecond), slate, muted, text);
+                DrawStatTile(new Rect(left + 50f + metricWidth, y, metricWidth, 54f), "AVERAGE",
+                    FormatRate(_uiState.AverageBytesPerSecond), slate, muted, text);
+                DrawStatTile(new Rect(left + 58f + (metricWidth * 2f), y, metricWidth, 54f), "ETA",
+                    FormatEta(_uiState.TransferEtaSeconds()), slate, muted, text);
+                y += 63f;
+
+                if (_uiState.SessionStartBytes > 0L)
+                {
+                    GUIStyle resumedStyle = new GUIStyle(smallStyle);
+                    resumedStyle.fontStyle = FontStyle.Bold;
+                    resumedStyle.normal.textColor = orange;
+                    GUI.Label(new Rect(left + 42f, y, width - 84f, 20f),
+                        "RESUMED  •  " + FormatBytes(_uiState.SessionStartBytes) + " retained from verified package data", resumedStyle);
+                    y += 22f;
+                }
+            }
+            else if (_uiState.Phase == AutoModSyncUiPhase.Verifying)
+            {
+                float verifyProgress = _uiState.VerificationTotal <= 0 ? 0f :
+                    Mathf.Clamp01(_uiState.VerificationCompleted / (float)_uiState.VerificationTotal);
+                GUI.Label(new Rect(left + 42f, y, width - 84f, 18f),
+                    _uiState.VerificationCompleted.ToString(CultureInfo.InvariantCulture) + " / " +
+                    _uiState.VerificationTotal.ToString(CultureInfo.InvariantCulture) + " files verified", smallStyle);
+                y += 21f;
+                DrawProgressBar(new Rect(left + 42f, y, width - 84f, 20f), verifyProgress, orange, ember);
+                y += 31f;
+            }
+            else if (_uiState.Phase == AutoModSyncUiPhase.Applying ||
+                     _uiState.Phase == AutoModSyncUiPhase.Restarting ||
+                     _uiState.Phase == AutoModSyncUiPhase.Reconnecting ||
+                     _uiState.Phase == AutoModSyncUiPhase.Checking ||
+                     _uiState.Phase == AutoModSyncUiPhase.Comparing)
+            {
+                float activity = Mathf.PingPong(Time.realtimeSinceStartup * 0.55f, 1f);
+                Rect track = new Rect(left + 50f, y + 8f, width - 100f, 5f);
+                DrawSolidRect(track, new Color(0.22f, 0.23f, 0.25f, 1f));
+                float segment = Mathf.Max(48f, track.width * 0.22f);
+                float travel = Mathf.Max(0f, track.width - segment);
+                DrawSolidRect(new Rect(track.x + (travel * activity), track.y, segment, track.height), orange);
+                y += 28f;
+            }
+
+            string footer = "AMS " + PluginVersion + "  •  VALHEIM";
+            if (_uiState.Phase == AutoModSyncUiPhase.Trust)
+                footer += "  •  FIRST CONTACT";
+            else if (!String.IsNullOrEmpty(_uiState.ServerFingerprint))
+                footer += "  •  TRUSTED SERVER";
+            GUI.Label(new Rect(left + 28f, top + height - 29f, width - 56f, 18f), footer, smallStyle);
 
             GUI.color = previousColor;
         }
 
-        // Intent: Sets the current synchronization status/detail text and marks the overlay visible.
-        private static void ShowSyncOverlay(string status, string currentFile)
+        // Intent: Chooses a stable panel height for each presentation phase so telemetry remains readable without affecting synchronization behavior.
+        private static float UiPanelHeight(AutoModSyncUiPhase phase)
         {
-            _overlayStatus = status ?? "";
-            _overlayCurrentFile = currentFile ?? "";
-            _overlayVisible = true;
+            if (phase == AutoModSyncUiPhase.Downloading) return 462f;
+            if (phase == AutoModSyncUiPhase.Queued) return 392f;
+            if (phase == AutoModSyncUiPhase.Trust) return 365f;
+            if (phase == AutoModSyncUiPhase.Verifying) return 382f;
+            if (phase == AutoModSyncUiPhase.Comparing || phase == AutoModSyncUiPhase.Checking) return 350f;
+            if (phase == AutoModSyncUiPhase.Applying || phase == AutoModSyncUiPhase.Restarting) return 360f;
+            if (phase == AutoModSyncUiPhase.Complete) return 342f;
+            if (phase == AutoModSyncUiPhase.Failed) return 325f;
+            if (phase == AutoModSyncUiPhase.Reconnecting) return 305f;
+            return 300f;
         }
 
-        // Intent: Clears all overlay/progress state when synchronization is finished or the normal handshake is resumed.
+        // Intent: Draws a solid IMGUI rectangle using Unity's built-in white texture so no UI texture allocation is needed.
+        private static void DrawSolidRect(Rect rect, Color color)
+        {
+            Color previous = GUI.color;
+            GUI.color = color;
+            GUI.DrawTexture(rect, Texture2D.whiteTexture);
+            GUI.color = previous;
+        }
+
+        // Intent: Draws a thin rectangular border for the branded synchronization panel and stat tiles.
+        private static void DrawOutlinedRect(Rect rect, Color color, float thickness)
+        {
+            DrawSolidRect(new Rect(rect.x, rect.y, rect.width, thickness), color);
+            DrawSolidRect(new Rect(rect.x, rect.yMax - thickness, rect.width, thickness), color);
+            DrawSolidRect(new Rect(rect.x, rect.y, thickness, rect.height), color);
+            DrawSolidRect(new Rect(rect.xMax - thickness, rect.y, thickness, rect.height), color);
+        }
+
+        // Intent: Draws one compact comparison/telemetry tile with muted label text and a prominent value.
+        private static void DrawStatTile(Rect rect, string label, string value, Color background, Color labelColor, Color valueColor)
+        {
+            DrawSolidRect(rect, background);
+            GUIStyle labelStyle = new GUIStyle(GUI.skin.label);
+            labelStyle.fontSize = 10;
+            labelStyle.fontStyle = FontStyle.Bold;
+            labelStyle.alignment = TextAnchor.MiddleCenter;
+            labelStyle.normal.textColor = labelColor;
+            GUIStyle valueStyle = new GUIStyle(GUI.skin.label);
+            valueStyle.fontSize = 15;
+            valueStyle.fontStyle = FontStyle.Bold;
+            valueStyle.alignment = TextAnchor.MiddleCenter;
+            valueStyle.normal.textColor = valueColor;
+            GUI.Label(new Rect(rect.x + 4f, rect.y + 5f, rect.width - 8f, 18f), label, labelStyle);
+            GUI.Label(new Rect(rect.x + 4f, rect.y + 24f, rect.width - 8f, rect.height - 27f), value, valueStyle);
+        }
+
+        // Intent: Draws a dark transfer/verification track with an orange-to-ember two-layer fill derived only from state-model progress.
+        private static void DrawProgressBar(Rect rect, float progress, Color orange, Color ember)
+        {
+            progress = Mathf.Clamp01(progress);
+            DrawSolidRect(rect, new Color(0.18f, 0.19f, 0.21f, 1f));
+            DrawOutlinedRect(rect, new Color(1f, 1f, 1f, 0.08f), 1f);
+            if (progress <= 0f) return;
+            Rect fill = new Rect(rect.x + 2f, rect.y + 2f, (rect.width - 4f) * progress, rect.height - 4f);
+            DrawSolidRect(fill, orange);
+            if (fill.width > 8f)
+                DrawSolidRect(new Rect(fill.x, fill.y, fill.width, Mathf.Max(2f, fill.height * 0.28f)), ember);
+        }
+
+        // Intent: Lazily loads the packaged AMS logo embedded in the client DLL; a missing/corrupt image degrades to text branding without breaking synchronization.
+        private static void EnsureUiLogoTexture()
+        {
+            if (_uiLogoLoadAttempted) return;
+            _uiLogoLoadAttempted = true;
+            try
+            {
+                Assembly assembly = typeof(ClientPlugin).Assembly;
+                using (Stream input = assembly.GetManifestResourceStream("ValheimAutoModSync.Branding.Logo.png"))
+                {
+                    if (input == null) throw new FileNotFoundException("Embedded AutoModSync logo resource was not found.");
+                    byte[] bytes;
+                    using (MemoryStream memory = new MemoryStream())
+                    {
+                        input.CopyTo(memory);
+                        bytes = memory.ToArray();
+                    }
+
+                    Texture2D texture = new Texture2D(2, 2, TextureFormat.ARGB32, false);
+                    Type imageConversionType = Type.GetType("UnityEngine.ImageConversion, UnityEngine.ImageConversionModule");
+                    if (imageConversionType == null)
+                        throw new MissingMemberException("UnityEngine.ImageConversion is unavailable.");
+
+                    MethodInfo loadImage = imageConversionType.GetMethod(
+                        "LoadImage",
+                        BindingFlags.Public | BindingFlags.Static,
+                        null,
+                        new Type[] { typeof(Texture2D), typeof(byte[]), typeof(bool) },
+                        null);
+                    object[] arguments;
+                    if (loadImage != null)
+                    {
+                        arguments = new object[] { texture, bytes, false };
+                    }
+                    else
+                    {
+                        loadImage = imageConversionType.GetMethod(
+                            "LoadImage",
+                            BindingFlags.Public | BindingFlags.Static,
+                            null,
+                            new Type[] { typeof(Texture2D), typeof(byte[]) },
+                            null);
+                        if (loadImage == null)
+                            throw new MissingMethodException("UnityEngine.ImageConversion.LoadImage(Texture2D, byte[])");
+                        arguments = new object[] { texture, bytes };
+                    }
+
+                    object result = loadImage.Invoke(null, arguments);
+                    if (!(result is bool) || !(bool)result)
+                        throw new InvalidDataException("Embedded AutoModSync logo PNG could not be decoded.");
+                    texture.wrapMode = TextureWrapMode.Clamp;
+                    _uiLogoTexture = texture;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync UI logo unavailable; using text branding only: " + ex.Message);
+            }
+        }
+
+        // Intent: Formats bytes-per-second telemetry as a compact player-facing transfer rate while preserving unknown rates as a dash.
+        private static string FormatRate(double bytesPerSecond)
+        {
+            if (bytesPerSecond <= 1.0) return "—";
+            return FormatBytes((long)Math.Round(bytesPerSecond)) + "/s";
+        }
+
+        // Intent: Formats ETA telemetry without inventing precision when the transfer model has not observed a usable rate.
+        private static string FormatEta(double seconds)
+        {
+            if (seconds < 0.0 || Double.IsNaN(seconds) || Double.IsInfinity(seconds)) return "CALCULATING";
+            if (seconds < 1.0) return "<1s";
+            int whole = (int)Math.Ceiling(seconds);
+            if (whole < 60) return whole.ToString(CultureInfo.InvariantCulture) + "s";
+            int minutes = whole / 60;
+            int remaining = whole % 60;
+            if (minutes < 60) return minutes.ToString(CultureInfo.InvariantCulture) + "m " + remaining.ToString("00", CultureInfo.InvariantCulture) + "s";
+            int hours = minutes / 60;
+            return hours.ToString(CultureInfo.InvariantCulture) + "h " + (minutes % 60).ToString("00", CultureInfo.InvariantCulture) + "m";
+        }
+
+        // Intent: Publishes an already-decided lifecycle phase into the policy-free UI model and makes the overlay visible.
+        private static void ShowSyncOverlay(AutoModSyncUiPhase phase, string status, string detail)
+        {
+            _uiState.SetPhase(phase, status, detail);
+            _overlayHideUtc = DateTime.MinValue;
+            _overlayVisible = phase != AutoModSyncUiPhase.Hidden;
+        }
+
+        // Intent: Shows a terminal or success state briefly, then relinquishes the menu/game UI automatically.
+        private static void ShowTransientSyncOverlay(AutoModSyncUiPhase phase, string status, string detail, double seconds)
+        {
+            ShowSyncOverlay(phase, status, detail);
+            _overlayHideUtc = DateTime.UtcNow.AddSeconds(Math.Max(0.5, seconds));
+        }
+
+        // Intent: Clears all presentation state when synchronization is finished, abandoned, or a normal non-AMS handshake resumes.
         private static void HideSyncOverlay()
         {
             _overlayVisible = false;
-            _overlayStatus = "";
-            _overlayCurrentFile = "";
-            _overlayTotalFiles = 0;
-            _overlayCompletedFiles = 0;
-            _overlayFileProgress = 0f;
-            _overlayBundleMode = false;
-            _overlayBytesReceived = 0L;
-            _overlayBytesTotal = 0L;
+            _overlayHideUtc = DateTime.MinValue;
+            _uiState.Reset();
         }
 
         [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
@@ -327,6 +736,8 @@ namespace ValheimAutoModSync
                 {
                     DeleteReconnectToken();
                     _startupReconnectFinished = true;
+                    // A created outgoing connection completes the one-shot restart reconnect; cancel any stale delayed character-start callback.
+                    _startupReconnectCharacterStartPending = false;
                     if (_instance != null) _instance.Logger.LogInfo("AutoModSync reconnect created an outgoing Valheim connection; reconnect token cleared.");
                 }
                 RegisterRpc(peer.m_rpc);
@@ -365,10 +776,11 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(FejdStartup), "ShowCharacterSelection")]
         private static class ReconnectCharacterSelectionPatch
         {
-            // Intent: During restart reconnect, notices when Valheim reaches character selection and schedules the normal selected-character start action.
+            // Intent: During restart reconnect, notices the first character-selection screen and schedules the normal selected-character start action exactly once.
+            // Safety: later ShowCharacterSelection callbacks can occur after the outgoing reconnect is already established; completed or already-pending reconnects must not start the character again.
             private static void Postfix()
             {
-                if (!_startupReconnectDispatched || _restartRequested) return;
+                if (!_startupReconnectDispatched || _startupReconnectFinished || _startupReconnectCharacterStartPending || _restartRequested) return;
                 _startupReconnectCharacterStartPending = true;
                 _startupReconnectCharacterStartUtc = DateTime.UtcNow.AddMilliseconds(650.0);
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync reconnect reached character selection; starting the selected character automatically.");
@@ -447,7 +859,12 @@ namespace ValheimAutoModSync
                 _serverSupportsBundleWindow = false;
                 _serverSupportsBundleBatch = false;
                 _serverSupportsBundlePipeline = false;
+                _serverSupportsBundleResume = false;
+                _serverSupportsBundleScheduler = false;
                 _preflightGateActive = false;
+#if AMS_DEV_TESTS
+                _devEmulateLegacyClient = ConsumeDevelopmentLegacyClientMarker();
+#endif
                 _helloSentUtc = DateTime.UtcNow;
                 ResetManifestState();
 
@@ -456,7 +873,7 @@ namespace ValheimAutoModSync
                     ZPackage hello = new ZPackage();
                     hello.Write(ProtocolVersion);
                     hello.Write(PluginVersion);
-                    hello.Write(RootSyncCapability);
+                    hello.Write(GetCurrentClientCapabilities());
                     rpc.Invoke(RpcHello, new object[] { hello });
                     if (_instance != null) _instance.Logger.LogDebug("AutoModSync probe sent before PeerInfo.");
                 }
@@ -487,6 +904,7 @@ namespace ValheimAutoModSync
                 rpc.Register<ZPackage>(RpcBundleChunk, new Action<ZRpc, ZPackage>(RPC_BundleChunk));
                 rpc.Register<ZPackage>(RpcBundleBatch, new Action<ZRpc, ZPackage>(RPC_BundleBatch));
                 rpc.Register<ZPackage>(RpcBundleEnd, new Action<ZRpc, ZPackage>(RPC_BundleEnd));
+                rpc.Register<ZPackage>(RpcQueueStatus, new Action<ZRpc, ZPackage>(RPC_QueueStatus));
                 rpc.Register<ZPackage>(RpcError, new Action<ZRpc, ZPackage>(RPC_Error));
                 Registered.Add(rpc);
             }
@@ -499,7 +917,7 @@ namespace ValheimAutoModSync
         // Intent: Safe placeholder for protocol messages that are outbound-only on the client; receiving one requires no action.
         private static void RPC_NoOp(ZRpc rpc, ZPackage pkg) { }
 
-        // Intent: Handles the optional 2.5.0 preflight acknowledgement sent before server manifest hashing.
+        // Intent: Handles the optional AMS4 preflight acknowledgement sent before server manifest hashing.
         // Workflow: validates protocol version, records that an AutoModSync server responded, and extends the timeout while manifest generation proceeds.
         private static void RPC_Ack(ZRpc rpc, ZPackage pkg)
         {
@@ -516,9 +934,37 @@ namespace ValheimAutoModSync
                 _serverSupportsBundleWindow = capabilities.IndexOf("bundle-window1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleBatch = capabilities.IndexOf("bundle-batch1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundlePipeline = capabilities.IndexOf("bundle-pipeline1", StringComparison.Ordinal) >= 0;
+                _serverSupportsBundleResume = capabilities.IndexOf("bundle-resume1", StringComparison.Ordinal) >= 0;
+                _serverSupportsBundleScheduler = capabilities.IndexOf("bundle-scheduler1", StringComparison.Ordinal) >= 0;
+                ShowSyncOverlay(AutoModSyncUiPhase.Checking, "AutoModSync server detected.",
+                    "Waiting for the signed server manifest...");
+#if AMS_DEV_TESTS
+                if (_devEmulateLegacyClient)
+                {
+                    _serverSupportsBundleResume = false;
+                    _serverSupportsBundleScheduler = false;
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST emulating a pre-resume AMS4 client; bundle-resume1 and bundle-scheduler1 are ignored for this connection.");
+                }
+                if (serverVersion.StartsWith("2.5.", StringComparison.Ordinal)
+                    && !_serverSupportsBundleResume
+                    && !_serverSupportsBundleScheduler
+                    && _instance != null)
+                {
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: 2.5 AMS4 capability set accepted; resume/scheduler extensions remain disabled.");
+                    if (_serverSupportsBundlePipeline)
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: using the 2.5 pipelined binary bundle transfer fallback.");
+                    else if (_serverSupportsBundleBatch)
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: using the 2.5 binary batch bundle transfer fallback.");
+                    else if (_serverSupportsBundleWindow)
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: using the 2.5 windowed bundle transfer fallback.");
+                    else
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: using the original single-chunk AMS4 transfer fallback.");
+                }
+#endif
                 if (_instance != null)
                 {
                     _instance.Logger.LogDebug("AutoModSync preflight acknowledged by server " + serverVersion + ".");
+                    if (_serverSupportsBundleResume) _instance.Logger.LogDebug("AutoModSync server supports exact-artifact bundle resume.");
                     if (_serverSupportsBundlePipeline) _instance.Logger.LogDebug("AutoModSync server supports pipelined binary bundle transfer.");
                     else if (_serverSupportsBundleBatch) _instance.Logger.LogDebug("AutoModSync server supports binary batched bundle transfer.");
                     else if (_serverSupportsBundleWindow) _instance.Logger.LogDebug("AutoModSync server supports windowed bundle transfer.");
@@ -526,7 +972,7 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("Invalid AutoModSync preflight acknowledgement: " + ex.Message);
+                AbortAutoModSyncJoin("Invalid AutoModSync preflight acknowledgement: " + ex.Message);
             }
         }
 
@@ -558,12 +1004,14 @@ namespace ValheimAutoModSync
                 _manifestSignature = signature;
                 _serverFingerprint = Fingerprint(publicKeyXml);
                 ManifestParts.Clear();
-                ShowSyncOverlay("Checking server mods...", "");
+                _uiState.SetServerFingerprint(_serverFingerprint);
+                ShowSyncOverlay(AutoModSyncUiPhase.Checking, "Checking server mods...",
+                    "Validating the signed manifest for this AutoModSync server.");
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync server detected; checking required mods before joining.");
             }
             catch (Exception ex)
             {
-                FailOpen("Bad AutoModSync manifest header: " + ex.Message);
+                AbortAutoModSyncJoin("Bad AutoModSync manifest header: " + ex.Message);
             }
         }
 
@@ -580,12 +1028,12 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("Manifest transfer failed: " + ex.Message);
+                AbortAutoModSyncJoin("Manifest transfer failed: " + ex.Message);
             }
         }
 
-        // Intent: Reassembles and cryptographically verifies the complete server manifest, compares local files, then either resumes Valheim immediately or requests the verified change bundle.
-        // Trust: executable transfer begins only after the server fingerprint is accepted.
+        // Intent: Reassembles and cryptographically verifies the complete server manifest, establishes server trust, compares local files, then either resumes Valheim or requests the verified change bundle.
+        // Trust: once AMS has positively responded, signature/trust/content failures abort this join instead of falling through to an unsynchronized vanilla handshake.
         private static void RPC_ManifestEnd(ZRpc rpc, ZPackage pkg)
         {
             if (!_serverRecognized || rpc != _pendingRpc) return;
@@ -603,72 +1051,227 @@ namespace ValheimAutoModSync
                     if (!ManifestParts.TryGetValue(i, out part)) throw new InvalidDataException("Manifest part missing.");
                     sb.Append(part);
                 }
+
                 string manifest = sb.ToString();
                 if (!VerifyManifestSignature(_serverPublicKeyXml, _manifestSignature, Encoding.UTF8.GetBytes(manifest)))
                     throw new CryptographicException("AutoModSync server signature verification failed.");
 
+                // 2.6 establishes TOFU identity even when every required file already happens to match.
+                // First-contact trust is asynchronous so the Valheim networking loop stays alive while the player verifies the fingerprint.
+                if (!IsServerTrusted(_serverFingerprint))
+                {
+                    BeginServerTrustPrompt(rpc, _serverFingerprint, manifest);
+                    return;
+                }
+
+                ContinueVerifiedManifest(manifest);
+            }
+            catch (Exception ex)
+            {
+                AbortAutoModSyncJoin("AutoModSync manifest verification failed: " + ex.Message);
+            }
+        }
+
+        // Intent: Continues only after the signed manifest's server identity is already trusted, then computes deltas and either resumes Valheim or requests the exact bundle.
+        // Security: this method is reachable from both an existing trust pin and the explicit in-game Trust action; neither path bypasses signature verification or TOFU identity checks.
+        private static void ContinueVerifiedManifest(string manifest)
+        {
+            try
+            {
+                if (!_serverRecognized || _pendingRpc == null || !IsRpcConnected(_pendingRpc))
+                {
+                    HandleRecognizedConnectionLoss("AutoModSync connection ended before the trusted manifest could continue.");
+                    return;
+                }
+
+                ShowSyncOverlay(AutoModSyncUiPhase.Comparing, "Comparing server mods...",
+                    "Signed manifest verified. Comparing required files with this client.");
                 BuildNeededList(manifest);
                 if (NeededFiles.Count == 0)
                 {
-                    HideSyncOverlay();
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync: client mods already match the server.");
+                    if (PendingRelativePaths.Count > 0)
+                    {
+                        ShowSyncOverlay(AutoModSyncUiPhase.Applying, "Preparing synchronized changes...",
+                            "Removing " + PendingRelativePaths.Count.ToString(CultureInfo.InvariantCulture) + " stale server-managed file(s) transactionally.");
+                        if (_instance != null)
+                            _instance.Logger.LogInfo("AutoModSync: " + PendingRelativePaths.Count.ToString(CultureInfo.InvariantCulture) + " stale owned file(s) require transactional removal.");
+                        BeginApplyAndRestart();
+                        return;
+                    }
+
+                    if (_ownershipLedgerChanged)
+                    {
+                        AutoModSyncOwnershipState.WriteLedgerDurable(GetAutoModSyncRoot(), _serverFingerprint, DesiredOwnershipEntries);
+                        if (_instance != null)
+                            _instance.Logger.LogInfo("AutoModSync ownership metadata updated without live file changes.");
+                    }
+
+                    AutoModSyncOwnershipState.WriteLastSuccessfulServerDurable(GetAutoModSyncRoot(), _serverFingerprint);
+                    ShowTransientSyncOverlay(AutoModSyncUiPhase.Complete, "Already synchronized.",
+                        "Required mods match this trusted server. Joining normally...", 1.5);
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync: client mods already match the trusted server.");
                     ResumeNormalHandshake();
                 }
                 else
                 {
-                    if (!EnsureServerTrusted(_serverFingerprint))
-                    {
-                        FailOpen("AutoModSync server was not trusted by the user.");
-                        return;
-                    }
-                    _overlayTotalFiles = NeededFiles.Count;
-                    _overlayCompletedFiles = 0;
-                    _overlayFileProgress = 0f;
-                    _overlayBundleMode = true;
-                    _overlayBytesReceived = 0L;
-                    _overlayBytesTotal = 0L;
-                    ShowSyncOverlay("Preparing compressed mod package...", "");
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync: requesting one compressed package containing " + NeededFiles.Count + " missing/changed file(s).");
+                    ShowSyncOverlay(AutoModSyncUiPhase.Comparing, "Mod comparison complete.",
+                        NeededFiles.Count.ToString(CultureInfo.InvariantCulture) + " changed file(s)" +
+                        (PendingRelativePaths.Count > 0 ? " and " + PendingRelativePaths.Count.ToString(CultureInfo.InvariantCulture) + " stale removal(s)" : "") +
+                        " require synchronization. Preparing the verified package...");
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync: requesting one compressed package containing " + NeededFiles.Count +
+                            " missing/changed file(s)" + (PendingRelativePaths.Count > 0 ? " plus " + PendingRelativePaths.Count + " stale owned removal(s)." : "."));
                     RequestBundle();
                 }
             }
             catch (Exception ex)
             {
-                FailOpen("AutoModSync manifest verification failed: " + ex.Message);
+                AbortAutoModSyncJoin("AutoModSync manifest comparison failed: " + ex.Message);
             }
         }
 
-        // Intent: Parses signed manifest rows into the exact set of missing or hash-mismatched plugin files.
-        // Package-manager safeguard: ignores AutoModSync-owned files when the current AutoModSync installation is itself managed by a profile.
+        // Intent: Parses the signed manifest into the exact missing/hash-mismatched set that may be transferred.
+        // Security: malformed/duplicate destinations, invalid hashes, excessive individual files, and excessive expanded bytes are rejected before a bundle request is sent.
         private static void BuildNeededList(string manifest)
         {
             NeededFiles.Clear();
             PendingRelativePaths.Clear();
+            DesiredOwnershipEntries.Clear();
+            _ownershipLedgerChanged = false;
+
+#if AMS_DEV_TESTS
+            bool devEmulateNearlyBareClient = ConsumeDevelopmentNearlyBareClientMarker();
+#else
+            bool devEmulateNearlyBareClient = false;
+#endif
+
+            string amsRoot = GetAutoModSyncRoot();
+            bool sameAsImmediatelyPriorSuccessfulServer = AutoModSyncOwnershipState.WasLastSuccessfulServer(amsRoot, _serverFingerprint);
+            List<AutoModSyncOwnershipEntry> owned = AutoModSyncOwnershipState.ReadLedger(amsRoot, _serverFingerprint);
+            Dictionary<string, AutoModSyncOwnershipEntry> ownedByKey = new Dictionary<string, AutoModSyncOwnershipEntry>(StringComparer.OrdinalIgnoreCase);
+            int oi;
+            for (oi = 0; oi < owned.Count; oi++)
+                ownedByKey[owned[oi].Kind + ":" + owned[oi].RelativePath] = owned[oi];
+
+            Dictionary<string, ManifestEntry> manifestByKey = new Dictionary<string, ManifestEntry>(StringComparer.OrdinalIgnoreCase);
             string[] lines = manifest.Replace("\r", "").Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            long expandedNeededBytes = 0L;
             int i;
             for (i = 0; i < lines.Length; i++)
             {
                 string[] fields = lines[i].Split(new char[] { '\t' }, 4);
-                if (fields.Length != 4 || fields[0].Length != 1) continue;
+                if (fields.Length != 4 || fields[0].Length != 1)
+                    throw new InvalidDataException("Server manifest contained a malformed record.");
+
                 char kind = fields[0][0];
-                if (!IsSupportedManifestKind(kind)) throw new InvalidDataException("Server manifest contained an unsupported AutoModSync file kind.");
+                if (!IsSupportedManifestKind(kind))
+                    throw new InvalidDataException("Server manifest contained an unsupported AutoModSync file kind.");
+
                 long size;
-                if (!long.TryParse(fields[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size < 0) continue;
+                if (!long.TryParse(fields[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size < 0)
+                    throw new InvalidDataException("Server manifest contained an invalid file size.");
+                if (!IsSha256Hex(fields[1]))
+                    throw new InvalidDataException("Server manifest contained an invalid SHA-256 value.");
+
                 string rel = NormalizeRelative(fields[3]);
-                if (rel.Length == 0) continue;
+                if (rel.Length == 0)
+                    throw new InvalidDataException("Server manifest contained an unsafe Windows path.");
+
+                string destinationKey = kind + ":" + rel;
+                if (!seen.Add(destinationKey))
+                    throw new InvalidDataException("Server manifest contained a duplicate destination: " + rel);
+
                 if (kind == 'P' && IsPackageManagedAutoModSync() && IsAutoModSyncOwnedRelativePath(rel))
                 {
                     if (_instance != null) _instance.Logger.LogDebug("Ignoring server-advertised package-managed AutoModSync file: " + rel);
                     continue;
                 }
+
                 ManifestEntry e = new ManifestEntry();
                 e.Kind = kind;
-                e.Sha256 = fields[1];
+                e.Sha256 = fields[1].ToLowerInvariant();
                 e.Size = size;
                 e.RelativePath = rel;
+                manifestByKey[destinationKey] = e;
+
                 string local = SafeTargetPath(kind, rel);
-                if (!File.Exists(local) || !ConstantEquals(Sha256File(local), e.Sha256)) NeededFiles.Add(e);
+                bool needed = !File.Exists(local);
+                if (!needed)
+                {
+                    FileInfo localInfo = new FileInfo(local);
+                    needed = localInfo.Length != e.Size || !ConstantEquals(Sha256File(local), e.Sha256);
+                }
+#if AMS_DEV_TESTS
+                if (devEmulateNearlyBareClient
+                    && !(kind == 'P' && String.Equals(Path.GetFileName(rel), "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)))
+                    needed = true;
+#endif
+
+                AutoModSyncOwnershipEntry previousOwned;
+                bool wasOwned = ownedByKey.TryGetValue(destinationKey, out previousOwned);
+                bool stillExactOwnedBytes = wasOwned
+                    && previousOwned.Size == e.Size
+                    && ConstantEquals(previousOwned.Sha256, e.Sha256);
+
+                // Retain ownership only when the manifest still names the exact digest AMS last installed.
+                // A changed manifest digest is owned again only if AMS itself must perform the verified write.
+                // If some external/manual action already changed an owned destination to the server's new bytes,
+                // preserve those bytes but relinquish ownership rather than claiming a change AMS did not perform.
+                if (stillExactOwnedBytes || needed)
+                    AddDesiredOwnership(e.Kind, e.RelativePath, e.Size, e.Sha256);
+                else if (wasOwned && _instance != null)
+                    _instance.Logger.LogWarning("AutoModSync found an externally changed owned file already matching the server and relinquished ownership: " + e.Kind + ":" + e.RelativePath);
+
+                if (!needed) continue;
+                expandedNeededBytes = AutoModSyncClientResourceSafety.AddRequiredFile(e.Size, expandedNeededBytes, rel);
+                NeededFiles.Add(e);
+                AutoModSyncClientResourceSafety.ValidateRequiredFileCount(NeededFiles.Count);
             }
+
+            // A signed-manifest omission can retire only a path this exact trusted server previously caused AMS to own.
+            // If the live bytes changed since that successful install, preserve the local file and relinquish ownership instead.
+            for (oi = 0; oi < owned.Count; oi++)
+            {
+                AutoModSyncOwnershipEntry prior = owned[oi];
+                string key = prior.Kind + ":" + prior.RelativePath;
+                if (manifestByKey.ContainsKey(key)) continue;
+
+                string local = SafeTargetPath(prior.Kind, prior.RelativePath);
+                if (File.Exists(local))
+                {
+                    FileInfo info = new FileInfo(local);
+                    bool exactOwnedBytes = info.Length == prior.Size && ConstantEquals(Sha256File(local), prior.Sha256);
+                    if (exactOwnedBytes && sameAsImmediatelyPriorSuccessfulServer)
+                    {
+                        PendingRelativePaths.Add(MakePendingDeleteEntry(prior));
+                    }
+                    else if (exactOwnedBytes)
+                    {
+                        // A server switch must never make one server clean up another server's/client's current payload.
+                        // Retain this server's ownership record and defer deletion until two consecutive successful AMS reconciliations target this same fingerprint.
+                        AddDesiredOwnership(prior.Kind, prior.RelativePath, prior.Size, prior.Sha256);
+                        if (_instance != null)
+                            _instance.Logger.LogInfo("AutoModSync deferred stale owned deletion because the immediately prior successful sync used a different server: " + prior.Kind + ":" + prior.RelativePath);
+                    }
+                    else if (_instance != null)
+                    {
+                        _instance.Logger.LogWarning("AutoModSync preserved locally modified stale file and relinquished server ownership: " + prior.Kind + ":" + prior.RelativePath);
+                    }
+                }
+                else if (Directory.Exists(local) && _instance != null)
+                {
+                    _instance.Logger.LogWarning("AutoModSync preserved unexpected directory at stale owned path and relinquished server ownership: " + prior.Kind + ":" + prior.RelativePath);
+                }
+            }
+
+            _ownershipLedgerChanged = !AutoModSyncOwnershipState.Equivalent(owned, DesiredOwnershipEntries);
+            _uiState.SetComparison(
+                manifestByKey.Count,
+                Math.Max(0, manifestByKey.Count - NeededFiles.Count),
+                NeededFiles.Count,
+                PendingRelativePaths.Count,
+                expandedNeededBytes);
         }
 
         // Intent: Detects whether AutoModSync is running from a package-manager subdirectory rather than directly at BepInEx/plugins.
@@ -711,18 +1314,79 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Requests one compressed bundle containing only the manifest entries the client proved it needs.
+        // Security: the request count is rechecked immediately before serialization so later code cannot accidentally bypass the manifest-time ceiling.
         private static void RequestBundle()
         {
             CloseBundleStream();
             if (_pendingRpc == null || NeededFiles.Count == 0) return;
+            if (NeededFiles.Count > MaxBundleFiles) throw new InvalidDataException("AutoModSync bundle request exceeds the client file-count limit.");
+
+            _bundleRequestKey = BuildBundleRequestKey();
+            _resumeOfferedCandidate = null;
+
+            if (_serverSupportsBundleResume)
+            {
+                string resumeReason;
+                AutoModSyncResumeCandidate candidate;
+                if (AutoModSyncResumeState.TryPrepareClientCandidate(
+                    GetAutoModSyncRoot(),
+                    _serverFingerprint,
+                    _bundleRequestKey,
+                    AutoModSyncResumeState.DefaultMaxAgeSeconds,
+                    out candidate,
+                    out resumeReason))
+                {
+                    _resumeOfferedCandidate = candidate;
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync found resumable bundle prefix: " +
+                            FormatBytes(candidate.NextChunk == candidate.TotalChunks ? candidate.BundleSize : (long)candidate.NextChunk * candidate.ChunkBytes) +
+                            " already present; asking the server to verify the exact artifact prefix.");
+                }
+                else if (_instance != null && !String.IsNullOrEmpty(resumeReason) && resumeReason != "no saved resume metadata")
+                {
+                    _instance.Logger.LogDebug("AutoModSync did not offer saved bundle resume: " + resumeReason + ".");
+                }
+            }
+
             ZPackage request = new ZPackage();
             request.Write(NeededFiles.Count);
             int i;
             for (i = 0; i < NeededFiles.Count; i++) request.Write(NeededFiles[i].Kind + ":" + NeededFiles[i].RelativePath);
+
+            // Optional AMS4 capability extension. Older servers never advertise bundle-resume1, so they receive the original request shape.
+            if (_serverSupportsBundleResume)
+            {
+                request.Write(_resumeOfferedCandidate == null ? 0 : 1);
+                if (_resumeOfferedCandidate != null)
+                {
+                    request.Write(_resumeOfferedCandidate.BundleSha256);
+                    request.Write(_resumeOfferedCandidate.BundleSize.ToString(CultureInfo.InvariantCulture));
+                    request.Write(_resumeOfferedCandidate.ChunkBytes);
+                    request.Write(_resumeOfferedCandidate.TotalChunks);
+                    request.Write(_resumeOfferedCandidate.FileCount);
+                    request.Write(_resumeOfferedCandidate.NextChunk);
+                    request.Write(_resumeOfferedCandidate.PrefixSha256);
+                }
+            }
+
             _pendingRpc.Invoke(RpcGetBundle, new object[] { request });
         }
 
-        // Intent: Validates the server's bundle header, creates the staging archive file, initializes byte/chunk counters, and requests the first chunk.
+        // Intent: Identifies the exact signed file set expected in the compressed bundle for safe cross-connection resume.
+        private static string BuildBundleRequestKey()
+        {
+            List<string> rows = new List<string>();
+            int i;
+            for (i = 0; i < NeededFiles.Count; i++)
+            {
+                ManifestEntry e = NeededFiles[i];
+                rows.Add(e.Kind + "\t" + e.RelativePath + "\t" + e.Size.ToString(CultureInfo.InvariantCulture) + "\t" + e.Sha256);
+            }
+            return AutoModSyncResumeState.ComputeRequestKey(_serverFingerprint, rows);
+        }
+
+        // Intent: Validates the server's bundle header before allocating/writing the staging archive, then requests the first chunk.
+        // Security: compressed bytes, file count, chunk count, and SHA-256 syntax are bounded independently of server configuration.
         private static void RPC_BundleBegin(ZRpc rpc, ZPackage pkg)
         {
             if (rpc != _pendingRpc || NeededFiles.Count == 0) return;
@@ -732,25 +1396,137 @@ namespace ValheimAutoModSync
                 string sha = pkg.ReadString();
                 int chunks = pkg.ReadInt();
                 int files = pkg.ReadInt();
-                long size;
-                if (!long.TryParse(sizeText, NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size < 0 || chunks < 0 || files != NeededFiles.Count || String.IsNullOrEmpty(sha))
-                    throw new InvalidDataException("Compressed package header did not match the requested sync.");
+                int chunkBytes = 0;
+                int resumeStartChunk = 0;
+                if (_serverSupportsBundleResume)
+                {
+                    chunkBytes = pkg.ReadInt();
+                    resumeStartChunk = pkg.ReadInt();
+                }
 
-                string stagingRoot = Path.Combine(GetAutoModSyncRoot(), "staging");
-                if (!Directory.Exists(stagingRoot)) Directory.CreateDirectory(stagingRoot);
-                _bundlePath = Path.Combine(stagingRoot, "bundle.zip.amsnew");
-                _bundleStream = new FileStream(_bundlePath, FileMode.Create, FileAccess.Write, FileShare.None);
+                long size = AutoModSyncClientResourceSafety.ValidateBundleHeader(
+                    sizeText,
+                    sha,
+                    chunks,
+                    files,
+                    NeededFiles.Count,
+                    _serverSupportsBundleResume,
+                    chunkBytes,
+                    resumeStartChunk,
+                    out chunkBytes);
+
+#if AMS_DEV_TESTS
+                if (_devEmulateLegacyClient && !_serverSupportsBundleResume && _instance != null)
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-client compatibility confirmed: original AMS4 bundle header shape accepted.");
+
+                if (ConsumeDevelopmentPhase3StopAfterBundleHeaderMarker())
+                {
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 stopping after validated bundle header before payload transfer.");
+                    AbortAutoModSyncJoin("DEV TEST Phase 3 stopped after validated bundle header.");
+                    return;
+                }
+#endif
+
+                if (!_serverSupportsBundleResume)
+                    resumeStartChunk = 0;
+
+                string amsRoot = GetAutoModSyncRoot();
+                FileStream stream = null;
+                string bundlePath = "";
+                long resumeBytes = 0L;
+                bool resumed = false;
+
+                if (_serverSupportsBundleResume && resumeStartChunk > 0 && _resumeOfferedCandidate != null)
+                {
+                    AutoModSyncResumeCandidate accepted = new AutoModSyncResumeCandidate();
+                    accepted.BundleSha256 = sha;
+                    accepted.BundleSize = size;
+                    accepted.ChunkBytes = chunkBytes;
+                    accepted.TotalChunks = chunks;
+                    accepted.FileCount = files;
+                    accepted.NextChunk = resumeStartChunk;
+                    accepted.PrefixSha256 = _resumeOfferedCandidate.PrefixSha256;
+
+                    string resumeReason = "";
+                    if (_resumeOfferedCandidate.NextChunk == resumeStartChunk
+                        && AutoModSyncResumeState.TryOpenAcceptedClientPartial(
+                            amsRoot,
+                            _serverFingerprint,
+                            _bundleRequestKey,
+                            accepted,
+                            out stream,
+                            out bundlePath,
+                            out resumeBytes,
+                            out resumeReason))
+                    {
+                        resumed = true;
+                    }
+                    else if (_instance != null)
+                    {
+                        _instance.Logger.LogWarning("AutoModSync server accepted a resume prefix that could not be safely reopened locally; restarting this bundle from zero. " + (resumeReason ?? ""));
+                    }
+                }
+
+                if (!resumed)
+                {
+                    if (_serverSupportsBundleResume && _resumeOfferedCandidate != null && resumeStartChunk == 0 && _instance != null)
+                        _instance.Logger.LogInfo("AutoModSync server declined the saved resume candidate; restarting this bundle from chunk 0.");
+
+                    if (_serverSupportsBundleResume)
+                    {
+                        stream = AutoModSyncResumeState.CreateFreshClientPartial(
+                            amsRoot,
+                            _serverFingerprint,
+                            _bundleRequestKey,
+                            sha,
+                            size,
+                            chunkBytes,
+                            chunks,
+                            files,
+                            out bundlePath);
+                        _bundleResumeSlotActive = true;
+                    }
+                    else
+                    {
+                        string stagingRoot = Path.Combine(amsRoot, "staging");
+                        if (!Directory.Exists(stagingRoot)) Directory.CreateDirectory(stagingRoot);
+                        bundlePath = Path.Combine(stagingRoot, "bundle.zip.amsnew");
+                        AutoModSyncPathSafety.EnsureNoReparsePoints(stagingRoot, bundlePath, true);
+                        stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write, FileShare.None);
+                        _bundleResumeSlotActive = false;
+                    }
+                    resumeStartChunk = 0;
+                    resumeBytes = 0L;
+                }
+                else
+                {
+                    _bundleResumeSlotActive = true;
+                }
+
+                _bundlePath = bundlePath;
+                _bundleStream = stream;
                 _bundleSha256 = sha;
                 _bundleSize = size;
-                _bundleBytesReceived = 0L;
+                _bundleBytesReceived = resumeBytes;
+                _bundleSessionStartBytes = resumeBytes;
                 _bundleStartedUtc = DateTime.UtcNow;
-                _bundleNextChunk = 0;
+                _bundleNextChunk = resumeStartChunk;
                 _bundleTotalChunks = chunks;
-                _bundleWindowEndExclusive = 0;
-                _overlayBundleMode = true;
-                _overlayBytesReceived = 0L;
-                _overlayBytesTotal = size;
-                ShowSyncOverlay("Downloading compressed mod package...", "");
+                _bundleChunkBytes = chunkBytes;
+                _bundleWindowEndExclusive = resumeStartChunk;
+                _uiState.BeginTransfer(size, resumeBytes, _bundleStartedUtc);
+
+#if AMS_DEV_TESTS
+                _devDisconnectAfterChunk = ReadDevelopmentResumeDisconnectMarker(chunks);
+#endif
+
+                ShowSyncOverlay(AutoModSyncUiPhase.Downloading,
+                    resumed ? "Resuming required mods..." : "Downloading required mods...",
+                    resumed ? "Verified package data was retained from the previous interrupted transfer." : "Receiving the server's verified compressed mod package.");
+                if (resumed && _instance != null)
+                    _instance.Logger.LogInfo("AutoModSync exact-artifact resume accepted at chunk " + resumeStartChunk.ToString(CultureInfo.InvariantCulture) + "/" + chunks.ToString(CultureInfo.InvariantCulture) + " (" + FormatBytes(resumeBytes) + " retained).");
+
                 if (_instance != null && _serverSupportsBundlePipeline)
                     _instance.Logger.LogInfo("AutoModSync using pipelined binary bundle transfer (up to " + BundlePipelineChunks.ToString(CultureInfo.InvariantCulture) + " chunks requested per window; " + BundleBatchChunks.ToString(CultureInfo.InvariantCulture) + " chunks per Steam message).");
                 else if (_instance != null && _serverSupportsBundleBatch)
@@ -761,7 +1537,7 @@ namespace ValheimAutoModSync
             }
             catch (Exception ex)
             {
-                FailOpen("Could not prepare compressed mod download: " + ex.Message);
+                AbortAutoModSyncJoin("Could not prepare compressed mod download: " + ex.Message);
             }
         }
 
@@ -775,18 +1551,22 @@ namespace ValheimAutoModSync
                 int index = pkg.ReadInt();
                 string encoded = pkg.ReadString();
                 if (index != _bundleNextChunk || _bundleNextChunk >= _bundleTotalChunks) throw new InvalidDataException("Out-of-order compressed package chunk.");
+                if (encoded == null || encoded.Length > 70000) throw new InvalidDataException("Oversized compressed package chunk.");
                 byte[] data = Convert.FromBase64String(encoded);
+                ValidateBundleChunkLength(index, data == null ? 0 : data.Length);
                 _bundleStream.Write(data, 0, data.Length);
                 _bundleBytesReceived += data.Length;
                 _bundleNextChunk++;
-                _overlayBytesReceived = _bundleBytesReceived;
-                _overlayFileProgress = _bundleTotalChunks <= 0 ? 1f : Mathf.Clamp01(_bundleNextChunk / (float)_bundleTotalChunks);
+                _uiState.UpdateTransfer(_bundleBytesReceived, DateTime.UtcNow);
+#if AMS_DEV_TESTS
+                if (DevelopmentDisconnectForResumeIfArmed(rpc)) return;
+#endif
                 if (_bundleNextChunk >= _bundleTotalChunks || _bundleNextChunk >= _bundleWindowEndExclusive)
                     RequestBundleChunk();
             }
             catch (Exception ex)
             {
-                FailOpen("Compressed mod package download failed: " + ex.Message);
+                AbortAutoModSyncJoin("Compressed mod package download failed: " + ex.Message);
             }
         }
 
@@ -809,20 +1589,36 @@ namespace ValheimAutoModSync
                     byte[] data = pkg.ReadByteArray();
                     if (index != _bundleNextChunk || data == null || data.Length < 1 || data.Length > 65536)
                         throw new InvalidDataException("Out-of-order or oversized compressed package batch chunk.");
+                    ValidateBundleChunkLength(index, data.Length);
                     _bundleStream.Write(data, 0, data.Length);
                     _bundleBytesReceived += data.Length;
                     _bundleNextChunk++;
+#if AMS_DEV_TESTS
+                    if (DevelopmentDisconnectForResumeIfArmed(rpc)) return;
+#endif
                 }
 
-                _overlayBytesReceived = _bundleBytesReceived;
-                _overlayFileProgress = _bundleTotalChunks <= 0 ? 1f : Mathf.Clamp01(_bundleNextChunk / (float)_bundleTotalChunks);
+                _uiState.UpdateTransfer(_bundleBytesReceived, DateTime.UtcNow);
                 if (_bundleNextChunk >= _bundleTotalChunks || _bundleNextChunk >= _bundleWindowEndExclusive)
                     RequestBundleChunk();
             }
             catch (Exception ex)
             {
-                FailOpen("Compressed mod package batch download failed: " + ex.Message);
+                AbortAutoModSyncJoin("Compressed mod package batch download failed: " + ex.Message);
             }
+        }
+
+        // Intent: Enforces the exact chunk geometry published by resume-capable servers so every persisted offset is a complete immutable-artifact boundary.
+        private static void ValidateBundleChunkLength(int index, int length)
+        {
+            AutoModSyncClientResourceSafety.ValidateIncomingChunk(
+                index,
+                length,
+                _bundleBytesReceived,
+                _bundleSize,
+                _bundleTotalChunks,
+                _serverSupportsBundleResume,
+                _bundleChunkBytes);
         }
 
         // Intent: Requests the next verified binary batch when supported, otherwise a bounded transfer window or one legacy AMS4 chunk.
@@ -853,29 +1649,39 @@ namespace ValheimAutoModSync
                 if (!fi.Exists || fi.Length != _bundleSize || !ConstantEquals(Sha256File(_bundlePath), _bundleSha256))
                     throw new InvalidDataException("Compressed package failed SHA-256 verification.");
 
-                _overlayBytesReceived = _bundleSize;
-                ShowSyncOverlay("Verifying and unpacking required mods...", "");
+                _uiState.UpdateTransfer(_bundleSize, DateTime.UtcNow);
+                _uiState.BeginVerification(NeededFiles.Count);
+                ShowSyncOverlay(AutoModSyncUiPhase.Verifying, "Verifying synchronized files...",
+                    "Checking extracted file sizes and SHA-256 hashes before anything can be applied.");
                 ExtractBundleToStaging();
-                try { File.Delete(_bundlePath); } catch { }
-                _overlayCompletedFiles = _overlayTotalFiles;
-                _overlayFileProgress = 1f;
-                _overlayBundleMode = false;
+                if (_bundleResumeSlotActive)
+                {
+                    AutoModSyncResumeState.Discard(GetAutoModSyncRoot());
+                    _bundleResumeSlotActive = false;
+                }
+                else
+                {
+                    try { File.Delete(_bundlePath); } catch { }
+                }
                 if (_instance != null)
                 {
                     double elapsedSeconds = _bundleStartedUtc == DateTime.MinValue ? 0.0 : Math.Max(0.001, (DateTime.UtcNow - _bundleStartedUtc).TotalSeconds);
-                    double mibPerSecond = (_bundleSize / (1024.0 * 1024.0)) / elapsedSeconds;
-                    _instance.Logger.LogInfo("AutoModSync compressed package verified and unpacked: " + NeededFiles.Count + " changed file(s). Transfer " + FormatBytes(_bundleSize) + " in " + elapsedSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "s (" + mibPerSecond.ToString("0.00", CultureInfo.InvariantCulture) + " MiB/s).");
+                    long sessionBytes = Math.Max(0L, _bundleSize - _bundleSessionStartBytes);
+                    double mibPerSecond = (sessionBytes / (1024.0 * 1024.0)) / elapsedSeconds;
+                    _instance.Logger.LogInfo("AutoModSync compressed package verified and unpacked: " + NeededFiles.Count + " changed file(s). Transfer " + FormatBytes(sessionBytes) +
+                        (_bundleSessionStartBytes > 0 ? " after retaining " + FormatBytes(_bundleSessionStartBytes) : "") +
+                        " in " + elapsedSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "s (" + mibPerSecond.ToString("0.00", CultureInfo.InvariantCulture) + " MiB/s).");
                 }
                 BeginApplyAndRestart();
             }
             catch (Exception ex)
             {
-                FailOpen("Compressed mod package verification failed: " + ex.Message);
+                AbortAutoModSyncJoin("Compressed mod package verification failed: " + ex.Message);
             }
         }
 
         // Intent: Extracts only files explicitly present in the signed NeededFiles set into AutoModSync staging.
-        // Security: rejects unsafe, duplicate, unexpected, missing, wrong-size, or wrong-hash archive entries before any live plugin is replaced.
+        // Security: entry names, declared lengths, cumulative expanded bytes, reparse points, final sizes, and SHA-256 values are all checked before any live plugin is replaced.
         private static void ExtractBundleToStaging()
         {
             Dictionary<string, ManifestEntry> expected = new Dictionary<string, ManifestEntry>(StringComparer.OrdinalIgnoreCase);
@@ -883,55 +1689,69 @@ namespace ValheimAutoModSync
             for (i = 0; i < NeededFiles.Count; i++)
             {
                 ManifestEntry e = NeededFiles[i];
+                if (e.Size < 0 || e.Size > MaxIndividualSyncFileBytes)
+                    throw new InvalidDataException("Signed manifest entry exceeds the AutoModSync client file limit: " + e.RelativePath);
                 string entryName = ManifestKindDirectory(e.Kind) + "/" + e.RelativePath.Replace('\\', '/');
+                if (expected.ContainsKey(entryName))
+                    throw new InvalidDataException("Signed manifest contains a duplicate archive destination: " + e.RelativePath);
                 expected[entryName] = e;
             }
 
             HashSet<string> extracted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            long expandedBytes = 0L;
             using (FileStream input = new FileStream(_bundlePath, FileMode.Open, FileAccess.Read, FileShare.Read))
             using (ZipArchive archive = new ZipArchive(input, ZipArchiveMode.Read, false))
             {
                 foreach (ZipArchiveEntry entry in archive.Entries)
                 {
                     string name = NormalizeZipEntry(entry.FullName);
-                    if (name.Length == 0) throw new InvalidDataException("Compressed package contained an unsafe path.");
+                    if (name.Length == 0) throw new InvalidDataException("Compressed package contained an unsafe Windows path.");
+
                     ManifestEntry expectedEntry;
-                    if (!expected.TryGetValue(name, out expectedEntry)) throw new InvalidDataException("Compressed package contained an unexpected file: " + name);
-                    if (!extracted.Add(name)) throw new InvalidDataException("Compressed package contained a duplicate file: " + name);
+                    if (!expected.TryGetValue(name, out expectedEntry))
+                        throw new InvalidDataException("Compressed package contained an unexpected file: " + name);
+                    if (!extracted.Add(name))
+                        throw new InvalidDataException("Compressed package contained a duplicate file: " + name);
+                    if (entry.Length != expectedEntry.Size)
+                        throw new InvalidDataException("Compressed package entry length did not match the signed manifest: " + expectedEntry.RelativePath);
 
                     string stagingRoot = Path.Combine(GetAutoModSyncRoot(), "staging", ManifestKindDirectory(expectedEntry.Kind));
                     string output = SafeUnder(stagingRoot, expectedEntry.RelativePath) + ".amsnew";
                     string parent = Path.GetDirectoryName(output);
                     if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
+                    AutoModSyncPathSafety.EnsureNoReparsePoints(stagingRoot, output, true);
+
                     using (Stream source = entry.Open())
-                    using (FileStream destination = new FileStream(output, FileMode.Create, FileAccess.Write, FileShare.None))
                     {
-                        source.CopyTo(destination);
+                        AutoModSyncClientResourceSafety.WriteVerifiedExtractedEntry(
+                            source,
+                            output,
+                            expectedEntry.Size,
+                            expectedEntry.Sha256,
+                            ref expandedBytes);
                     }
 
-                    FileInfo outInfo = new FileInfo(output);
-                    if (!outInfo.Exists || outInfo.Length != expectedEntry.Size || !ConstantEquals(Sha256File(output), expectedEntry.Sha256))
-                        throw new InvalidDataException("Unpacked file failed signed-manifest verification: " + expectedEntry.RelativePath);
-                    PendingRelativePaths.Add(expectedEntry.Kind + ":" + expectedEntry.RelativePath);
+                    // Pending apply acceptance occurs only after the extracted staging file has passed size/SHA-256 verification.
+                    PendingRelativePaths.Add(MakePendingWriteEntry(expectedEntry));
+                    _uiState.MarkVerified();
                 }
             }
 
-            if (extracted.Count != expected.Count) throw new InvalidDataException("Compressed package did not contain every requested file.");
+            if (extracted.Count != expected.Count)
+                throw new InvalidDataException("Compressed package did not contain every requested file.");
         }
 
-        // Intent: Canonicalizes a ZIP entry to forward-slash relative form and rejects empty, dot, parent, or directory entries.
+        // Intent: Copies one ZIP entry while enforcing the signed size continuously instead of trusting a final length check.
+        // Security: this prevents a malicious compressed stream from expanding until disk exhaustion before AutoModSync notices the mismatch.
+        private static void CopyZipEntryBounded(Stream source, Stream destination, long expectedBytes, ref long cumulativeExpandedBytes)
+        {
+            AutoModSyncClientResourceSafety.CopyZipEntryBounded(source, destination, expectedBytes, ref cumulativeExpandedBytes);
+        }
+
+        // Intent: Applies the same Windows-safe path policy to ZIP entry names used by the signed manifest.
         private static string NormalizeZipEntry(string value)
         {
-            if (String.IsNullOrEmpty(value)) return "";
-            value = value.Replace('\\', '/').TrimStart('/');
-            if (value.EndsWith("/", StringComparison.Ordinal)) return "";
-            string[] parts = value.Split('/');
-            int i;
-            for (i = 0; i < parts.Length; i++)
-            {
-                if (parts[i].Length == 0 || parts[i] == "." || parts[i] == "..") return "";
-            }
-            return String.Join("/", parts);
+            return AutoModSyncPathSafety.NormalizeRelative(value);
         }
 
         // Intent: Formats byte counts into human-readable B/KB/MB/GB strings for logs and the sync overlay.
@@ -944,13 +1764,39 @@ namespace ValheimAutoModSync
             return n.ToString(unit == 0 ? "0" : "0.0", CultureInfo.InvariantCulture) + " " + units[unit];
         }
 
+        // Intent: Displays FIFO synchronization-queue status while a recognized AMS server is holding this client for an active transfer slot.
+        // Compatibility: this optional RPC is used only when bundle-scheduler1 was advertised during AMS4 acknowledgement.
+        private static void RPC_QueueStatus(ZRpc rpc, ZPackage pkg)
+        {
+            if (rpc != _pendingRpc || !_serverRecognized || !_serverSupportsBundleScheduler) return;
+            try
+            {
+                int position = pkg.ReadInt();
+                int active = pkg.ReadInt();
+                int maxActive = pkg.ReadInt();
+                if (position < 1 || position > 100000 || active < 0 || maxActive < 1 || active > maxActive)
+                    throw new InvalidDataException("Invalid AutoModSync synchronization queue status.");
+
+                _uiState.SetQueue(position, active, maxActive);
+                ShowSyncOverlay(AutoModSyncUiPhase.Queued, "Queued for synchronization...",
+                    "The server is limiting simultaneous fresh-client transfers. Your place is reserved.");
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync synchronization queue: position " + position.ToString(CultureInfo.InvariantCulture) +
+                        ", active=" + active.ToString(CultureInfo.InvariantCulture) + "/" + maxActive.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+            catch (Exception ex)
+            {
+                AbortAutoModSyncJoin("Invalid AutoModSync synchronization queue status: " + ex.Message);
+            }
+        }
+
         // Intent: Handles a server-reported AMS error for the active RPC and falls back to normal Valheim behavior without applying files.
         private static void RPC_Error(ZRpc rpc, ZPackage pkg)
         {
             if (rpc != _pendingRpc) return;
             string message = "Server reported an AutoModSync error.";
             try { message = pkg.ReadString(); } catch { }
-            FailOpen(message);
+            AbortAutoModSyncJoin(message);
         }
 
         // Intent: Persists the verified pending-file list and reconnect token, launches the external apply helper, disconnects cleanly, then schedules Valheim to quit.
@@ -959,12 +1805,24 @@ namespace ValheimAutoModSync
         {
             if (_restartRequested) return;
             _restartRequested = true;
+            ShowSyncOverlay(AutoModSyncUiPhase.Applying, "Preparing synchronized changes...",
+                "Verified files are ready. Preparing a crash-safe apply transaction before Valheim restarts.");
             try
             {
                 string amsRoot = GetAutoModSyncRoot();
                 if (!Directory.Exists(amsRoot)) Directory.CreateDirectory(amsRoot);
                 string pending = Path.Combine(amsRoot, "pending.txt");
-                File.WriteAllLines(pending, PendingRelativePaths.ToArray(), new UTF8Encoding(false));
+                if (PendingRelativePaths.Count == 0)
+                    throw new InvalidOperationException("AutoModSync apply/restart was requested without any live file operations.");
+#if AMS_DEV_TESTS
+                if (ConsumeDevelopmentApplyPreparationFailureMarker())
+                    throw new InvalidOperationException("DEV TEST forced apply/restart preparation failure before durable transaction state.");
+#endif
+
+                // ownership-next is written first; pending.txt is the durable trigger observed by startup recovery.
+                // A crash between these writes leaves harmless metadata but never a half-described live transaction.
+                AutoModSyncOwnershipState.WritePendingDurable(amsRoot, _serverFingerprint, DesiredOwnershipEntries);
+                WritePendingFileDurable(pending, PendingRelativePaths);
                 string reconnect = Path.Combine(amsRoot, "reconnect.txt");
                 bool reconnectAvailable = !String.IsNullOrEmpty(_reconnectHost);
                 if (reconnectAvailable)
@@ -992,9 +1850,9 @@ namespace ValheimAutoModSync
                 psi.WindowStyle = ProcessWindowStyle.Hidden;
                 Process.Start(psi);
 
-                _overlayCompletedFiles = _overlayTotalFiles;
-                _overlayFileProgress = 1f;
-                ShowSyncOverlay(reconnectAvailable ? "Sync complete. Restarting Valheim and reconnecting to server..." : "Sync complete. Restarting Valheim...", "");
+                ShowSyncOverlay(AutoModSyncUiPhase.Restarting,
+                    reconnectAvailable ? "Sync complete. Restarting Valheim..." : "Sync complete. Restarting Valheim...",
+                    reconnectAvailable ? "Verified changes will be applied out-of-process, then AutoModSync will reconnect automatically." : "Verified changes will be applied out-of-process before Valheim relaunches.");
                 if (_instance != null) _instance.Logger.LogInfo("Mods synchronized. Closing this Valheim instance cleanly before applying updates and relaunching.");
                 try
                 {
@@ -1010,8 +1868,74 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 _restartRequested = false;
-                FailOpen("Mods downloaded but automatic apply/restart failed: " + ex.Message);
+                AbortAutoModSyncJoin("Mods downloaded but automatic apply/restart failed: " + ex.Message);
             }
+        }
+
+        // Intent: Publishes the verified pending-file list atomically and durably before launching the helper.
+        // Safety: a temporary file is flushed with write-through semantics, then renamed on the same volume; an existing pending request is treated as recovery state instead of being overwritten.
+        // Intent: Writes the versioned Phase 6 apply plan durably; write entries name verified staging files and delete entries carry the last-owned digest.
+        private static void WritePendingFileDurable(string pendingPath, IList<string> entries)
+        {
+            if (File.Exists(pendingPath))
+                throw new InvalidOperationException("An earlier AutoModSync pending apply still exists.");
+            if (entries == null || entries.Count == 0)
+                throw new InvalidDataException("AutoModSync pending apply contains no operations.");
+
+            string temp = pendingPath + ".tmp";
+            try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+
+            using (FileStream stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using (StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false), 4096, true))
+            {
+                writer.WriteLine("AMSPENDING2");
+                int i;
+                for (i = 0; i < entries.Count; i++)
+                    writer.WriteLine(entries[i] ?? "");
+
+                writer.Flush();
+                stream.Flush(true);
+            }
+
+            File.Move(temp, pendingPath);
+        }
+
+        // Intent: Encodes one verified staged replacement into the versioned apply plan without permitting a destination outside the fixed kind root.
+        private static string MakePendingWriteEntry(ManifestEntry entry)
+        {
+            if (entry == null || !IsSupportedManifestKind(entry.Kind))
+                throw new InvalidDataException("Invalid AutoModSync pending write entry.");
+            string rel = NormalizeRelative(entry.RelativePath);
+            if (rel.Length == 0) throw new InvalidDataException("Unsafe AutoModSync pending write path.");
+            return "W|" + entry.Kind + "|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(rel));
+        }
+
+        // Intent: Encodes deletion authority from the exact last-owned digest; the apply helper rechecks these bytes after Valheim exits before deleting anything.
+        private static string MakePendingDeleteEntry(AutoModSyncOwnershipEntry entry)
+        {
+            if (entry == null || !IsSupportedManifestKind(entry.Kind) || entry.Size < 0 || !IsSha256Hex(entry.Sha256))
+                throw new InvalidDataException("Invalid AutoModSync pending delete entry.");
+            string rel = NormalizeRelative(entry.RelativePath);
+            if (rel.Length == 0) throw new InvalidDataException("Unsafe AutoModSync pending delete path.");
+            return "D|" + entry.Kind + "|" + entry.Size.ToString(CultureInfo.InvariantCulture) + "|" +
+                entry.Sha256.ToLowerInvariant() + "|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(rel));
+        }
+
+        // Intent: Adds one canonical post-commit ownership record; duplicate destinations indicate an internal manifest/ownership inconsistency.
+        private static void AddDesiredOwnership(char kind, string relative, long size, string sha256)
+        {
+            string key = kind + ":" + relative;
+            int i;
+            for (i = 0; i < DesiredOwnershipEntries.Count; i++)
+                if (String.Equals(DesiredOwnershipEntries[i].Kind + ":" + DesiredOwnershipEntries[i].RelativePath, key, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Duplicate AutoModSync desired ownership destination.");
+
+            AutoModSyncOwnershipEntry entry = new AutoModSyncOwnershipEntry();
+            entry.Kind = kind;
+            entry.RelativePath = relative;
+            entry.Size = size;
+            entry.Sha256 = sha256.ToLowerInvariant();
+            DesiredOwnershipEntries.Add(entry);
         }
 
         // Intent: Saves the exact executable, working directory, and command-line arguments used by a package-managed Valheim launch.
@@ -1087,6 +2011,9 @@ namespace ValheimAutoModSync
         {
             if (rpc == null || PreflightComplete.Contains(rpc)) return;
 
+#if AMS_DEV_TESTS
+            _devUiPreviewActive = false;
+#endif
             _pendingRpc = rpc;
             _pendingPassword = "";
             _waitingForServer = true;
@@ -1095,13 +2022,20 @@ namespace ValheimAutoModSync
             _serverSupportsBundleWindow = false;
             _serverSupportsBundleBatch = false;
             _serverSupportsBundlePipeline = false;
+            _serverSupportsBundleResume = false;
+            _serverSupportsBundleScheduler = false;
             _preflightGateActive = true;
             _serverHandshakeHeld = false;
             _heldServerHandshakeParameters = new object[0];
+#if AMS_DEV_TESTS
+            _devEmulateLegacyClient = ConsumeDevelopmentLegacyClientMarker();
+#endif
             _helloSentUtc = DateTime.MinValue;
             _lastHelloAttemptUtc = DateTime.MinValue;
             _helloAttemptCount = 0;
             ResetManifestState();
+            if (_uiState.Phase != AutoModSyncUiPhase.Reconnecting)
+                HideSyncOverlay();
 
             _reconnectHost = GetReconnectTarget(rpc);
             _reconnectBackend = _capturedServerBackend >= 0 ? _capturedServerBackend : GetCurrentOnlineBackend();
@@ -1127,7 +2061,7 @@ namespace ValheimAutoModSync
                 ZPackage hello = new ZPackage();
                 hello.Write(ProtocolVersion);
                 hello.Write(PluginVersion);
-                hello.Write(RootSyncCapability);
+                hello.Write(GetCurrentClientCapabilities());
                 rpc.Invoke(RpcHello, new object[] { hello });
                 _lastHelloAttemptUtc = DateTime.UtcNow;
                 _helloAttemptCount++;
@@ -1164,6 +2098,8 @@ namespace ValheimAutoModSync
                 _serverSupportsBundleWindow = false;
                 _serverSupportsBundleBatch = false;
                 _serverSupportsBundlePipeline = false;
+                _serverSupportsBundleResume = false;
+                _serverSupportsBundleScheduler = false;
                 _preflightGateActive = false;
                 _serverHandshakeHeld = false;
                 _heldServerHandshakeParameters = new object[0];
@@ -1171,7 +2107,7 @@ namespace ValheimAutoModSync
                 _helloSentUtc = DateTime.MinValue;
                 _lastHelloAttemptUtc = DateTime.MinValue;
                 _helloAttemptCount = 0;
-                if (!_restartRequested) HideSyncOverlay();
+                if (!_restartRequested && _uiState.Phase != AutoModSyncUiPhase.Complete) HideSyncOverlay();
                 ResetManifestState();
 
                 if (rpc != null) PreflightComplete.Add(rpc);
@@ -1207,8 +2143,11 @@ namespace ValheimAutoModSync
             _serverAcknowledged = false;
             _serverSupportsBundleWindow = false;
             _serverSupportsBundleBatch = false;
+            _serverSupportsBundlePipeline = false;
+            _serverSupportsBundleResume = false;
+            _serverSupportsBundleScheduler = false;
             _pendingRpc = null;
-            if (!_restartRequested) HideSyncOverlay();
+            if (!_restartRequested && _uiState.Phase != AutoModSyncUiPhase.Complete) HideSyncOverlay();
             ResetManifestState();
             if (rpc == null || ZNet.instance == null) return;
             try
@@ -1228,31 +2167,97 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Central fail-open path for discovery/verification/transfer errors.
-        // Safety: closes any bundle stream, applies no unverified files, logs the reason, and releases the normal Valheim handshake.
+        // Intent: Fail open only while discovering whether the remote endpoint supports AutoModSync.
+        // Compatibility: genuine non-AMS servers keep the 2.5 behavior and receive the untouched normal Valheim handshake.
         private static void FailOpen(string reason)
         {
             CloseBundleStream();
-            if (_instance != null) _instance.Logger.LogWarning(reason + " AutoModSync will not modify files for this connection; continuing Valheim normally.");
+            DeleteActiveBundleFile();
+            if (_instance != null) _instance.Logger.LogWarning(reason + " AutoModSync discovery did not establish a protected AMS session; continuing Valheim normally.");
             ResumeNormalHandshake();
+        }
+
+        // Intent: Stops a join after the remote endpoint has positively entered the AutoModSync preflight path.
+        // Security: signature/trust/path/resource/transfer failures must never become a way to bypass required synchronization and reach the vanilla handshake.
+        private static void AbortAutoModSyncJoin(string reason)
+        {
+            ZRpc rpc = _pendingRpc;
+            CloseBundleStream();
+            DeleteActiveBundleFile();
+
+            _waitingForServer = false;
+            _serverRecognized = true;
+            _serverAcknowledged = true;
+            _allowPeerInfo = false;
+            _allowServerHandshake = false;
+
+            // Keep the gate armed for this exact RPC until the socket is closed. If close itself fails,
+            // the original ServerHandshake remains held rather than silently falling through.
+            _preflightGateActive = rpc != null;
+            _serverHandshakeHeld = rpc != null;
+            _heldServerHandshakeParameters = new object[0];
+
+            ResetManifestState();
+            ShowTransientSyncOverlay(AutoModSyncUiPhase.Failed, "AutoModSync blocked this join.",
+                reason ?? "Synchronization failed.", 4.0);
+            if (_instance != null) _instance.Logger.LogError((reason ?? "AutoModSync synchronization failed.") + " The recognized AutoModSync join was aborted.");
+
+            if (rpc == null) return;
+            try { rpc.Invoke("Disconnect", new object[0]); } catch { }
+            try
+            {
+                if (rpc.GetSocket() != null) rpc.GetSocket().Close();
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync could not close the failed join socket cleanly: " + ex.Message);
+            }
+        }
+
+        // Intent: Removes only the active compressed staging archive after a failed/discarded transfer.
+        // Safety: extracted .amsnew files are not live BepInEx files and remain inert until a later verified apply phase.
+        private static void DeleteActiveBundleFile()
+        {
+            if (_bundleResumeSlotActive)
+            {
+                AutoModSyncResumeState.Discard(GetAutoModSyncRoot());
+                _bundleResumeSlotActive = false;
+            }
+            else if (!String.IsNullOrEmpty(_bundlePath))
+            {
+                try { if (File.Exists(_bundlePath)) File.Delete(_bundlePath); } catch { }
+            }
         }
 
         // Intent: Clears per-manifest and per-bundle state so stale data from one connection cannot contaminate the next synchronization attempt.
         private static void ResetManifestState()
         {
+            ClearPendingTrustPrompt();
             ManifestParts.Clear();
             _manifestPartCount = 0;
             _manifestSignature = "";
             _serverPublicKeyXml = "";
             _serverFingerprint = "";
             NeededFiles.Clear();
+            PendingRelativePaths.Clear();
+            DesiredOwnershipEntries.Clear();
+            _ownershipLedgerChanged = false;
             _bundleSize = 0L;
             _bundleSha256 = "";
             _bundleNextChunk = 0;
             _bundleTotalChunks = 0;
             _bundleWindowEndExclusive = 0;
+            _bundleChunkBytes = 0;
             _bundleBytesReceived = 0L;
+            _bundleSessionStartBytes = 0L;
             _bundleStartedUtc = DateTime.MinValue;
+            _bundlePath = "";
+            _bundleRequestKey = "";
+            _resumeOfferedCandidate = null;
+            _bundleResumeSlotActive = false;
+#if AMS_DEV_TESTS
+            _devDisconnectAfterChunk = 0;
+#endif
             CloseBundleStream();
         }
 
@@ -1300,6 +2305,8 @@ namespace ValheimAutoModSync
                 _startupReconnectDispatched = false;
                 _startupReconnectCharacterStartPending = false;
                 _startupReconnectNextUtc = DateTime.UtcNow.AddSeconds(1.5);
+                ShowSyncOverlay(AutoModSyncUiPhase.Reconnecting, "Reconnecting to synchronized server...",
+                    "Valheim restarted successfully. Waiting for the main menu network stack to become ready.");
                 Logger.LogInfo("AutoModSync queued one-shot in-game reconnect to " + target + " (backend " + _startupReconnectBackend.ToString(CultureInfo.InvariantCulture) + ").");
             }
             catch (Exception ex)
@@ -1318,6 +2325,8 @@ namespace ValheimAutoModSync
                 _startupReconnectFinished = true;
                 DeleteReconnectToken();
                 Logger.LogWarning("AutoModSync automatic reconnect timed out; leaving the player at the main menu.");
+                ShowTransientSyncOverlay(AutoModSyncUiPhase.Failed, "Automatic reconnect timed out.",
+                    "Synchronization is already applied. Join the server again manually.", 5.0);
                 return;
             }
 
@@ -1335,6 +2344,8 @@ namespace ValheimAutoModSync
                 _startupReconnectFinished = true;
                 DeleteReconnectToken();
                 Logger.LogWarning("AutoModSync automatic reconnect target was invalid: " + _startupReconnectTarget);
+                ShowTransientSyncOverlay(AutoModSyncUiPhase.Failed, "Automatic reconnect could not continue.",
+                    "The saved server endpoint was invalid. Join the server again manually.", 5.0);
                 return;
             }
 
@@ -1353,6 +2364,8 @@ namespace ValheimAutoModSync
                 {
                     _startupReconnectDispatched = true;
                     _startupReconnectForceBackend = _startupReconnectBackend >= 0;
+                    ShowSyncOverlay(AutoModSyncUiPhase.Reconnecting, "Opening synchronized server connection...",
+                        "AutoModSync is handing the saved endpoint back to Valheim.");
                     proceed.Invoke(startup, new object[] { joinData });
                     Logger.LogInfo("AutoModSync dispatched reconnect through FejdStartup.ProceedJoinRequest to " + _startupReconnectTarget + ".");
                     return;
@@ -1777,21 +2790,13 @@ namespace ValheimAutoModSync
         // Intent: General containment helper for staging/state roots; rejects any normalized relative path whose full path escapes the supplied root.
         private static string SafeUnder(string rootPath, string relative)
         {
-            string rel = NormalizeRelative(relative);
-            if (rel.Length == 0) throw new InvalidDataException("Unsafe AutoModSync path.");
-            string root = Path.GetFullPath(rootPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            string full = Path.GetFullPath(Path.Combine(rootPath, rel.Replace('/', Path.DirectorySeparatorChar)));
-            if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("AutoModSync path escaped its staging root.");
-            return full;
+            return AutoModSyncPathSafety.SafeUnderRoot(rootPath, relative, true);
         }
 
-        // Intent: Normalizes synchronized relative paths and rejects parent traversal, drive/URI separators, tabs, and newline characters.
+        // Intent: Applies the shared 2.6 Windows-safe relative-path policy to every signed/staged path.
         private static string NormalizeRelative(string value)
         {
-            if (value == null) return "";
-            value = value.Replace('\\', '/').TrimStart('/');
-            if (value.Length == 0 || value == ".." || value.IndexOf("../", StringComparison.Ordinal) >= 0 || value.IndexOf(':') >= 0 || value.IndexOf('\t') >= 0 || value.IndexOf('\r') >= 0 || value.IndexOf('\n') >= 0) return "";
-            return value;
+            return AutoModSyncPathSafety.NormalizeRelative(value);
         }
 
         // Intent: Computes a file's SHA-256 while allowing other readers, used for local manifest comparison and post-extraction verification.
@@ -1842,12 +2847,14 @@ namespace ValheimAutoModSync
         // Intent: Resolves one relative synchronized path beneath a fixed BepInEx root with full-path containment enforcement.
         private static string SafeBepInExRootPath(string rootPath, string relative, string label)
         {
-            string rel = NormalizeRelative(relative);
-            if (rel.Length == 0) throw new InvalidDataException("Unsafe " + label + " path.");
-            string root = Path.GetFullPath(rootPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            string full = Path.GetFullPath(Path.Combine(rootPath, rel.Replace('/', Path.DirectorySeparatorChar)));
-            if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Path escaped BepInEx\\" + label + ".");
-            return full;
+            try
+            {
+                return AutoModSyncPathSafety.SafeUnderRoot(rootPath, relative, true);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidDataException("Unsafe BepInEx\\" + label + " path: " + ex.Message, ex);
+            }
         }
 
         // Intent: Verifies the server's RSA/SHA-256 manifest signature using only the public key delivered in the manifest header.
@@ -1867,6 +2874,12 @@ namespace ValheimAutoModSync
             catch { return false; }
         }
 
+        // Intent: Validates protocol SHA-256 text before it is trusted as a content identifier.
+        private static bool IsSha256Hex(string value)
+        {
+            return AutoModSyncClientResourceSafety.IsSha256Hex(value);
+        }
+
         // Intent: Derives the stable SHA-256 fingerprint shown/pinned for a server's public signing key.
         private static string Fingerprint(string publicXml)
         {
@@ -1875,43 +2888,1300 @@ namespace ValheimAutoModSync
 
         // Intent: Implements first-contact server trust.
         // Workflow: accepts an already-pinned fingerprint silently; otherwise shows a Windows confirmation dialog and persists the exact accepted fingerprint for future connections.
-        private static bool EnsureServerTrusted(string fingerprint)
+        // Intent: Returns whether this exact verified server fingerprint is already pinned locally.
+        // First contact is handled separately by the non-blocking in-game trust prompt so network processing never pauses on a native modal dialog.
+        private static bool IsServerTrusted(string fingerprint)
         {
             if (String.IsNullOrEmpty(fingerprint) || fingerprint.Length != 64) return false;
-            string root = GetAutoModSyncRoot();
-            string trusted = Path.Combine(root, "trusted-servers.txt");
+#if AMS_DEV_TESTS
+            if (ConsumeDevelopmentForceTrustPromptMarker()) return false;
+#endif
+            string trusted = Path.Combine(GetAutoModSyncRoot(), "trusted-servers.txt");
             try
             {
-                if (File.Exists(trusted))
-                {
-                    string[] lines = File.ReadAllLines(trusted);
-                    int i;
-                    for (i = 0; i < lines.Length; i++)
-                        if (String.Equals(lines[i].Trim(), fingerprint, StringComparison.OrdinalIgnoreCase)) return true;
-                }
-
-                string pretty = fingerprint.Substring(0, 8) + "-" + fingerprint.Substring(8, 8) + "-" + fingerprint.Substring(16, 8) + "-" + fingerprint.Substring(24, 8) + "\r\n" +
-                                fingerprint.Substring(32, 8) + "-" + fingerprint.Substring(40, 8) + "-" + fingerprint.Substring(48, 8) + "-" + fingerprint.Substring(56, 8);
-                string message = "This Valheim server wants AutoModSync permission to install or update executable mod files on this PC.\r\n\r\n" +
-                                 "Server fingerprint:\r\n" + pretty + "\r\n\r\n" +
-                                 "Choose Yes only if you intended to join this server. You will only be asked again if its server identity changes.";
-                int answer = MessageBox(IntPtr.Zero, message, "Valheim AutoModSync - Trust Server", 0x00000004u | 0x00000030u | 0x00000100u);
-                if (answer != 6) return false;
-                if (!Directory.Exists(root)) Directory.CreateDirectory(root);
-                File.AppendAllText(trusted, fingerprint.ToLowerInvariant() + Environment.NewLine, new UTF8Encoding(false));
-                return true;
+                if (!File.Exists(trusted)) return false;
+                string[] lines = File.ReadAllLines(trusted);
+                int i;
+                for (i = 0; i < lines.Length; i++)
+                    if (String.Equals(lines[i].Trim(), fingerprint, StringComparison.OrdinalIgnoreCase)) return true;
+                return false;
             }
             catch (Exception ex)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Could not save AutoModSync server trust: " + ex.Message);
+                if (_instance != null) _instance.Logger.LogWarning("Could not read AutoModSync server trust: " + ex.Message);
                 return false;
             }
         }
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        // Intent: Native Windows MessageBox import used only for the explicit first-contact executable-code trust prompt.
-        private static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
+        // Intent: Starts explicit first-contact trust without blocking Unity's main/network loop.
+        // Binding: the prompt stores the exact active ZRpc plus the already signature-verified manifest; acceptance is ignored if that session is no longer current/alive.
+        private static void BeginServerTrustPrompt(ZRpc rpc, string fingerprint, string manifest)
+        {
+            if (rpc == null || rpc != _pendingRpc || !_serverRecognized || String.IsNullOrEmpty(fingerprint) || fingerprint.Length != 64)
+                throw new InvalidDataException("AutoModSync could not bind the server trust prompt to the active verified session.");
 
+            _trustPromptRpc = rpc;
+            _trustPromptFingerprint = fingerprint;
+            _trustPromptManifest = manifest ?? "";
+            _trustPromptDecision = 0;
+            int generation = ++_trustPromptGeneration;
+            _trustPromptPending = true;
+            _uiState.SetServerFingerprint(fingerprint);
+            ShowSyncOverlay(AutoModSyncUiPhase.Trust, "Trust this server?",
+                "A Windows confirmation dialog is open. The short security code is for optional out-of-band comparison; the full identity is pinned internally.");
+
+            StartNativeTrustPrompt(fingerprint, generation);
+
+#if AMS_DEV_TESTS
+            if (ConsumeDevelopmentDisconnectDuringTrustMarker())
+            {
+                _devTrustDisconnectGeneration = generation;
+                _devTrustDisconnectUtc = DateTime.UtcNow.AddMilliseconds(1500.0);
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST armed protected-socket loss while the native trust dialog remains open.");
+            }
+#endif
+
+            if (_instance != null)
+                _instance.Logger.LogInfo("AutoModSync is waiting for first-contact trust confirmation; security code " +
+                    AutoModSyncIdentityDisplay.VerificationCode(fingerprint) + ".");
+        }
+
+
+        // Intent: Shows the first-contact trust decision without blocking Unity's main/network thread while exposing only a short human comparison code.
+        // Security: the 64-bit code is display-only; the client still verifies and pins the complete 256-bit fingerprint internally.
+        // Cursor ownership stays entirely with Valheim; the native dialog receives normal Windows mouse input independently.
+        private static void StartNativeTrustPrompt(string fingerprint, int generation)
+        {
+            string code = AutoModSyncIdentityDisplay.VerificationCode(fingerprint);
+            string message = "This Valheim server wants AutoModSync permission to install or update executable mod files on this PC.\r\n\r\n" +
+                             "Security code: " + code + "\r\n\r\n" +
+                             "This short code is derived from the server's full signing-key fingerprint for human comparison only. " +
+                             "AutoModSync verifies and pins the complete identity internally.\r\n\r\n" +
+                             "Choose Yes only if you intended to join this server. If this first contact was unexpected, compare the code with one published by the server owner.";
+
+            Thread thread = new Thread(delegate()
+            {
+                int decision;
+                int nativeThreadId = unchecked((int)GetCurrentThreadId());
+                if (generation == _trustPromptGeneration)
+                    _trustPromptNativeThreadId = nativeThreadId;
+                try
+                {
+                    const uint MB_YESNO = 0x00000004u;
+                    const uint MB_ICONWARNING = 0x00000030u;
+                    const uint MB_DEFBUTTON2 = 0x00000100u;
+                    const uint MB_SETFOREGROUND = 0x00010000u;
+                    const uint MB_TOPMOST = 0x00040000u;
+                    int answer = MessageBox(IntPtr.Zero, message, TrustPromptCaption,
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST);
+                    decision = answer == 6 ? 1 : 2;
+                }
+                catch
+                {
+                    decision = -1;
+                }
+
+                // A stale dialog result must never apply to a later connection.
+                if (generation == _trustPromptGeneration)
+                {
+                    _trustPromptDecision = decision;
+                }
+#if AMS_DEV_TESTS
+                else if (_instance != null)
+                {
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST ignored stale native trust-dialog result from generation " +
+                        generation.ToString(CultureInfo.InvariantCulture) + "; current generation=" +
+                        _trustPromptGeneration.ToString(CultureInfo.InvariantCulture) + ".");
+                }
+#endif
+                if (_trustPromptNativeThreadId == nativeThreadId)
+                    _trustPromptNativeThreadId = 0;
+                if (_staleTrustPromptThreadId == nativeThreadId)
+                {
+                    _staleTrustPromptThreadId = 0;
+                    _staleTrustPromptDismissUntilUtc = DateTime.MinValue;
+                    _staleTrustPromptNextDismissUtc = DateTime.MinValue;
+                }
+            });
+
+            thread.IsBackground = true;
+            try { thread.SetApartmentState(ApartmentState.STA); } catch { }
+            thread.Start();
+        }
+
+        // Intent: Best-effort dismissal when a protected connection dies while the native trust dialog is still open.
+        // Reliability: MB_YESNO has no Cancel result, so WM_CLOSE can be ignored; after generation invalidation we post the dialog's IDNO command to the exact prompt thread and retry briefly for late window creation.
+        private static bool CloseNativeTrustPromptWindow(int nativeThreadId, bool allowCaptionFallback)
+        {
+            const uint WM_COMMAND = 0x0111u;
+            const int IDNO = 7;
+            bool found = false;
+            try
+            {
+                if (nativeThreadId != 0)
+                {
+                    EnumThreadWindows(unchecked((uint)nativeThreadId), delegate(IntPtr hwnd, IntPtr lParam)
+                    {
+                        found = true;
+                        try { PostMessage(hwnd, WM_COMMAND, new IntPtr(IDNO), IntPtr.Zero); } catch { }
+                        return true;
+                    }, IntPtr.Zero);
+                }
+
+                if (!found && allowCaptionFallback)
+                {
+                    IntPtr hwnd = FindWindow(null, TrustPromptCaption);
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        found = true;
+                        PostMessage(hwnd, WM_COMMAND, new IntPtr(IDNO), IntPtr.Zero);
+                    }
+                }
+            }
+            catch { }
+            return found;
+        }
+
+        // Intent: Persists an explicitly accepted fingerprint and resumes only the same still-connected, signature-verified AMS session that opened the prompt.
+        private static void AcceptPendingServerTrust()
+        {
+            if (!_trustPromptPending) return;
+
+            ZRpc rpc = _trustPromptRpc;
+            string fingerprint = _trustPromptFingerprint;
+            string manifest = _trustPromptManifest;
+
+            if (rpc == null || rpc != _pendingRpc || !_serverRecognized || !IsRpcConnected(rpc))
+            {
+                HandleRecognizedConnectionLoss("AutoModSync connection ended before server trust was accepted.");
+                return;
+            }
+
+            try
+            {
+                string root = GetAutoModSyncRoot();
+                string trusted = Path.Combine(root, "trusted-servers.txt");
+                if (!Directory.Exists(root)) Directory.CreateDirectory(root);
+
+                // Recheck before appending so repeated GUI events cannot duplicate an existing pin.
+                if (!IsServerTrusted(fingerprint))
+                    File.AppendAllText(trusted, fingerprint.ToLowerInvariant() + Environment.NewLine, new UTF8Encoding(false));
+
+                ClearPendingTrustPrompt();
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync trusted server identity; security code " +
+                    AutoModSyncIdentityDisplay.VerificationCode(fingerprint) + ".");
+                ContinueVerifiedManifest(manifest);
+            }
+            catch (Exception ex)
+            {
+                ClearPendingTrustPrompt();
+                AbortAutoModSyncJoin("Could not save AutoModSync server trust: " + ex.Message);
+            }
+        }
+
+        // Intent: Rejects first-contact trust explicitly; the recognized AMS join is closed rather than falling through to an unsynchronized normal handshake.
+        private static void RejectPendingServerTrust()
+        {
+            if (!_trustPromptPending) return;
+            ClearPendingTrustPrompt();
+            AbortAutoModSyncJoin("AutoModSync server identity was not trusted by the user.");
+        }
+
+        // Intent: Clears only the transient first-contact decision state and invalidates any outstanding native-dialog result.
+        // A best-effort WM_CLOSE also removes a still-open prompt when the protected connection ends first.
+        private static void ClearPendingTrustPrompt()
+        {
+            bool hadPrompt = _trustPromptPending;
+            int nativeThreadId = _trustPromptNativeThreadId;
+
+            _trustPromptPending = false;
+            _trustPromptFingerprint = "";
+            _trustPromptManifest = "";
+            _trustPromptRpc = null;
+            _trustPromptDecision = 0;
+            _trustPromptGeneration++;
+            _trustPromptNativeThreadId = 0;
+#if AMS_DEV_TESTS
+            _devTrustDisconnectGeneration = 0;
+            _devTrustDisconnectUtc = DateTime.MinValue;
+#endif
+
+            if (hadPrompt)
+            {
+                _staleTrustPromptThreadId = nativeThreadId;
+                _staleTrustPromptDismissUntilUtc = DateTime.UtcNow.AddSeconds(3.0);
+                _staleTrustPromptNextDismissUtc = DateTime.MinValue;
+                bool found = CloseNativeTrustPromptWindow(nativeThreadId, true);
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync invalidated the native trust prompt and requested dismissal" +
+                        (found ? "." : "; the client will retry briefly in case the native window is still materializing."));
+            }
+        }
+
+        // Intent: Checks the active ZRpc directly so a connection lost during trust/package preparation can clear UI/state immediately.
+        private static bool IsRpcConnected(ZRpc rpc)
+        {
+            try { return rpc != null && rpc.IsConnected(); }
+            catch { return false; }
+        }
+
+        // Intent: Clears a positively recognized AMS session when its transport dies before synchronization completes.
+        // Security: this is fail-closed; it never replays the held vanilla handshake, and it removes stale trust/download UI instead of leaving an actionable prompt for a dead connection.
+        private static void HandleRecognizedConnectionLoss(string reason)
+        {
+            CloseBundleStream();
+
+            bool preservedResume = _serverSupportsBundleResume && _bundleResumeSlotActive && _bundleNextChunk > 0;
+            long preservedBytes = preservedResume ? _bundleBytesReceived : 0L;
+            if (!preservedResume) DeleteActiveBundleFile();
+            ClearPendingTrustPrompt();
+
+            _waitingForServer = false;
+            _serverRecognized = false;
+            _serverAcknowledged = false;
+            _serverSupportsBundleWindow = false;
+            _serverSupportsBundleBatch = false;
+            _serverSupportsBundlePipeline = false;
+            _serverSupportsBundleResume = false;
+            _serverSupportsBundleScheduler = false;
+            _preflightGateActive = false;
+            _serverHandshakeHeld = false;
+            _heldServerHandshakeParameters = new object[0];
+            _pendingRpc = null;
+            _helloSentUtc = DateTime.MinValue;
+            _lastHelloAttemptUtc = DateTime.MinValue;
+            _helloAttemptCount = 0;
+
+            ResetManifestState();
+            ShowTransientSyncOverlay(AutoModSyncUiPhase.Failed, "Synchronization interrupted.",
+                preservedResume
+                    ? "Connection lost. " + FormatBytes(preservedBytes) + " of verified package data was retained and can resume on the next join."
+                    : "Connection lost before synchronization completed. Reconnect to try again.",
+                5.0);
+
+            if (_instance != null)
+            {
+                if (preservedResume)
+                    _instance.Logger.LogWarning((reason ?? "AutoModSync connection ended.") + " Preserved " + FormatBytes(preservedBytes) + " of the verified bundle prefix; reconnect to resume after server prefix verification.");
+                else
+                    _instance.Logger.LogWarning((reason ?? "AutoModSync connection ended.") + " The protected join was discarded; reconnect to try again.");
+            }
+        }
+
+        // Intent: Returns the capability string this connection should advertise; development legacy-client emulation deliberately omits 2.6 resume/scheduler tokens.
+        private static string GetCurrentClientCapabilities()
+        {
+#if AMS_DEV_TESTS
+            if (_devEmulateLegacyClient) return "roots1";
+#endif
+            return ClientCapabilities;
+        }
+
+        // Intent: Refreshes AMS badges only while Valheim's Join Game browser is visible, binding each rendered row to the ServerJoinData carried by the same ServerListElement wrapper.
+        // Correctness: pooled UI rows and m_filteredList are updated independently by Valheim, so index-zipping those collections is forbidden; an unproven binding always renders no AMS badge.
+        // Network scope: only currently visible dedicated rows are considered, Steam rule lookups are cached, and at most four rule queries can be outstanding at once.
+        private static void UpdateServerBrowserBadges()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (_nextServerBrowserBadgeRefreshUtc != DateTime.MinValue && now < _nextServerBrowserBadgeRefreshUtc) return;
+            _nextServerBrowserBadgeRefreshUtc = now.AddMilliseconds(400.0);
+
+            GameObject panel = null;
+            try { panel = GameObject.Find("GUI/StartGui/StartGame/Panel/JoinPanel"); } catch { }
+            if (panel == null || !panel.activeInHierarchy) return;
+
+            ServerListGui browser = null;
+            try { browser = panel.GetComponent<ServerListGui>(); } catch { }
+            if (browser == null) return;
+
+            Transform listRoot = null;
+            try { listRoot = panel.transform.Find("ServerList/ListRoot"); } catch { }
+            if (listRoot == null) return;
+
+            bool enabled = _showServerBadges == null || _showServerBadges.Value;
+            if (!enabled)
+            {
+                HideAllServerBrowserBadges(listRoot);
+                return;
+            }
+
+            if (_serverBrowserElementsField == null)
+                _serverBrowserElementsField = typeof(ServerListGui).GetField("m_serverListElements", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (_serverBrowserElementsField == null)
+            {
+                HideAllServerBrowserBadges(listRoot);
+                return;
+            }
+
+            IList elements = null;
+            try { elements = _serverBrowserElementsField.GetValue(browser) as IList; } catch { }
+            if (elements == null)
+            {
+                HideAllServerBrowserBadges(listRoot);
+                return;
+            }
+
+            RectTransform viewport = GetServerBrowserViewport(browser, panel, listRoot);
+            HashSet<int> boundRows = new HashSet<int>();
+            int i;
+            for (i = 0; i < elements.Count; i++)
+            {
+                object element = elements[i];
+                Transform row;
+                string host;
+                int gamePort;
+                if (!TryGetServerBrowserElementBinding(element, out row, out host, out gamePort))
+                    continue;
+
+                int rowId = row.gameObject.GetInstanceID();
+                boundRows.Add(rowId);
+
+                if (!IsServerBrowserRowVisible(row as RectTransform, viewport))
+                {
+                    SetServerBrowserBadge(row, false, "");
+                    continue;
+                }
+
+#if AMS_DEV_TESTS
+                LogDevelopmentServerBrowserRowBinding(row, host, gamePort);
+#endif
+
+                ServerBrowserPresence presence = GetOrStartServerBrowserPresence(host, gamePort, now);
+                bool show = presence != null && presence.Completed && presence.IsAutoModSync;
+                SetServerBrowserBadge(row, show, show ? presence.Version : "");
+            }
+
+            // Any rendered pooled row that is not represented by one current ServerListElement binding is ambiguous.
+            // Fail closed visually: hide its AMS badge rather than carrying branding across a recycled row.
+            for (i = 0; i < listRoot.childCount; i++)
+            {
+                Transform row = listRoot.GetChild(i);
+                if (row == null) continue;
+                if (!boundRows.Contains(row.gameObject.GetInstanceID()))
+                    SetServerBrowserBadge(row, false, "");
+            }
+
+            PruneServerBrowserPresenceCache(now);
+        }
+
+        // Intent: Hides AMS branding from every currently rendered server row, used for opt-out and fail-closed browser binding.
+        private static void HideAllServerBrowserBadges(Transform listRoot)
+        {
+            if (listRoot == null) return;
+            int i;
+            for (i = 0; i < listRoot.childCount; i++)
+            {
+                Transform row = listRoot.GetChild(i);
+                if (row != null) SetServerBrowserBadge(row, false, "");
+            }
+        }
+
+        // Intent: Extracts the rendered ServerElement row and dedicated endpoint from one ServerListElement wrapper so UI identity and server identity come from the same Valheim object.
+        // Safety: the binding is accepted only when both halves can be proven from the wrapper; there is no index-based fallback to m_filteredList.
+        private static bool TryGetServerBrowserElementBinding(object element, out Transform row, out string host, out int gamePort)
+        {
+            row = null;
+            host = "";
+            gamePort = 0;
+            if (element == null) return false;
+
+            row = FindServerBrowserRow(element, 0, new HashSet<object>());
+            if (row == null) return false;
+
+            ServerJoinData joinData;
+            if (!TryExtractServerJoinData(element, 0, out joinData) || !joinData.IsValid || (int)joinData.m_type != 3) return false;
+
+            try
+            {
+                ServerJoinDataDedicated dedicated = joinData.Dedicated;
+                host = (dedicated.GetHost() ?? "").Trim();
+                gamePort = dedicated.m_port;
+                return host.Length > 0 && gamePort > 0 && gamePort < 65535;
+            }
+            catch
+            {
+                row = null;
+                host = "";
+                gamePort = 0;
+                return false;
+            }
+        }
+
+        // Intent: Finds the actual ServerElement transform owned by one ServerListElement wrapper using a bounded reflection walk over only server/UI container members.
+        private static Transform FindServerBrowserRow(object value, int depth, HashSet<object> visited)
+        {
+            if (value == null || depth > 2 || visited == null) return null;
+            if (!value.GetType().IsValueType)
+            {
+                if (visited.Contains(value)) return null;
+                visited.Add(value);
+            }
+
+            GameObject gameObject = value as GameObject;
+            if (gameObject != null)
+                return String.Equals(gameObject.name, "ServerElement(Clone)", StringComparison.Ordinal) ||
+                       String.Equals(gameObject.name, "ServerElement", StringComparison.Ordinal)
+                    ? gameObject.transform
+                    : null;
+
+            Transform transform = value as Transform;
+            if (transform != null)
+                return String.Equals(transform.name, "ServerElement(Clone)", StringComparison.Ordinal) ||
+                       String.Equals(transform.name, "ServerElement", StringComparison.Ordinal)
+                    ? transform
+                    : null;
+
+            Component component = value as Component;
+            if (component != null)
+            {
+                Transform componentTransform = component.transform;
+                if (componentTransform != null &&
+                    (String.Equals(componentTransform.name, "ServerElement(Clone)", StringComparison.Ordinal) ||
+                     String.Equals(componentTransform.name, "ServerElement", StringComparison.Ordinal)))
+                    return componentTransform;
+            }
+
+            Type type = value.GetType();
+            FieldInfo[] fields;
+            try { fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic); }
+            catch { fields = new FieldInfo[0]; }
+
+            int i;
+            for (i = 0; i < fields.Length; i++)
+            {
+                FieldInfo field = fields[i];
+                if (!ShouldInspectServerBrowserUiMember(field.FieldType)) continue;
+                object child = null;
+                try { child = field.GetValue(value); } catch { continue; }
+                Transform found = FindServerBrowserRow(child, depth + 1, visited);
+                if (found != null) return found;
+            }
+
+            PropertyInfo[] properties;
+            try { properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic); }
+            catch { properties = new PropertyInfo[0]; }
+
+            for (i = 0; i < properties.Length; i++)
+            {
+                PropertyInfo property = properties[i];
+                if (!property.CanRead || property.GetIndexParameters().Length != 0 || !ShouldInspectServerBrowserUiMember(property.PropertyType)) continue;
+                object child = null;
+                try { child = property.GetValue(value, null); } catch { continue; }
+                Transform found = FindServerBrowserRow(child, depth + 1, visited);
+                if (found != null) return found;
+            }
+
+            return null;
+        }
+
+        // Intent: Bounds row-owner reflection to Valheim/Unity UI container types so browser discovery never walks arbitrary object graphs.
+        private static bool ShouldInspectServerBrowserUiMember(Type type)
+        {
+            if (type == null || type.IsPrimitive || type.IsEnum || type == typeof(string)) return false;
+            if (typeof(GameObject).IsAssignableFrom(type) || typeof(Transform).IsAssignableFrom(type) || typeof(Component).IsAssignableFrom(type)) return true;
+            string name = type.FullName ?? type.Name ?? "";
+            return name.IndexOf("ServerListElement", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   name.IndexOf("ServerListEntry", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // Intent: Uses Valheim's own ServerList scroll controller as the clipping rectangle, falling back to the JoinPanel only when that private field is unavailable.
+        // Compatibility: the Phase 7 live probe confirmed m_serverListEnsureVisible is attached to the ServerList object in Valheim 1.0.
+        private static RectTransform GetServerBrowserViewport(ServerListGui browser, GameObject panel, Transform listRoot)
+        {
+            if (browser != null)
+            {
+                if (_serverBrowserEnsureVisibleField == null)
+                    _serverBrowserEnsureVisibleField = typeof(ServerListGui).GetField("m_serverListEnsureVisible", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                if (_serverBrowserEnsureVisibleField != null)
+                {
+                    try
+                    {
+                        Component ensureVisible = _serverBrowserEnsureVisibleField.GetValue(browser) as Component;
+                        if (ensureVisible != null)
+                        {
+                            RectTransform rect = ensureVisible.transform as RectTransform;
+                            if (rect != null) return rect;
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            RectTransform panelRect = panel == null ? null : panel.transform as RectTransform;
+            if (panelRect != null) return panelRect;
+            return listRoot == null ? null : listRoot.parent as RectTransform;
+        }
+
+        // Intent: Restricts passive discovery to rows that overlap Valheim's actual server-list viewport so Community browsing cannot fan out rule queries to every listed server.
+        private static bool IsServerBrowserRowVisible(RectTransform row, RectTransform viewport)
+        {
+            if (row == null || !row.gameObject.activeInHierarchy) return false;
+            if (viewport == null) return true;
+
+            Vector3[] rowCorners = new Vector3[4];
+            Vector3[] viewCorners = new Vector3[4];
+            try
+            {
+                row.GetWorldCorners(rowCorners);
+                viewport.GetWorldCorners(viewCorners);
+            }
+            catch
+            {
+                return true;
+            }
+
+            const float tolerance = 4f;
+            return rowCorners[2].x >= viewCorners[0].x - tolerance &&
+                   rowCorners[0].x <= viewCorners[2].x + tolerance &&
+                   rowCorners[2].y >= viewCorners[0].y - tolerance &&
+                   rowCorners[0].y <= viewCorners[2].y + tolerance;
+        }
+
+#if AMS_DEV_TESTS
+        // Intent: Logs only row-to-endpoint rebinding transitions in development builds so pooled-row reuse bugs can be diagnosed without exposing fingerprints or player identity.
+        private static void LogDevelopmentServerBrowserRowBinding(Transform row, string host, int gamePort)
+        {
+            if (row == null || _instance == null) return;
+            int id = row.gameObject.GetInstanceID();
+            string key = (host ?? "").ToLowerInvariant() + ":" + gamePort.ToString(CultureInfo.InvariantCulture);
+            string previous;
+            if (DevServerBrowserRowKeys.TryGetValue(id, out previous) && String.Equals(previous, key, StringComparison.OrdinalIgnoreCase)) return;
+            DevServerBrowserRowKeys[id] = key;
+            _instance.Logger.LogInfo("AutoModSync DEV browser row binding: row=" + id.ToString(CultureInfo.InvariantCulture) + " endpoint=" + key + ".");
+        }
+#endif
+
+        // Intent: Finds a boxed ServerJoinData inside one browser-entry object using a bounded two-level reflection walk, allowing the badge feature to survive harmless private-field renames.
+        private static bool TryExtractServerJoinData(object value, int depth, out ServerJoinData joinData)
+        {
+            joinData = default(ServerJoinData);
+            if (value == null || depth > 2) return false;
+            if (value is ServerJoinData)
+            {
+                joinData = (ServerJoinData)value;
+                return true;
+            }
+
+            Type type = value.GetType();
+            FieldInfo[] fields;
+            try { fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic); }
+            catch { fields = new FieldInfo[0]; }
+
+            int i;
+            for (i = 0; i < fields.Length; i++)
+            {
+                FieldInfo field = fields[i];
+                object child = null;
+                try { child = field.GetValue(value); } catch { continue; }
+                if (child is ServerJoinData)
+                {
+                    joinData = (ServerJoinData)child;
+                    return true;
+                }
+
+                if (depth < 2 && child != null && ShouldInspectServerBrowserMember(field.FieldType) &&
+                    TryExtractServerJoinData(child, depth + 1, out joinData))
+                    return true;
+            }
+
+            PropertyInfo[] properties;
+            try { properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic); }
+            catch { properties = new PropertyInfo[0]; }
+
+            for (i = 0; i < properties.Length; i++)
+            {
+                PropertyInfo property = properties[i];
+                if (!property.CanRead || property.GetIndexParameters().Length != 0) continue;
+                object child = null;
+                try { child = property.GetValue(value, null); } catch { continue; }
+                if (child is ServerJoinData)
+                {
+                    joinData = (ServerJoinData)child;
+                    return true;
+                }
+
+                if (depth < 2 && child != null && ShouldInspectServerBrowserMember(property.PropertyType) &&
+                    TryExtractServerJoinData(child, depth + 1, out joinData))
+                    return true;
+            }
+
+            return false;
+        }
+
+        // Intent: Bounds browser-entry reflection to Valheim server/join container types and avoids traversing arbitrary framework/Unity object graphs.
+        private static bool ShouldInspectServerBrowserMember(Type type)
+        {
+            if (type == null || type.IsPrimitive || type.IsEnum || type == typeof(string)) return false;
+            string name = type.FullName ?? type.Name ?? "";
+            return name.IndexOf("Server", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   name.IndexOf("Join", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // Intent: Returns a cached passive AMS-presence result or starts one bounded Steam rules query against Valheim's dedicated query port (game port + 1).
+        // Privacy: the response is used only for the public automodsync/version/protocol capability marker; no fingerprint or player identity is requested or stored.
+        private static ServerBrowserPresence GetOrStartServerBrowserPresence(string host, int gamePort, DateTime now)
+        {
+            string key = host.ToLowerInvariant() + ":" + gamePort.ToString(CultureInfo.InvariantCulture);
+            ServerBrowserPresence existing;
+            if (ServerBrowserPresenceCache.TryGetValue(key, out existing))
+            {
+                if (!existing.Completed) return existing;
+                if (existing.ExpiresUtc > now) return existing;
+                ServerBrowserPresenceCache.Remove(key);
+            }
+
+            if (CountActiveServerBrowserPresenceQueries() >= 4) return null;
+
+            uint ip;
+            if (!TryResolveSteamQueryAddress(host, out ip))
+            {
+                ServerBrowserPresence failedResolve = new ServerBrowserPresence();
+                failedResolve.Key = key;
+                failedResolve.Completed = true;
+                failedResolve.ExpiresUtc = now.AddSeconds(30.0);
+                ServerBrowserPresenceCache[key] = failedResolve;
+                return failedResolve;
+            }
+
+            ServerBrowserPresence state = new ServerBrowserPresence();
+            state.Key = key;
+            state.StartedUtc = now;
+            state.ExpiresUtc = now.AddSeconds(10.0);
+            ServerBrowserPresenceCache[key] = state;
+
+            try
+            {
+                state.Response = new ISteamMatchmakingRulesResponse(
+                    delegate(string rule, string value)
+                    {
+                        if (String.Equals(rule, "automodsync", StringComparison.OrdinalIgnoreCase))
+                        {
+                            state.Version = (value ?? "").Trim();
+                            state.IsAutoModSync = state.Version.Length > 0;
+                        }
+                        else if (String.Equals(rule, "automodsync_protocol", StringComparison.OrdinalIgnoreCase))
+                        {
+                            state.Protocol = (value ?? "").Trim();
+                        }
+                    },
+                    delegate()
+                    {
+                        state.Completed = true;
+                        state.IsAutoModSync = false;
+                        state.ExpiresUtc = DateTime.UtcNow.AddSeconds(45.0);
+                    },
+                    delegate()
+                    {
+                        state.Completed = true;
+                        state.ExpiresUtc = DateTime.UtcNow.AddSeconds(state.IsAutoModSync ? 300.0 : 60.0);
+                    });
+
+                state.Query = SteamMatchmakingServers.ServerRules(ip, (ushort)(gamePort + 1), state.Response);
+            }
+            catch (Exception ex)
+            {
+                state.Completed = true;
+                state.IsAutoModSync = false;
+                state.ExpiresUtc = now.AddSeconds(45.0);
+                if (_instance != null)
+                    _instance.Logger.LogDebug("AutoModSync server-browser rule query could not start: " + ex.Message);
+            }
+
+            return state;
+        }
+
+        // Intent: Resolves one visible dedicated hostname to Steam's big-endian IPv4 integer format; resolution is cached by the surrounding presence state.
+        private static bool TryResolveSteamQueryAddress(string host, out uint value)
+        {
+            value = 0u;
+            try
+            {
+                IPAddress address;
+                if (!IPAddress.TryParse(host, out address))
+                {
+                    IPAddress[] addresses = Dns.GetHostAddresses(host);
+                    int i;
+                    address = null;
+                    for (i = 0; i < addresses.Length; i++)
+                    {
+                        if (addresses[i].AddressFamily == AddressFamily.InterNetwork)
+                        {
+                            address = addresses[i];
+                            break;
+                        }
+                    }
+                    if (address == null) return false;
+                }
+
+                if (address.AddressFamily != AddressFamily.InterNetwork) return false;
+                byte[] bytes = address.GetAddressBytes();
+                if (bytes.Length != 4) return false;
+                value = ((uint)bytes[0] << 24) | ((uint)bytes[1] << 16) | ((uint)bytes[2] << 8) | bytes[3];
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // Intent: Counts only unfinished Steam rule requests so the browser never has more than four AMS capability probes outstanding at once.
+        private static int CountActiveServerBrowserPresenceQueries()
+        {
+            int count = 0;
+            foreach (ServerBrowserPresence state in ServerBrowserPresenceCache.Values)
+                if (state != null && !state.Completed) count++;
+            return count;
+        }
+
+        // Intent: Times out abandoned rule queries and removes old cached results so browser discovery stays bounded across long menu sessions.
+        private static void PruneServerBrowserPresenceCache(DateTime now)
+        {
+            List<string> remove = new List<string>();
+            foreach (KeyValuePair<string, ServerBrowserPresence> pair in ServerBrowserPresenceCache)
+            {
+                ServerBrowserPresence state = pair.Value;
+                if (state == null)
+                {
+                    remove.Add(pair.Key);
+                    continue;
+                }
+
+                if (!state.Completed && state.StartedUtc != DateTime.MinValue && (now - state.StartedUtc).TotalSeconds >= 10.0)
+                {
+                    try { SteamMatchmakingServers.CancelServerQuery(state.Query); } catch { }
+                    state.Completed = true;
+                    state.IsAutoModSync = false;
+                    state.ExpiresUtc = now.AddSeconds(30.0);
+                }
+                else if (state.Completed && state.ExpiresUtc != DateTime.MinValue && now > state.ExpiresUtc.AddMinutes(5.0))
+                {
+                    remove.Add(pair.Key);
+                }
+            }
+
+            int i;
+            for (i = 0; i < remove.Count; i++) ServerBrowserPresenceCache.Remove(remove[i]);
+        }
+
+        // Intent: Adds or hides one non-interactive AMS logo inside Valheim's existing server-name field, preserving and restoring the name's original text margin when pooled rows are reused.
+        private static void SetServerBrowserBadge(Transform row, bool visible, string version)
+        {
+            if (row == null) return;
+            Transform nameTransform = row.Find("name");
+            if (nameTransform == null) return;
+
+            if (_serverBrowserTextType == null)
+                _serverBrowserTextType = Type.GetType("TMPro.TextMeshProUGUI, Unity.TextMeshPro");
+            if (_serverBrowserImageType == null)
+                _serverBrowserImageType = Type.GetType("UnityEngine.UI.Image, UnityEngine.UI");
+
+            Component textComponent = null;
+            if (_serverBrowserTextType != null)
+            {
+                try { textComponent = nameTransform.GetComponent(_serverBrowserTextType); } catch { }
+            }
+
+            int nameId = nameTransform.gameObject.GetInstanceID();
+            PropertyInfo marginProperty = _serverBrowserTextType == null ? null : _serverBrowserTextType.GetProperty("margin", BindingFlags.Instance | BindingFlags.Public);
+            Vector4 originalMargin = Vector4.zero;
+            bool haveOriginalMargin = false;
+            if (textComponent != null && marginProperty != null)
+            {
+                try
+                {
+                    object current = marginProperty.GetValue(textComponent, null);
+                    if (current is Vector4)
+                    {
+                        Vector4 currentMargin = (Vector4)current;
+                        if (!ServerBrowserOriginalNameMargins.TryGetValue(nameId, out originalMargin))
+                        {
+                            originalMargin = currentMargin;
+                            ServerBrowserOriginalNameMargins[nameId] = originalMargin;
+                        }
+                        haveOriginalMargin = true;
+                    }
+                }
+                catch { }
+            }
+
+            Transform existing = nameTransform.Find("AutoModSyncBadge");
+            GameObject badgeObject = existing == null ? null : existing.gameObject;
+
+            if (visible && badgeObject == null && _serverBrowserImageType != null)
+            {
+                EnsureServerBrowserBadgeSprite();
+                if (_serverBrowserBadgeSprite != null)
+                {
+                    badgeObject = new GameObject("AutoModSyncBadge", typeof(RectTransform));
+                    badgeObject.transform.SetParent(nameTransform, false);
+                    RectTransform badgeRect = badgeObject.GetComponent<RectTransform>();
+                    badgeRect.anchorMin = new Vector2(0f, 0.5f);
+                    badgeRect.anchorMax = new Vector2(0f, 0.5f);
+                    badgeRect.pivot = new Vector2(0f, 0.5f);
+                    badgeRect.anchoredPosition = new Vector2(2f, 0f);
+                    badgeRect.sizeDelta = new Vector2(18f, 18f);
+
+                    Component image = badgeObject.AddComponent(_serverBrowserImageType);
+                    TrySetServerBrowserImageProperty(image, "sprite", _serverBrowserBadgeSprite);
+                    TrySetServerBrowserImageProperty(image, "preserveAspect", true);
+                    TrySetServerBrowserImageProperty(image, "raycastTarget", false);
+                }
+            }
+
+            if (badgeObject != null) badgeObject.SetActive(visible);
+
+            if (textComponent != null && marginProperty != null && haveOriginalMargin)
+            {
+                try
+                {
+                    Vector4 desired = originalMargin;
+                    if (visible) desired.x = Math.Max(desired.x, 23f);
+                    marginProperty.SetValue(textComponent, desired, null);
+                }
+                catch { }
+            }
+        }
+
+        // Intent: Creates one Unity Sprite from the same embedded AMS PNG used by the synchronization overlay so server-browser branding has no extra runtime asset file.
+        private static void EnsureServerBrowserBadgeSprite()
+        {
+            if (_serverBrowserBadgeSprite != null) return;
+            EnsureUiLogoTexture();
+            if (_uiLogoTexture == null) return;
+
+            try
+            {
+                _serverBrowserBadgeSprite = Sprite.Create(
+                    _uiLogoTexture,
+                    new Rect(0f, 0f, _uiLogoTexture.width, _uiLogoTexture.height),
+                    new Vector2(0.5f, 0.5f),
+                    100f);
+                _serverBrowserBadgeSprite.name = "AutoModSyncServerBadge";
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync could not create the server-browser badge sprite: " + ex.Message);
+            }
+        }
+
+        // Intent: Sets one reflected Unity UI Image property without introducing a new compile-time UnityEngine.UI dependency into the legacy compiler path.
+        private static void TrySetServerBrowserImageProperty(Component image, string propertyName, object value)
+        {
+            if (image == null || String.IsNullOrEmpty(propertyName)) return;
+            try
+            {
+                PropertyInfo property = image.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
+                if (property != null && property.CanWrite) property.SetValue(image, value, null);
+            }
+            catch { }
+        }
+
+#if AMS_DEV_TESTS
+        // Intent: Consumes a one-shot development marker only after Valheim's Join Game browser exists, then logs the exact live row hierarchy and ServerListGui fields needed for a minimally invasive AMS badge patch.
+        // Scope: diagnostic only; it neither changes server-list UI nor opens discovery/network requests, and release builds do not contain this path.
+        private static void TryRunDevelopmentServerBrowserProbe()
+        {
+            string marker;
+            try { marker = Path.Combine(GetAutoModSyncRoot(), "phase7-test-server-browser-probe.once"); }
+            catch { return; }
+            if (!File.Exists(marker)) return;
+
+            GameObject panel = GameObject.Find("GUI/StartGui/StartGame/Panel/JoinPanel");
+            if (panel == null || !panel.activeInHierarchy) return;
+
+            ServerListGui browser = panel.GetComponent<ServerListGui>();
+            if (browser == null) return;
+
+            try { File.Delete(marker); } catch { }
+            try
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV SERVER BROWSER PROBE BEGIN");
+
+                Transform listRoot = panel.transform.Find("ServerList/ListRoot");
+                if (listRoot != null)
+                {
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV browser ListRoot children=" + listRoot.childCount.ToString(CultureInfo.InvariantCulture) + ".");
+                    int i;
+                    for (i = 0; i < listRoot.childCount; i++)
+                    {
+                        Transform row = listRoot.GetChild(i);
+                        if (row == null) continue;
+                        LogDevelopmentBrowserTransform(row, "row[" + i.ToString(CultureInfo.InvariantCulture) + "]", 2);
+                    }
+                }
+                else if (_instance != null)
+                {
+                    _instance.Logger.LogWarning("AutoModSync DEV browser probe could not find ServerList/ListRoot.");
+                }
+
+                FieldInfo[] fields = typeof(ServerListGui).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                int f;
+                for (f = 0; f < fields.Length; f++)
+                {
+                    FieldInfo field = fields[f];
+                    object value = null;
+                    try { value = field.GetValue(browser); } catch { }
+                    string summary = DevelopmentBrowserValueSummary(value);
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync DEV browser field " + field.Name + " : " + field.FieldType.FullName + " = " + summary);
+                }
+
+                try
+                {
+                    if (FejdStartup.instance != null)
+                    {
+                        ServerJoinData selected = FejdStartup.instance.GetServerToJoin();
+                        if (selected.IsValid)
+                        {
+                            string selectedSummary = selected.ToString();
+                            try
+                            {
+                                if ((int)selected.m_type == 3)
+                                {
+                                    ServerJoinDataDedicated dedicated = selected.Dedicated;
+                                    selectedSummary += " host=" + dedicated.GetHost() + " port=" + dedicated.m_port.ToString(CultureInfo.InvariantCulture);
+                                }
+                            }
+                            catch { }
+                            if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV browser selected join data: " + selectedSummary);
+                        }
+                    }
+                }
+                catch (Exception selectedEx)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV browser selected-server inspection failed: " + selectedEx.Message);
+                }
+
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV SERVER BROWSER PROBE END");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV server-browser probe failed: " + ex);
+            }
+        }
+
+        // Intent: Logs a bounded portion of one live server-row hierarchy, including component type names, so browser badge placement can target stable existing anchors rather than screen coordinates.
+        private static void LogDevelopmentBrowserTransform(Transform node, string prefix, int remainingDepth)
+        {
+            if (node == null || _instance == null) return;
+            Component[] components;
+            try { components = node.GetComponents<Component>(); }
+            catch { components = new Component[0]; }
+
+            StringBuilder types = new StringBuilder();
+            int i;
+            for (i = 0; i < components.Length; i++)
+            {
+                Component component = components[i];
+                if (component == null) continue;
+                if (types.Length > 0) types.Append(",");
+                types.Append(component.GetType().FullName);
+            }
+            _instance.Logger.LogInfo("AutoModSync DEV browser " + prefix + " name=" + node.name + " components=[" + types.ToString() + "]");
+
+            if (remainingDepth <= 0) return;
+            for (i = 0; i < node.childCount; i++)
+                LogDevelopmentBrowserTransform(node.GetChild(i), prefix + "/" + i.ToString(CultureInfo.InvariantCulture), remainingDepth - 1);
+        }
+
+        // Intent: Produces a bounded reflection summary for browser diagnostics without serializing server/player objects or exposing identity data.
+        private static string DevelopmentBrowserValueSummary(object value)
+        {
+            if (value == null) return "<null>";
+            string text = value as string;
+            if (text != null) return "<string length=" + text.Length.ToString(CultureInfo.InvariantCulture) + ">";
+
+            ICollection collection = value as ICollection;
+            if (collection != null) return "<collection count=" + collection.Count.ToString(CultureInfo.InvariantCulture) + ">";
+
+            UnityEngine.Object unityObject = value as UnityEngine.Object;
+            if (unityObject != null) return "<UnityObject " + unityObject.name + ">";
+
+            Type type = value.GetType();
+            if (type.IsPrimitive || type.IsEnum || type == typeof(decimal))
+                return Convert.ToString(value, CultureInfo.InvariantCulture);
+            return "<" + type.FullName + ">";
+        }
+
+        // Intent: Consumes a one-shot marker that previews every Phase 7 presentation state at the main menu without opening a network connection or changing files.
+        // Scope: development builds only; release binaries do not contain the preview path.
+        private static void TryStartDevelopmentUiPreview()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase7-test-ui-preview.once");
+                if (!File.Exists(marker)) return;
+                try { File.Delete(marker); } catch { }
+                _devUiPreviewActive = true;
+                _devUiPreviewIndex = 0;
+                _devUiPreviewNextUtc = DateTime.MinValue;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST starting Phase 7 branded UI preview.");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV Phase 7 UI preview marker could not be consumed: " + ex.Message);
+            }
+        }
+
+        // Intent: Advances the development-only branded UI preview through deterministic trust/comparison/queue/transfer/verification/restart states.
+        private static void UpdateDevelopmentUiPreview()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (_devUiPreviewNextUtc != DateTime.MinValue && now < _devUiPreviewNextUtc) return;
+
+            if (_devUiPreviewIndex >= 10)
+            {
+                _devUiPreviewActive = false;
+                _devUiPreviewNextUtc = DateTime.MinValue;
+                HideSyncOverlay();
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 7 branded UI preview completed.");
+                return;
+            }
+
+            ShowDevelopmentUiPreviewStage(_devUiPreviewIndex, now);
+            _devUiPreviewIndex++;
+            _devUiPreviewNextUtc = now.AddSeconds(3.5);
+        }
+
+        // Intent: Seeds one deterministic presentation-only Phase 7 snapshot so the maintainer can visually inspect the renderer without mutating synchronization policy.
+        private static void ShowDevelopmentUiPreviewStage(int stage, DateTime nowUtc)
+        {
+            const string fingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+            const long mib = 1024L * 1024L;
+
+            _uiState.Reset();
+            _uiState.SetServerFingerprint(fingerprint);
+            _uiState.SetComparison(63, 3, 60, 0, 313L * mib + (410L * 1024L));
+            _overlayVisible = true;
+            _overlayHideUtc = DateTime.MinValue;
+
+            if (stage == 0)
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Trust, "Trust this server?",
+                    "Preview: first contact exposes only the short security code while the full identity remains internal.");
+            }
+            else if (stage == 1)
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Comparing, "Comparing server mods...",
+                    "Preview: signed manifest verified. Comparing required files with this client.");
+            }
+            else if (stage == 2)
+            {
+                _uiState.SetQueue(3, 4, 4);
+                ShowSyncOverlay(AutoModSyncUiPhase.Queued, "Queued for synchronization...",
+                    "Preview: the server is limiting simultaneous fresh-client transfers. Your place is reserved.");
+            }
+            else if (stage == 3)
+            {
+                _uiState.BeginTransfer(313L * mib + (410L * 1024L), 96L * mib, nowUtc.AddSeconds(-6.0));
+                _uiState.UpdateTransfer(188L * mib, nowUtc);
+                ShowSyncOverlay(AutoModSyncUiPhase.Downloading, "Resuming required mods...",
+                    "Preview: verified package data was retained from an interrupted transfer.");
+            }
+            else if (stage == 4)
+            {
+                _uiState.BeginVerification(60);
+                int i;
+                for (i = 0; i < 37; i++) _uiState.MarkVerified();
+                ShowSyncOverlay(AutoModSyncUiPhase.Verifying, "Verifying synchronized files...",
+                    "Preview: checking extracted file sizes and SHA-256 hashes before anything can be applied.");
+            }
+            else if (stage == 5)
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Applying, "Preparing synchronized changes...",
+                    "Preview: verified files are ready. Preparing a crash-safe apply transaction.");
+            }
+            else if (stage == 6)
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Restarting, "Sync complete. Restarting Valheim...",
+                    "Preview: verified changes will be applied out-of-process before Valheim relaunches.");
+            }
+            else if (stage == 7)
+            {
+                _uiState.SetComparison(0, 0, 0, 0, 0L);
+                ShowSyncOverlay(AutoModSyncUiPhase.Reconnecting, "Reconnecting to synchronized server...",
+                    "Preview: Valheim restarted successfully and AutoModSync is restoring the saved join.");
+            }
+            else if (stage == 8)
+            {
+                _uiState.SetComparison(63, 63, 0, 0, 0L);
+                ShowSyncOverlay(AutoModSyncUiPhase.Complete, "Already synchronized.",
+                    "Preview: required mods match this trusted server. Joining normally...");
+            }
+            else
+            {
+                ShowSyncOverlay(AutoModSyncUiPhase.Failed, "AutoModSync blocked this join.",
+                    "Preview: a protected synchronization failure is shown briefly without releasing the held vanilla handshake.");
+            }
+        }
+#endif
+
+#if AMS_DEV_TESTS
+        // Intent: Forces exactly one verified server identity through first-contact trust UI without altering the existing trust store.
+        // Scope: used only to validate that explicit user rejection remains fail-closed on an otherwise already-pinned development server.
+        private static bool ConsumeDevelopmentForceTrustPromptMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase1-test-force-trust-prompt.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED forcing first-contact trust prompt for this verified session.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV trust-prompt marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
+        // Intent: Forces one recognized connection to lose its transport while the native first-contact trust dialog is still pending.
+        // Scope: development-only live validation of stale-dialog dismissal and generation-bound result rejection.
+        private static bool ConsumeDevelopmentDisconnectDuringTrustMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase3-test-disconnect-during-trust.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV trust-disconnect marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
+        // Intent: Forces one apply/restart preparation failure after a bundle has been verified/extracted but before durable pending state exists.
+        // Safety: the test leaves live BepInEx files untouched and exercises the production fail-closed abort path.
+        private static bool ConsumeDevelopmentApplyPreparationFailureMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase1-test-fail-apply-prep.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED forcing apply/restart preparation failure before pending state.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV apply-preparation marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
+        // Intent: Stops one development cache-validation connection after the production bundle header has been validated.
+        // Scope: avoids transferring the full prewarmed payload when the live test only needs to prove cache acquisition/retention.
+        private static bool ConsumeDevelopmentPhase3StopAfterBundleHeaderMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase3-test-stop-after-bundle-header.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV Phase 3 stop-after-header marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
+        // Intent: Forces one trusted-manifest comparison to request the same nearly-bare-client file set used by dedicated-server startup prewarm.
+        // Scope: existing live files are only treated as missing for request construction; the installed AutoModSync client DLL is excluded so the request key matches the startup baseline exactly.
+        private static bool ConsumeDevelopmentNearlyBareClientMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "phase3-test-emulate-nearly-bare.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST emulating a nearly-bare client for Phase 3 startup-prewarm validation; all signed files except the installed client DLL will be requested.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV nearly-bare marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
+        // Intent: Consumes a one-shot marker that makes the current connection behave like a pre-resume AMS4/2.5 client.
+        // Scope: it keeps roots1 and the existing AMS4 protocol, omits bundle-resume1/bundle-scheduler1 from Hello, and ignores those server advertisements.
+        private static bool ConsumeDevelopmentLegacyClientMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "resume-test-emulate-legacy-client.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST armed: emulate pre-resume AMS4 client for this connection.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV legacy-client marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+#endif
+
+#if AMS_DEV_TESTS
+        // Intent: One-shot single-client interruption emulator for Phase 4. The marker contains the completed chunk count at which the active socket is forcibly closed.
+        // Safety: development builds consume the marker before transfer; release builds do not compile this code.
+        private static int ReadDevelopmentResumeDisconnectMarker(int totalChunks)
+        {
+            try
+            {
+                string marker = Path.Combine(GetAutoModSyncRoot(), "resume-test-disconnect-after-chunks.once");
+                if (!File.Exists(marker)) return 0;
+                string raw = "";
+                try { raw = File.ReadAllText(marker).Trim(); }
+                finally { try { File.Delete(marker); } catch { } }
+
+                int count;
+                if (!Int32.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out count) || count < 1 || count >= totalChunks)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV resume interruption marker must be between 1 and one less than the bundle chunk count.");
+                    return 0;
+                }
+
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV resume interruption armed after chunk " + count.ToString(CultureInfo.InvariantCulture) + ".");
+                return count;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV resume interruption marker could not be read: " + ex.Message);
+                return 0;
+            }
+        }
+
+        // Intent: Forces a real transport interruption after a deterministic complete-chunk boundary so one client can validate reconnect/resume without a second tester.
+        private static bool DevelopmentDisconnectForResumeIfArmed(ZRpc rpc)
+        {
+            if (_devDisconnectAfterChunk <= 0 || _bundleNextChunk < _devDisconnectAfterChunk) return false;
+            int boundary = _devDisconnectAfterChunk;
+            _devDisconnectAfterChunk = 0;
+            try { if (_bundleStream != null) _bundleStream.Flush(); } catch { }
+            if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV TEST closing the transfer socket after chunk " + boundary.ToString(CultureInfo.InvariantCulture) + " to emulate an interrupted download.");
+            try
+            {
+                if (rpc != null && rpc.GetSocket() != null) rpc.GetSocket().Close();
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV TEST could not close the transfer socket: " + ex.Message);
+            }
+            return true;
+        }
+#endif
 
         // Intent: Converts hash/fingerprint bytes into deterministic lowercase hexadecimal.
         private static string ToHex(byte[] bytes)
@@ -1939,6 +4209,29 @@ namespace ValheimAutoModSync
         [DllImport("user32.dll")]
         // Intent: Native Windows API import used to hide an already-open BepInEx console window.
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        // Intent: Native trust prompt shown from a background thread so Unity networking continues while the user decides.
+        private static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        // Intent: Locates the transient native trust prompt as a fallback when its owning native thread has not been recorded yet.
+        private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+
+        // Intent: Callback signature used by EnumThreadWindows while targeting the exact native thread that owns a stale trust prompt.
+        private delegate bool EnumThreadWindowsCallback(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        // Intent: Enumerates top-level windows owned by the exact background thread that created the current native trust prompt.
+        private static extern bool EnumThreadWindows(uint dwThreadId, EnumThreadWindowsCallback lpfn, IntPtr lParam);
+
+        [DllImport("kernel32.dll")]
+        // Intent: Captures the native Windows thread id of the background trust-prompt thread for precise stale-dialog dismissal.
+        private static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        // Intent: Posts a non-blocking native dialog command to a stale trust prompt from the Unity thread.
+        private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
         // Intent: Hides the current BepInEx console and updates BepInEx.cfg so future launches keep the console disabled.
         // This affects presentation only; AutoModSync logging continues through BepInEx log files.
@@ -2045,58 +4338,18 @@ namespace ValheimAutoModSync
             File.Delete(tempPath);
         }
 
-        // Intent: Recovers already-verified staged plugin/patcher/config replacements if the external apply helper was interrupted on the prior restart.
-        // Safety: every destination is remapped from its signed kind to a fixed BepInEx root; any failed replacement remains pending for the helper to retry after this recovery process exits.
-        private static bool ApplyPreviouslyStagedFilesIfPossible()
+        // Intent: Detects unfinished helper-owned apply state without touching any live synchronized destination from the running game.
+        // Transaction safety: pending.txt means verified staging still needs an apply; apply-transaction means a helper journal may require rollback or committed cleanup.
+        private static bool HasPendingApplyRecovery()
         {
             string amsRoot = GetAutoModSyncRoot();
             string pending = Path.Combine(amsRoot, "pending.txt");
-            if (!File.Exists(pending)) return false;
-
-            bool appliedAny = false;
-            List<string> remaining = new List<string>();
-            try
-            {
-                string[] paths = File.ReadAllLines(pending);
-                int i;
-                for (i = 0; i < paths.Length; i++)
-                {
-                    string item = paths[i] ?? "";
-                    if (item.Length < 3 || item[1] != ':') continue;
-                    char kind = item[0];
-                    string rel = NormalizeRelative(item.Substring(2));
-                    if (rel.Length == 0 || !IsSupportedManifestKind(kind)) continue;
-
-                    try
-                    {
-                        string src = Path.Combine(amsRoot, "staging", ManifestKindDirectory(kind), rel.Replace('/', Path.DirectorySeparatorChar)) + ".amsnew";
-                        if (!File.Exists(src)) continue;
-                        string dst = SafeTargetPath(kind, rel);
-                        string parent = Path.GetDirectoryName(dst);
-                        if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
-                        File.Copy(src, dst, true);
-                        File.Delete(src);
-                        appliedAny = true;
-                    }
-                    catch
-                    {
-                        remaining.Add(item);
-                    }
-                }
-
-                if (remaining.Count == 0) File.Delete(pending);
-                else File.WriteAllLines(pending, remaining.ToArray(), new UTF8Encoding(false));
-            }
-            catch
-            {
-                return true;
-            }
-
-            return appliedAny || remaining.Count > 0;
+            string transaction = Path.Combine(amsRoot, "apply-transaction");
+            return File.Exists(pending) || Directory.Exists(transaction);
         }
 
-        // Intent: Performs one extra clean restart after startup recovered staged files so newly installed plugins/patchers/config are loaded from process start.
-        // Workflow: reuses the normal apply helper only as the relaunch owner, preserves reconnect.txt, and lets Update quit this recovery process after the helper is waiting on its PID.
+        // Intent: Immediately hands interrupted transaction recovery back to the external helper, then exits this mixed/uncertain process without joining any server.
+        // Workflow: the helper waits for this PID to exit, resolves PREPARED as rollback/retry or COMMITTED as cleanup, preserves reconnect state when safe, and owns the next relaunch.
         private static void ScheduleRecoveredStagingRestart()
         {
             string amsRoot = GetAutoModSyncRoot();
@@ -2113,7 +4366,7 @@ namespace ValheimAutoModSync
 
             _restartRequested = true;
             _quitAfterUtc = DateTime.UtcNow.AddMilliseconds(900.0);
-            if (_instance != null) _instance.Logger.LogWarning("AutoModSync recovered staged files from an interrupted apply and will restart once more so every synchronized root loads from process start.");
+            if (_instance != null) _instance.Logger.LogWarning("AutoModSync detected unfinished transactional apply state; handing recovery to the external helper and restarting before any server join.");
         }
 
     }

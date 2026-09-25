@@ -4,7 +4,7 @@
   <img src="Thunderstore/icon.png" alt="Valheim AutoModSync icon" width="160">
 </p>
 
-**Current public release: 2.5.0**
+**Current public release: 2.6.0**
 
 AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's synchronized BepInEx files, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
 
@@ -15,12 +15,15 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 ## Features
 
 - Automatic server-to-client BepInEx plugin synchronization, including recursive plugin subfolders.
-- 2.5.0 support for required `BepInEx\patchers` files and explicitly allowlisted `BepInEx\config` files.
+- Synchronizes required `BepInEx\patchers` files and explicitly allowlisted `BepInEx\config` files in addition to normal plugins.
 - Explicit server-only/client-required wildcard classification; config synchronization remains opt-in.
 - Uses Valheim's existing game connection; no separate AutoModSync sync port is required.
 - Transfers only missing or changed synchronized files.
+- Content-addressed bundle caching, startup prewarming, bounded concurrent scheduling, and exact-artifact interrupted-download resume for large public-server payloads.
 - Signed server manifest and SHA-256 file verification.
-- In-game synchronization/download progress.
+- Durable transactional apply/recovery plus fingerprint-scoped ownership-safe stale cleanup.
+- Branded in-game synchronization UI with queue state, current/average throughput, ETA, verification, restart/reconnect, and resume-retained-byte telemetry.
+- Passive Steam server-browser AMS presence/badge with server/client opt-outs.
 - Automatic restart after synchronized files are staged.
 - Automatic reconnect to the server that triggered synchronization.
 - Existing extra client plugins are not automatically deleted.
@@ -29,13 +32,13 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 
 ## Installation
 
-Close Valheim and any running Valheim Dedicated Server first. Download and extract `ValheimAutoModSync-2.5.0.zip`, then run:
+Close Valheim and any running Valheim Dedicated Server first. Download and extract `ValheimAutoModSync-2.6.0.zip`, then run:
 
 ```text
 ValheimAutoModSyncInstaller.exe
 ```
 
-The installer is now the primary standalone install path. It uses only files bundled in the release, verifies the pinned BepInEx archive before server-side installation, and does not download BepInEx or mods at runtime.
+The installer is the primary standalone install path. It uses the AMS-branded Client / Dedicated Server / Host & Play workflow, detects complete installs for Repair / Update, offers ownership-safe uninstall, uses only files bundled in the release, verifies the pinned BepInEx archive before server-side installation, and does not download BepInEx or mods at runtime.
 
 `install.bat` remains included as a readable/manual fallback.
 
@@ -49,13 +52,13 @@ Launch Valheim or the dedicated server normally after installation.
 
 ## Distribution channels
 
-AutoModSync uses one shared version across every channel. The current software version is **2.5.0** whether it is installed from the standalone GitHub release, Nexus Mods, CurseForge, or Thunderstore/r2modman.
+AutoModSync uses one shared version across every channel. The current software version is **2.6.0** whether it is installed from the standalone GitHub release, Nexus Mods, CurseForge, or Thunderstore/r2modman.
 
 Store-specific archive names identify packaging targets only; they do not create separate AutoModSync versions or separate GitHub releases. See `DISTRIBUTION.md` for the build/publishing workflows and required store credentials.
 
 ## What happens when a client connects
 
-1. **Trust** — on first contact, the client is shown the server signing fingerprint and chooses whether to trust it.
+1. **Trust** — on first contact, the client is shown a short security code derived from the server signing identity and chooses whether to trust it. The complete fingerprint remains internal for cryptographic pinning.
 2. **Compare** — local synchronized BepInEx file hashes are compared with the server's signed manifest.
 3. **Download** — only missing or changed synchronized files are transferred.
 4. **Verify** — received data and extracted files are verified before installation.
@@ -64,9 +67,9 @@ Store-specific archive names identify packaging targets only; they do not create
 
 ## Security model
 
-BepInEx plugins and preloader patchers can execute code. Only trust AutoModSync server fingerprints belonging to server operators you recognize and trust.
+BepInEx plugins and preloader patchers can execute code. Only approve first-contact AutoModSync trust for servers you recognize and intend to join.
 
-Each AutoModSync server has its own signing identity. The server signs its synchronization manifest, and files are checked against that manifest before being applied. A server's private signing key must not be distributed to clients.
+Each AutoModSync server has its own signing identity. First contact shows a short human-comparison security code; the full 256-bit fingerprint remains internal for cryptographic pinning and equality checks. The server signs its synchronization manifest, and files are checked against that manifest before being applied. A server's private signing key must not be distributed to clients.
 
 The generated server private signing identity (`BepInEx/config/ValheimAutoModSync.private.xml`) is intentionally excluded from synchronization and should never be distributed or committed.
 
@@ -87,7 +90,8 @@ build-store-packages.ps1        Builds every distribution package from one compi
 build-all-releases.bat          Convenience entry point for all distribution formats
 DISTRIBUTION.md                 Distribution/version/publishing policy and required store credentials
 install.bat                     Readable/manual fallback installer included in standalone releases
-SIGNING.md                      Current unsigned-release policy and optional future Authenticode signing paths
+SIGNING.md                      Authenticode status, GitHub/Sigstore provenance, and optional future trusted signing paths
+VERIFYING-RELEASES.md           One-line provenance and SHA-256 verification instructions for downloaded packages
 SOURCE-WALKTHROUGH.md           End-to-end source, trust-boundary, handshake, and restart flow map
 verify-source-docs.ps1          Verifies source-level Intent documentation
 verify-version.ps1              Prevents package/plugin/assembly version drift
@@ -103,7 +107,7 @@ Local builds can run `build-release.bat` on a Windows PC with Valheim installed.
 
 The root `VERSION` file is the authoritative distribution version. `verify-version.ps1` checks the client/server plugin versions and all AutoModSync assembly/installer versions before a release build. `build-all-releases.bat` builds the standalone, Nexus, CurseForge, and Thunderstore packages from the same compiled binaries.
 
-The repository also contains `.github/workflows/release-build.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, and uploads the resulting ZIP as a GitHub Actions artifact. Public releases are currently distributed unsigned. The workflow retains optional SignPath submission steps for a future eligible Foundation application or another SignPath subscription, but those steps remain inactive unless signing credentials are configured.
+The repository also contains `.github/workflows/release-build.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, generates SHA-256 checksums, and creates GitHub/Sigstore build-provenance attestations for official GitHub-built artifacts. The Windows PE files remain Authenticode-unsigned unless trusted signing credentials are configured. Optional SignPath submission remains dormant unless such credentials become available.
 
 The release builder pins **BepInExPack Valheim 5.4.2350** and verifies this SHA-256 before using it:
 
@@ -115,11 +119,11 @@ Valheim and Unity assemblies required for compilation are taken from the user's 
 
 ## Code signing policy
 
-AutoModSync public Windows releases are currently **unsigned**.
+AutoModSync public Windows PE files are currently **not Authenticode-signed by a publicly trusted publisher certificate**.
 
 The project applied to the SignPath Foundation program in September 2026. The application was declined at this stage because the project did not yet have enough external public-trust and adoption signals such as community usage, stars/forks/contributors, independent references, or sustained public engagement. The decision was not a technical rejection of AutoModSync. The project may reapply after broader adoption or use another trusted Authenticode signing path in the future.
 
-Release builds continue to run from `main` through GitHub Actions on GitHub-hosted runners. The resulting unsigned ZIP is uploaded as a GitHub Actions artifact so the public build origin remains independently inspectable even without an Authenticode publisher certificate.
+Release builds continue to run through GitHub Actions on GitHub-hosted runners. Starting with the 2.6 release pipeline, official GitHub-built package bytes receive SHA-256 manifests and GitHub/Sigstore artifact attestations that bind the digest to this repository, workflow, commit, and build event. This provenance is separate from Authenticode and does not suppress Windows SmartScreen.
 
 The workflow retains optional SignPath support but does not submit signing requests unless valid SignPath credentials are explicitly configured.
 
@@ -133,19 +137,21 @@ Project roles:
 
 Privacy policy: This program will not transfer information to other networked systems unless specifically requested by the user or by the person installing or operating it. AutoModSync communicates with the Valheim server the user chooses to connect to for synchronization and uses the game's existing network connection.
 
-See `SIGNING.md` for the current unsigned-release policy and the retained optional signing infrastructure.
+See `SIGNING.md` for the Authenticode/provenance distinction and `VERIFYING-RELEASES.md` for verification commands.
 
 ## Release integrity
 
-The current public standalone release is `ValheimAutoModSync-2.5.0.zip`.
+The current public standalone release is `ValheimAutoModSync-2.6.0.zip`.
 
-SHA-256:
+GitHub Releases is the authoritative source for the standalone installer artifact. The release includes `SHA256SUMS.txt` rather than hard-coding a digest in source documentation. Nexus Mods, CurseForge, and Thunderstore use store-specific packaging variants of the same AutoModSync version. Those variants are not separate GitHub releases. See `DISTRIBUTION.md`.
 
-```text
-106f7cad4b4f4e75ffc7227d28332101ea01fd70631ee15d94d153fce0ed67ad
+For official GitHub-built packages, use:
+
+```powershell
+gh attestation verify .\ValheimAutoModSync-2.6.0.zip -R GordonFreesay/ValheimAutoModSync
 ```
 
-GitHub Releases is the authoritative source for the standalone installer artifact. Nexus Mods, CurseForge, and Thunderstore use store-specific packaging variants of the same AutoModSync version. Those variants are not separate GitHub releases. See `DISTRIBUTION.md`. Repository source files are integrity-tracked by Git rather than by a generated repository-wide checksum file.
+The canonical checksum manifest is also attested. See `VERIFYING-RELEASES.md` for exact standalone/store commands, SHA-256 verification, and the distinction between GitHub/Sigstore provenance and Windows Authenticode.
 
 ## License
 
@@ -154,6 +160,23 @@ AutoModSync-authored source is released under the **MIT License**. See `LICENSE`
 The client runtime includes third-party BepInEx/Unity Doorstop components as normal visible files. Those components remain under their respective upstream licenses; see `THIRD-PARTY-NOTICES.md` and `THIRD_PARTY_LICENSES/`.
 
 ## Release notes (2.4.5+)
+
+### 2.6.0
+
+- Adds content-addressed bundle caching, startup prewarming, and single-flight package construction so identical fresh-client requests reuse one immutable verified ZIP instead of recompressing the same payload per client.
+- Adds a bounded FIFO transfer scheduler with configurable active/queued limits, round-robin aggregate bandwidth grants, Steam reliable-queue backpressure, persistent per-transfer streams, and queue-position UI.
+- Adds exact-artifact interrupted-download resume. Clients retain one bounded verified prefix; the server independently hashes that exact prefix before accepting a nonzero resume point.
+- Adds server-owned `BepInEx/AutoModSync/ClientPayload/plugins/**` for client-required files the dedicated server itself must not load.
+- Adds fingerprint-scoped ownership ledgers and ownership-safe stale removal. AutoModSync removes only exact bytes it previously installed for the same trusted server; locally modified, unrelated, and cross-server files are preserved.
+- Replaces destructive apply with a durable PREPARED/COMMITTED transaction and verified backup/rollback recovery for interrupted updates.
+- Adds explicit client/server resource ceilings, strict fixed-root path validation, Windows alias/device-name defenses, reparse-point rejection, bounded ZIP extraction, and recognized-AMS fail-closed handling while preserving fail-open behavior for non-AMS servers.
+- Adds the branded in-game synchronization panel with comparison counts, queue state, current/average throughput, ETA, retained resume bytes, verification/apply/restart/reconnect state, and bounded failure presentation.
+- Replaces normal full-fingerprint display with a short first-contact security code while retaining the complete fingerprint internally for signature trust/pinning.
+- Adds passive Steam server-browser AMS presence and a client-side AMS badge using exact Valheim row ownership so pooled/reused rows do not leak badges to unrelated servers. Both advertisement and display can be disabled.
+- Polishes the standalone installer with AMS branding, live complete/partial install detection, Repair / Update, and role-aware uninstall. Shared BepInEx and unrelated files are preserved; server identity/config are preserved unless explicitly selected for removal.
+- Adds first-party PII scanning to development/release builds and CI.
+- Adds SHA-256 release manifests and GitHub/Sigstore artifact attestations for official GitHub-built standalone and store packages. This provenance is verifiable with GitHub CLI and is separate from Authenticode/SmartScreen trust.
+- Keeps AMS4 / protocol 4 and retains compatibility fallbacks for older AMS4 peers.
 
 ### 2.5.0
 

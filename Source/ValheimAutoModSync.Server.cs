@@ -3,6 +3,7 @@ using BepInEx.Configuration;
 using HarmonyLib;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -10,14 +11,15 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Steamworks;
 
 [assembly: AssemblyTitle("Valheim AutoModSync Server")]
 [assembly: AssemblyDescription("Server-side signed manifest and synchronized BepInEx plugin transfer component.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyVersion("2.6.0.0")]
+[assembly: AssemblyFileVersion("2.6.0.0")]
 
 namespace ValheimAutoModSync
 {
@@ -26,7 +28,7 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.server";
         public const string PluginName = "Valheim AutoModSync Server";
-        public const string PluginVersion = "2.5.0";
+        public const string PluginVersion = "2.6.0";
         public const int ProtocolVersion = 4;
 
         internal const string RpcHello = "AMS4_Hello";
@@ -41,6 +43,7 @@ namespace ValheimAutoModSync
         internal const string RpcBundleChunk = "AMS4_BundleChunk";
         internal const string RpcBundleBatch = "AMS4_BundleBatch";
         internal const string RpcBundleEnd = "AMS4_BundleEnd";
+        internal const string RpcQueueStatus = "AMS4_QueueStatus";
         internal const string RpcError = "AMS4_Error";
 
         private static ServerPlugin _instance;
@@ -54,9 +57,20 @@ namespace ValheimAutoModSync
         private static ConfigEntry<int> _chunkBytes;
         private static ConfigEntry<int> _maxFileMiB;
         private static ConfigEntry<int> _maxBundleMiB;
+        private static ConfigEntry<int> _maxExpandedBundleMiB;
+        private static ConfigEntry<int> _bundleCacheSeconds;
+        private static ConfigEntry<int> _bundleCacheMaxMiB;
+        private static ConfigEntry<bool> _prebuildFreshClientBundle;
         private static ConfigEntry<int> _transferSendRateMax;
         private static ConfigEntry<int> _transferSendRateMin;
         private static ConfigEntry<int> _transferSendBufferBytes;
+        private static ConfigEntry<int> _maxActiveBundleTransfers;
+        private static ConfigEntry<int> _maxQueuedBundleTransfers;
+        private static ConfigEntry<int> _aggregateSendRateMax;
+        private static ConfigEntry<int> _schedulerGrantBytes;
+        private static ConfigEntry<int> _schedulerMaxSteamQueueMs;
+        private static ConfigEntry<int> _transferIdleTimeoutSeconds;
+        private static ConfigEntry<bool> _advertiseAutoModSync;
 
         private static readonly object ManifestLock = new object();
         private static readonly HashSet<ZRpc> Registered = new HashSet<ZRpc>();
@@ -69,25 +83,111 @@ namespace ValheimAutoModSync
         private static Dictionary<string, FileRecord> _files = new Dictionary<string, FileRecord>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<ZRpc, string> ClientVersions = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, string> ClientCapabilities = new Dictionary<ZRpc, string>();
+        private static readonly HashSet<ZRpc> ManifestSentPeers = new HashSet<ZRpc>();
         private static readonly Dictionary<ZRpc, BundleTransfer> BundleTransfers = new Dictionary<ZRpc, BundleTransfer>();
+        private static readonly Dictionary<ZRpc, PendingBundleRequest> PendingBundleRequests = new Dictionary<ZRpc, PendingBundleRequest>();
+        private static readonly Dictionary<ZRpc, long> SchedulerPeerIds = new Dictionary<ZRpc, long>();
+        private static readonly Dictionary<long, ZRpc> SchedulerPeers = new Dictionary<long, ZRpc>();
+        private static long _nextSchedulerPeerId;
+        private static AutoModSyncTransferScheduler _transferScheduler;
+        private static bool _serverBrowserPresencePublished;
+        private static DateTime _nextServerBrowserPresenceAttemptUtc = DateTime.MinValue;
+#if AMS_DEV_TESTS
+        private static readonly HashSet<ZRpc> DevelopmentLegacyServerPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> DevelopmentSuppressedAmsPeers = new HashSet<ZRpc>();
+        private static readonly Dictionary<ZRpc, string> DevelopmentFailClosedModes = new Dictionary<ZRpc, string>();
+        private static int DevelopmentBundleCacheSecondsOverride = -1;
+        private static bool DevelopmentDisableStartupPrewarm;
+        private static int DevelopmentDelayNextBundleBuildMs;
+        private static long DevelopmentBundleCacheMaxBytesOverride = -1L;
+#endif
+        private static DateTime _nextTransferCleanupUtc = DateTime.MinValue;
+
+        // Phase 3 bundle cache: published ZIPs are immutable and reference-counted while clients read them.
+        // BundleBuilds serializes only identical cache keys so simultaneous fresh clients share one build instead of recompressing the same bytes.
+        private static readonly object BundleCacheLock = new object();
+        private static readonly Dictionary<string, BundleArtifact> BundleArtifactCache = new Dictionary<string, BundleArtifact>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, BundleBuildState> BundleBuilds = new Dictionary<string, BundleBuildState>(StringComparer.Ordinal);
+        private static readonly object PreparedBundleResultsLock = new object();
+        private static readonly Queue<PreparedBundleResult> PreparedBundleResults = new Queue<PreparedBundleResult>();
         
         private sealed class FileRecord
         {
             public string RelativePath;
             public string FullPath;
+            public string SourceLabel;
             public long Size;
             public string Sha256;
             public char Kind;
         }
 
+        private sealed class BundleArtifact
+        {
+            public string CacheKey;
+            public string ZipPath;
+            public long Size;
+            public string Sha256;
+            public int FileCount;
+            public long ExpandedBytes;
+            public DateTime CreatedUtc;
+            public DateTime LastUsedUtc;
+            public int ActiveTransfers;
+            public bool StartupPinned;
+            public double ZipBuildSeconds;
+            public double ZipHashSeconds;
+        }
+
+        private sealed class BundleBuildState
+        {
+            public bool Complete;
+            public Exception Error;
+        }
+
+        private sealed class PendingBundleRequest
+        {
+            public long SchedulerPeerId;
+            public List<FileRecord> Records;
+            public long ExpandedBytes;
+            public bool ResumeNegotiated;
+            public AutoModSyncResumeCandidate ResumeCandidate;
+            public DateTime QueuedUtc;
+            public bool PreparationStarted;
+        }
+
+        private sealed class PreparedBundleResult
+        {
+            public ZRpc Rpc;
+            public PendingBundleRequest Request;
+            public BundleArtifact Artifact;
+            public string CacheStatus;
+            public double WaitSeconds;
+            public double PrepareSeconds;
+            public Exception Error;
+        }
+
+        private sealed class ScheduledChunkRequest
+        {
+            public bool BinaryBatch;
+            public int Cursor;
+            public int RemainingChunks;
+        }
+
         private sealed class BundleTransfer
         {
+            public long SchedulerPeerId;
+            public BundleArtifact Artifact;
             public string ZipPath;
             public long Size;
             public string Sha256;
             public int ChunkBytes;
             public int TotalChunks;
             public int FileCount;
+            public FileStream ReadStream;
+            public ScheduledChunkRequest PendingRequest;
+            public DateTime LastActivityUtc;
+            public DateTime StartedUtc;
+            public long RawPayloadBytesSent;
+            public DateTime LastBackpressureLogUtc;
             public uint SteamConnectionHandle;
             public int OriginalSendRateMax;
             public int OriginalSendRateMin;
@@ -119,16 +219,39 @@ namespace ValheimAutoModSync
             _chunkBytes = Config.Bind("Transfer", "ChunkBytes", 24576, "Raw file bytes per RPC chunk before Base64 encoding. 24576 is conservative for Valheim's RPC transport.");
             _maxFileMiB = Config.Bind("Transfer", "MaxFileMiB", 128, "Refuse to transfer a single file larger than this many MiB.");
             _maxBundleMiB = Config.Bind("Transfer", "MaxBundleMiB", 2048, "Refuse to build a compressed change package larger than this many MiB.");
-            _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 33554432, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
-            _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 8388608, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
-            _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 16777216, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
+            _maxExpandedBundleMiB = Config.Bind("Transfer", "MaxExpandedBundleMiB", 4096, "Refuse a requested change set whose signed source files exceed this many MiB before compression.");
+            _bundleCacheSeconds = Config.Bind("Transfer", "BundleCacheSeconds", 600, "How long a completed immutable bundle remains reusable after its last client use. 0 keeps artifacts only while actively referenced.");
+            _bundleCacheMaxMiB = Config.Bind("Transfer", "BundleCacheMaxMiB", 4096, "Maximum total on-disk size of retained completed bundle artifacts. Active transfers are never deleted; idle least-recently-used artifacts are evicted to meet this budget.");
+            _prebuildFreshClientBundle = Config.Bind("Transfer", "PrebuildFreshClientBundle", true, "On a dedicated-server process, build the likely fresh-client ZIP bundle during startup so the first normal join can reuse it. The signed manifest is always warmed during dedicated-server startup so AMS discovery stays responsive even when ZIP prebuild is disabled. The prebuilt baseline contains every signed distributable file except ValheimAutoModSync.Client.dll, which a connecting AutoModSync client already needs in order to request synchronization.");
+            _transferSendRateMax = Config.Bind("Transfer", "SendRateMaxBytesPerSec", 67108864, "Temporary per-connection Steam send-rate ceiling used only while sending an AutoModSync bundle.");
+            _transferSendRateMin = Config.Bind("Transfer", "SendRateMinBytesPerSec", 16777216, "Temporary per-connection Steam send-rate floor used only during an AutoModSync bundle. Steam's estimator can remain pinned to this floor for the entire short preflight transfer, so this value materially affects observed sync speed. Set 0 to leave the minimum unchanged.");
+            _transferSendBufferBytes = Config.Bind("Transfer", "SendBufferBytes", 33554432, "Temporary per-connection Steam reliable send-buffer target used only during an AutoModSync bundle. Set 0 to leave the buffer unchanged.");
+            _maxActiveBundleTransfers = Config.Bind("Transfer", "MaxActiveBundleTransfers", 4, "Maximum number of clients that may own an active AutoModSync bundle-transfer slot. Runtime clamps this to 1..32. Additional clients stay connected and queue FIFO until a slot opens.");
+            _maxQueuedBundleTransfers = Config.Bind("Transfer", "MaxQueuedBundleTransfers", 32, "Maximum additional validated bundle requests retained while all active transfer slots are busy. Requests beyond this bounded queue fail closed for that join.");
+            _aggregateSendRateMax = Config.Bind("Transfer", "AggregateSendRateMaxBytesPerSec", 67108864, "Server-wide raw AutoModSync bundle payload budget across all active clients. Round-robin grants share this token bucket; Steam framing overhead is not counted.");
+            _schedulerGrantBytes = Config.Bind("Transfer", "SchedulerGrantBytes", 1048576, "Maximum raw bundle bytes one active client may receive per scheduler grant before round-robin advances. Values are bounded at runtime; individual Steam/RPC messages remain <=384 KiB.");
+            _schedulerMaxSteamQueueMs = Config.Bind("Transfer", "SchedulerMaxSteamQueueMs", 200, "Pause new AutoModSync grants to a Steam connection when its pending+unacked reliable bytes exceed approximately this many milliseconds at Steam's current reported send rate. 0 disables this backpressure check.");
+            _transferIdleTimeoutSeconds = Config.Bind("Transfer", "TransferIdleTimeoutSeconds", 60, "Release an active bundle-transfer slot if a connected client stops requesting bundle data for this many seconds. This prevents abandoned live peers from pinning the public-server queue.");
+            _advertiseAutoModSync = Config.Bind("Discovery", "AdvertiseAutoModSync", true, "Advertise a small public Steam server-rule marker so AutoModSync clients can identify this server in Valheim's browser. The marker contains only the AutoModSync version/protocol; it never publishes the signing fingerprint or player/server PII.");
+
+#if AMS_DEV_TESTS
+            ConsumeDevelopmentPhase3ZeroTtlMarker();
+            ConsumeDevelopmentPhase3DisablePrewarmMarker();
+#endif
+
+            _transferScheduler = new AutoModSyncTransferScheduler(
+                Math.Min(32, Math.Max(1, _maxActiveBundleTransfers.Value)),
+                Math.Max(0, Math.Min(1024, _maxQueuedBundleTransfers.Value)),
+                Math.Max(1024L * 1024L, (long)_aggregateSendRateMax.Value),
+                Math.Max(65536, Math.Min(4 * 1024 * 1024, _schedulerGrantBytes.Value)),
+                0.25);
 
             try
             {
                 LoadIdentity();
                 CleanupOldBundleCache();
                 Logger.LogInfo("AutoModSync uses Valheim's existing ZRpc connection; no additional listening port is opened.");
-                Logger.LogInfo("AutoModSync server fingerprint: " + _publicFingerprint);
+                Logger.LogInfo("AutoModSync server identity verification code: " + AutoModSyncIdentityDisplay.VerificationCode(_publicFingerprint) + ".");
                 new Harmony(PluginGuid).PatchAll(typeof(NetworkPatches));
                 Logger.LogInfo("AutoModSync early connection hooks installed.");
                 try { UpgradeDevelopmentTransferDefaults(); }
@@ -137,6 +260,790 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 Logger.LogError("AutoModSync startup failed: " + ex);
+            }
+        }
+
+        // Intent: Drives the public-server transfer scheduler every frame, while dead/idle-peer cleanup runs at a lower fixed cadence.
+        // Resume safety: clients own partial bytes; releasing a dead/idle server slot restores transport settings and drops only this process's immutable-artifact reference.
+        private void Update()
+        {
+            DateTime now = DateTime.UtcNow;
+            TryPublishServerBrowserPresence(now);
+            DrainPreparedBundleResults();
+            ServiceTransferScheduler(now);
+
+            if (_nextTransferCleanupUtc != DateTime.MinValue && now < _nextTransferCleanupUtc) return;
+            _nextTransferCleanupUtc = now.AddSeconds(1.0);
+            CleanupDisconnectedOrIdleTransfers(now);
+        }
+
+        // Intent: Publishes a passive Steam server-rule marker that AMS-aware clients can query while rendering Valheim's server browser.
+        // Privacy: only product version/protocol are advertised; the signing fingerprint, private key, endpoint metadata, and player identity are never added by this feature.
+        // Compatibility: publication is best-effort and retried because BepInEx can start before SteamGameServer is fully logged on; failure never affects synchronization or server availability.
+        private static void TryPublishServerBrowserPresence(DateTime now)
+        {
+            if (_serverBrowserPresencePublished) return;
+            if (_advertiseAutoModSync == null || !_advertiseAutoModSync.Value) return;
+            if (_nextServerBrowserPresenceAttemptUtc != DateTime.MinValue && now < _nextServerBrowserPresenceAttemptUtc) return;
+            _nextServerBrowserPresenceAttemptUtc = now.AddSeconds(5.0);
+
+            try
+            {
+                if (!SteamGameServer.BLoggedOn()) return;
+                SteamGameServer.SetKeyValue("automodsync", PluginVersion);
+                SteamGameServer.SetKeyValue("automodsync_protocol", ProtocolVersion.ToString(CultureInfo.InvariantCulture));
+                _serverBrowserPresencePublished = true;
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync published Steam server-browser presence marker: version=" +
+                        PluginVersion + ", protocol=" + ProtocolVersion.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null)
+                    _instance.Logger.LogDebug("AutoModSync Steam browser presence is not ready yet; retrying: " + ex.Message);
+            }
+        }
+
+        // Intent: Runs one bounded admission step and one round-robin grant per active peer each Unity frame.
+        // Aggregate control: raw payload reservations come from the server-wide token bucket; Steam queue backpressure can refund a grant before any bytes are framed.
+        private static void ServiceTransferScheduler(DateTime now)
+        {
+            if (_transferScheduler == null) return;
+
+            bool queueChanged = false;
+            long admittedId;
+            while (_transferScheduler.TryActivate(out admittedId))
+            {
+                ZRpc admittedRpc;
+                PendingBundleRequest request;
+                if (!SchedulerPeers.TryGetValue(admittedId, out admittedRpc)
+                    || admittedRpc == null
+                    || !PendingBundleRequests.TryGetValue(admittedRpc, out request))
+                {
+                    _transferScheduler.Remove(admittedId);
+                    queueChanged = true;
+                    continue;
+                }
+
+                bool connected = false;
+                try { connected = admittedRpc.IsConnected(); } catch { connected = false; }
+                if (!connected)
+                {
+                    PendingBundleRequests.Remove(admittedRpc);
+                    _transferScheduler.Remove(admittedId);
+                    RemoveSchedulerPeerIdentity(admittedRpc);
+                    queueChanged = true;
+                    continue;
+                }
+
+                StartScheduledBundleTransfer(admittedRpc, request);
+                queueChanged = true;
+                // At most one potentially expensive bundle acquisition/build begins per frame.
+                break;
+            }
+
+            int grantsThisFrame = _transferScheduler.ActiveCount;
+            int g;
+            for (g = 0; g < grantsThisFrame; g++)
+            {
+                long peerId;
+                int reservedBytes;
+                if (!_transferScheduler.TryTakeGrant(now.Ticks, out peerId, out reservedBytes)) break;
+
+                ZRpc rpc;
+                BundleTransfer transfer;
+                if (!SchedulerPeers.TryGetValue(peerId, out rpc)
+                    || rpc == null
+                    || !BundleTransfers.TryGetValue(rpc, out transfer)
+                    || transfer == null
+                    || transfer.PendingRequest == null)
+                {
+                    _transferScheduler.RefundGrant(peerId, reservedBytes);
+                    continue;
+                }
+
+                double queueMs;
+                if (IsSteamTransferBackpressured(transfer, out queueMs))
+                {
+                    _transferScheduler.RefundGrant(peerId, reservedBytes);
+                    if (_instance != null && (transfer.LastBackpressureLogUtc == DateTime.MinValue || (now - transfer.LastBackpressureLogUtc).TotalSeconds >= 5.0))
+                    {
+                        transfer.LastBackpressureLogUtc = now;
+                        _instance.Logger.LogInfo("AutoModSync scheduler backpressure: Steam reliable queue ~= " +
+                            queueMs.ToString("0", CultureInfo.InvariantCulture) + " ms; deferring peer grant.");
+                    }
+                    continue;
+                }
+
+                int actualBytes = 0;
+                try
+                {
+                    actualBytes = SendScheduledChunkGrant(rpc, transfer, reservedBytes);
+                }
+                catch (Exception ex)
+                {
+                    _transferScheduler.RefundGrant(peerId, reservedBytes);
+                    if (_instance != null) _instance.Logger.LogWarning("Scheduled bundle grant failed: " + ex);
+                    CleanupBundle(rpc);
+                    SendError(rpc, "Server failed while transferring the scheduled AutoModSync package: " + ex.Message);
+                    queueChanged = true;
+                    continue;
+                }
+
+                if (actualBytes < reservedBytes)
+                    _transferScheduler.RefundGrant(peerId, reservedBytes - Math.Max(0, actualBytes));
+
+                transfer.RawPayloadBytesSent += Math.Max(0, actualBytes);
+                transfer.LastActivityUtc = now;
+                LogTransferSteamTelemetry(transfer);
+            }
+
+            if (queueChanged) SendAllQueueStatuses();
+        }
+
+        // Intent: Reclaims disconnected queued/active peers and active slots whose connected clients stopped requesting data.
+        private static void CleanupDisconnectedOrIdleTransfers(DateTime now)
+        {
+            HashSet<ZRpc> candidates = new HashSet<ZRpc>();
+            foreach (ZRpc rpc in PendingBundleRequests.Keys) candidates.Add(rpc);
+            foreach (ZRpc rpc in BundleTransfers.Keys) candidates.Add(rpc);
+#if AMS_DEV_TESTS
+            foreach (ZRpc rpc in DevelopmentSuppressedAmsPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in DevelopmentFailClosedModes.Keys) candidates.Add(rpc);
+#endif
+
+            List<ZRpc> remove = new List<ZRpc>();
+            List<ZRpc> idle = new List<ZRpc>();
+            foreach (ZRpc rpc in candidates)
+            {
+                bool connected = false;
+                try { connected = rpc != null && rpc.IsConnected(); } catch { connected = false; }
+                if (!connected)
+                {
+                    remove.Add(rpc);
+                    continue;
+                }
+
+                BundleTransfer transfer;
+                if (BundleTransfers.TryGetValue(rpc, out transfer) && transfer != null)
+                {
+                    int timeout = _transferIdleTimeoutSeconds == null ? 60 : Math.Max(10, _transferIdleTimeoutSeconds.Value);
+                    if (AutoModSyncTransferScheduler.ShouldExpireActivePeer(
+                        transfer.LastActivityUtc.Ticks,
+                        now.Ticks,
+                        timeout,
+                        transfer.PendingRequest != null))
+                        idle.Add(rpc);
+                }
+            }
+
+            int i;
+            for (i = 0; i < idle.Count; i++)
+            {
+                ZRpc rpc = idle[i];
+                SendError(rpc, "AutoModSync transfer slot expired because no bundle data was requested before the idle timeout.");
+                CancelScheduledTransferState(rpc);
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync released an idle bundle transfer slot.");
+            }
+
+            for (i = 0; i < remove.Count; i++)
+            {
+                ZRpc rpc = remove[i];
+                CancelScheduledTransferState(rpc);
+                Registered.Remove(rpc);
+                ClientVersions.Remove(rpc);
+                ClientCapabilities.Remove(rpc);
+                ManifestSentPeers.Remove(rpc);
+#if AMS_DEV_TESTS
+                DevelopmentLegacyServerPeers.Remove(rpc);
+                DevelopmentSuppressedAmsPeers.Remove(rpc);
+                DevelopmentFailClosedModes.Remove(rpc);
+#endif
+                RemoveSchedulerPeerIdentity(rpc);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync released an interrupted/queued transfer after peer disconnect.");
+            }
+
+            if (idle.Count > 0 || remove.Count > 0) SendAllQueueStatuses();
+        }
+
+        // Intent: Assigns one process-local opaque scheduler id to a live ZRpc without using Steam ids or other player identity as a scheduling key.
+        private static long GetOrCreateSchedulerPeerId(ZRpc rpc)
+        {
+            if (rpc == null) throw new ArgumentNullException("rpc");
+            long id;
+            if (SchedulerPeerIds.TryGetValue(rpc, out id)) return id;
+
+            do { id = ++_nextSchedulerPeerId; } while (id <= 0L || SchedulerPeers.ContainsKey(id));
+            SchedulerPeerIds[rpc] = id;
+            SchedulerPeers[id] = rpc;
+            return id;
+        }
+
+        // Intent: Removes the process-local scheduler-id mapping after a peer disconnects; normal transfer completion may reuse the id on a later request over the same connection.
+        private static void RemoveSchedulerPeerIdentity(ZRpc rpc)
+        {
+            if (rpc == null) return;
+            long id;
+            if (!SchedulerPeerIds.TryGetValue(rpc, out id)) return;
+            SchedulerPeerIds.Remove(rpc);
+            SchedulerPeers.Remove(id);
+        }
+
+        // Intent: Cancels queued or active scheduler state for one peer while leaving signed client partial data entirely client-owned.
+        private static void CancelScheduledTransferState(ZRpc rpc)
+        {
+            if (rpc == null) return;
+            PendingBundleRequests.Remove(rpc);
+            CleanupBundle(rpc);
+
+            long id;
+            if (SchedulerPeerIds.TryGetValue(rpc, out id) && _transferScheduler != null)
+                _transferScheduler.Remove(id);
+        }
+
+        // Intent: Sends queue position only to peers that explicitly negotiated the Phase 5 scheduler-status capability.
+        private static void SendQueueStatus(ZRpc rpc)
+        {
+            if (rpc == null || _transferScheduler == null || !ClientSupportsCapability(rpc, "bundle-scheduler1")) return;
+            long id;
+            if (!SchedulerPeerIds.TryGetValue(rpc, out id)) return;
+            int position = _transferScheduler.QueuePosition(id);
+            if (position <= 0 || _transferScheduler.ActiveCount < _transferScheduler.MaxActive) return;
+
+            try
+            {
+                ZPackage status = new ZPackage();
+                status.Write(position);
+                status.Write(_transferScheduler.ActiveCount);
+                status.Write(_transferScheduler.MaxActive);
+                rpc.Invoke(RpcQueueStatus, new object[] { status });
+            }
+            catch { }
+        }
+
+        // Intent: Refreshes all waiting clients after admission/completion/disconnect changes FIFO positions.
+        private static void SendAllQueueStatuses()
+        {
+            if (_transferScheduler == null || PendingBundleRequests.Count == 0) return;
+            List<ZRpc> peers = new List<ZRpc>(PendingBundleRequests.Keys);
+            int i;
+            for (i = 0; i < peers.Count; i++) SendQueueStatus(peers[i]);
+        }
+
+        // Intent: Estimates Steam reliable queue time from current pending+unacked bytes and reported send rate, pausing new application writes above the configured envelope.
+        private static bool IsSteamTransferBackpressured(BundleTransfer transfer, out double queueMs)
+        {
+            queueMs = 0.0;
+            if (transfer == null || transfer.SteamConnectionHandle == 0u) return false;
+            int maxQueueMs = _schedulerMaxSteamQueueMs == null ? 200 : Math.Max(0, _schedulerMaxSteamQueueMs.Value);
+            if (maxQueueMs <= 0) return false;
+
+            try
+            {
+                HSteamNetConnection connection = new HSteamNetConnection(transfer.SteamConnectionHandle);
+                SteamNetConnectionRealTimeStatus_t status = default(SteamNetConnectionRealTimeStatus_t);
+                SteamNetConnectionRealTimeLaneStatus_t lane = default(SteamNetConnectionRealTimeLaneStatus_t);
+                EResult result = SteamGameServerNetworkingSockets.GetConnectionRealTimeStatus(connection, ref status, 0, ref lane);
+                if (result != EResult.k_EResultOK || status.m_nSendRateBytesPerSecond <= 0) return false;
+
+                long queued = Math.Max(0L, (long)status.m_cbPendingReliable) + Math.Max(0L, (long)status.m_cbSentUnackedReliable);
+                queueMs = queued * 1000.0 / status.m_nSendRateBytesPerSecond;
+                return queueMs >= maxQueueMs;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // Intent: Warms the signed manifest on every dedicated server before joins, then optionally moves the dominant fresh-client ZIP cost into startup as well.
+        // Scope: manifest warming keeps the short client discovery window responsive; ZIP prewarm covers the exact signed set a current AutoModSync-only client is expected to need except the client plugin already required to initiate AMS.
+        // Compatibility: arbitrary partial/delta clients still use the normal content-keyed lazy cache; Host & Play remains lazy so opening Valheim does not incur dedicated-server startup hashing.
+        private void Start()
+        {
+            if (_enabled == null || !_enabled.Value) return;
+            if (!IsDedicatedServerProcess()) return;
+#if AMS_DEV_TESTS
+            if (RunDevelopmentPhase3CacheSafetySelfTestIfArmed()) return;
+#endif
+
+            try
+            {
+                Stopwatch manifestWatch = Stopwatch.StartNew();
+                EnsureManifest(true);
+                manifestWatch.Stop();
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync dedicated-server startup manifest ready: files=" +
+                        _files.Count.ToString(CultureInfo.InvariantCulture) +
+                        ", hashAndSign=" + manifestWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s.");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("AutoModSync dedicated-server startup manifest warmup failed; the server will retry on demand: " + ex);
+            }
+
+#if AMS_DEV_TESTS
+            if (DevelopmentDisableStartupPrewarm)
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST disabled startup bundle prewarm for this server process.");
+                return;
+            }
+#endif
+            if (_prebuildFreshClientBundle == null || !_prebuildFreshClientBundle.Value) return;
+
+            try
+            {
+                PrewarmFreshClientBundle();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("AutoModSync fresh-client bundle prewarm failed; normal on-demand bundle construction remains available: " + ex);
+            }
+        }
+
+        // Intent: Builds and retains the likely nearly-bare-client artifact before the dedicated server begins accepting normal gameplay joins.
+        // Safety: uses the same signed manifest records, fixed-root validation, per-file/source re-hash, expanded/compressed limits, immutable publication, TTL, and disk-budget eviction as a live request.
+        private static void PrewarmFreshClientBundle()
+        {
+            Stopwatch watch = Stopwatch.StartNew();
+            EnsureManifest(false);
+
+            List<string> keys = new List<string>(_files.Keys);
+            keys.Sort(StringComparer.OrdinalIgnoreCase);
+            List<FileRecord> records = new List<FileRecord>();
+            long expandedBytes = 0L;
+            long maxExpandedBytes = (long)Math.Max(1, _maxExpandedBundleMiB.Value) * 1024L * 1024L;
+
+            int i;
+            for (i = 0; i < keys.Count; i++)
+            {
+                string key = keys[i];
+                if (String.Equals(key, "P:ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)) continue;
+
+                FileRecord record = ResolveBundleRecord(key);
+                expandedBytes = AutoModSyncServerResourceSafety.AddExpandedSource(
+                    record.Size,
+                    expandedBytes,
+                    maxExpandedBytes,
+                    "Fresh-client prewarm exceeds the configured expanded transfer limit.");
+                records.Add(record);
+            }
+
+            if (records.Count == 0)
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync fresh-client bundle prewarm skipped because the signed distributable set is empty.");
+                return;
+            }
+
+            long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
+            string cacheStatus;
+            double waitSeconds;
+            BundleArtifact artifact = null;
+            try
+            {
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync prewarming fresh-client bundle during dedicated-server startup for " +
+                        records.Count.ToString(CultureInfo.InvariantCulture) + " signed file(s), " + FormatBytes(expandedBytes) + " expanded.");
+
+                artifact = AcquireBundleArtifact(records, expandedBytes, maxBundleBytes, out cacheStatus, out waitSeconds);
+                lock (BundleCacheLock)
+                {
+                    // Keep the startup baseline available for the first real client even if the server sits idle longer than BundleCacheSeconds.
+                    // Disk-budget eviction can still remove it if the administrator configured a cache too small to retain the artifact.
+                    artifact.StartupPinned = true;
+                }
+                watch.Stop();
+
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync fresh-client bundle prewarm ready: cache=" + cacheStatus +
+                        ", key=" + ShortCacheKey(artifact.CacheKey) +
+                        ", compressed=" + FormatBytes(artifact.Size) +
+                        ", startupPrewarm=" + watch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s.");
+            }
+            finally
+            {
+                // Prewarm itself is not a transfer. Release its temporary reference so TTL/LRU policy owns the retained artifact.
+                if (artifact != null) ReleaseBundleArtifact(artifact);
+            }
+        }
+
+        // Intent: Returns the cache TTL used by production cache policy, with an optional development-only process override for deterministic live validation.
+        private static int GetEffectiveBundleCacheSeconds()
+        {
+#if AMS_DEV_TESTS
+            if (DevelopmentBundleCacheSecondsOverride >= 0) return DevelopmentBundleCacheSecondsOverride;
+#endif
+            return _bundleCacheSeconds == null ? 600 : Math.Max(0, _bundleCacheSeconds.Value);
+        }
+
+        // Intent: Returns the retained bundle-cache budget used by production eviction policy, with an optional development-only byte-granularity override for deterministic validation.
+        private static long GetEffectiveBundleCacheMaxBytes()
+        {
+#if AMS_DEV_TESTS
+            if (DevelopmentBundleCacheMaxBytesOverride >= 0L) return DevelopmentBundleCacheMaxBytesOverride;
+#endif
+            return (long)(_bundleCacheMaxMiB == null ? 4096 : Math.Max(0, _bundleCacheMaxMiB.Value)) * 1024L * 1024L;
+        }
+
+#if AMS_DEV_TESTS
+        // Intent: Forces BundleCacheSeconds=0 for one development server process without rewriting the administrator's persistent config file.
+        // Scope: the one-shot marker is consumed during server startup before prewarm/cache activity begins.
+        private static void ConsumeDevelopmentPhase3ZeroTtlMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-cache-seconds-zero.once");
+                if (!File.Exists(marker)) return;
+                try { File.Delete(marker); } catch { }
+                DevelopmentBundleCacheSecondsOverride = 0;
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST forcing effective BundleCacheSeconds=0 for this server process.");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV Phase 3 cache-TTL marker could not be consumed: " + ex.Message);
+            }
+        }
+#endif
+
+#if AMS_DEV_TESTS
+        // Intent: Disables startup prewarm for one development server process so ordinary on-demand MISS/HIT cache behavior can be validated without a startup artifact masking the first request.
+        private static void ConsumeDevelopmentPhase3DisablePrewarmMarker()
+        {
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-disable-prewarm.once");
+                if (!File.Exists(marker)) return;
+                try { File.Delete(marker); } catch { }
+                DevelopmentDisableStartupPrewarm = true;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST armed startup-prewarm disable for this server process.");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV Phase 3 disable-prewarm marker could not be consumed: " + ex.Message);
+            }
+        }
+
+        // Intent: Gives two real development clients a deterministic window to overlap one production bundle build without creating any synthetic follower.
+        // Scope: the one-shot marker affects only the next development bundle build; production builds contain no artificial delay.
+        private static void ArmDevelopmentTwoClientBuildDelayIfRequested()
+        {
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-two-client-delay.once");
+                if (!File.Exists(marker)) return;
+                try { File.Delete(marker); } catch { }
+                Interlocked.Exchange(ref DevelopmentDelayNextBundleBuildMs, 10000);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST armed a 10000 ms background bundle-build delay for real two-client overlap validation.");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV real two-client delay marker could not be consumed: " + ex.Message);
+            }
+        }
+
+        // Intent: Adds one concurrent follower acquisition against the exact production cache path.
+        // Concurrency: the main request claims the build slot, its build is briefly delayed, and the follower must observe WAIT then acquire the identical published artifact as WAIT-HIT.
+        private static void StartDevelopmentSingleFlightFollowerIfArmed(PendingBundleRequest request, long maxBundleBytes)
+        {
+            if (request == null) return;
+            string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-singleflight-follower.once");
+            if (!File.Exists(marker)) return;
+            try { File.Delete(marker); } catch { }
+
+            Interlocked.Exchange(ref DevelopmentDelayNextBundleBuildMs, 1500);
+            List<FileRecord> records = new List<FileRecord>(request.Records);
+            long expandedBytes = request.ExpandedBytes;
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                BundleArtifact followerArtifact = null;
+                try
+                {
+                    Thread.Sleep(150);
+                    string followerStatus;
+                    double followerWaitSeconds;
+                    followerArtifact = AcquireBundleArtifact(records, expandedBytes, maxBundleBytes, out followerStatus, out followerWaitSeconds);
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync DEV TEST single-flight follower result: cache=" + followerStatus +
+                            ", key=" + ShortCacheKey(followerArtifact.CacheKey) +
+                            ", sha256=" + followerArtifact.Sha256 +
+                            ", compressedBytes=" + followerArtifact.Size.ToString(CultureInfo.InvariantCulture) +
+                            ", wait=" + followerWaitSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s.");
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV TEST single-flight follower failed: " + ex.Message);
+                }
+                finally
+                {
+                    if (followerArtifact != null) ReleaseBundleArtifact(followerArtifact);
+                }
+            });
+        }
+
+        // Intent: Runs the remaining Phase 3 cache-safety/eviction checks against the real production cache methods at dedicated-server startup.
+        // Scope: development builds only; fixtures live outside synchronized roots, startup prewarm is skipped for this process, and all test cache/source files are removed before normal server use.
+        private static bool RunDevelopmentPhase3CacheSafetySelfTestIfArmed()
+        {
+            string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-test-cache-safety.once");
+            if (!File.Exists(marker)) return false;
+            try { File.Delete(marker); } catch { }
+
+            DevelopmentDisableStartupPrewarm = true;
+            string sourceRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase3-cache-safety-source");
+            string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
+            long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
+
+            try
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 cache-safety suite BEGIN.");
+                if (Directory.Exists(sourceRoot)) Directory.Delete(sourceRoot, true);
+                Directory.CreateDirectory(sourceRoot);
+                Directory.CreateDirectory(cacheRoot);
+                DevelopmentResetBundleCacheForTest();
+
+                // Restart/orphan follow-up: after Awake has removed prior-process orphan files, the first valid acquisition must build a fresh artifact.
+                string restartSource = Path.Combine(sourceRoot, "restart.bin");
+                WriteDevelopmentPseudoRandomFile(restartSource, 65536, 1101);
+                List<FileRecord> restartRecords = new List<FileRecord>();
+                restartRecords.Add(CreateDevelopmentCacheRecord(restartSource, "__AMS_PHASE3_SAFETY__\\restart.bin"));
+                string restartStatus;
+                double restartWait;
+                BundleArtifact restartArtifact = AcquireBundleArtifact(restartRecords, new FileInfo(restartSource).Length, maxBundleBytes, out restartStatus, out restartWait);
+                DevelopmentAssert(String.Equals(restartStatus, "MISS", StringComparison.Ordinal), "post-restart acquisition did not rebuild from cache=MISS");
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS restart rebuild used cache=MISS after startup orphan cleanup.");
+                ReleaseBundleArtifact(restartArtifact);
+                DevelopmentResetBundleCacheForTest();
+
+                // Re-hash failure: sign/hash A, mutate to same-size B, then build with the stale signed record.
+                string rehashSource = Path.Combine(sourceRoot, "rehash.bin");
+                WriteDevelopmentPseudoRandomFile(rehashSource, 131072, 2101);
+                List<FileRecord> staleRecords = new List<FileRecord>();
+                staleRecords.Add(CreateDevelopmentCacheRecord(rehashSource, "__AMS_PHASE3_SAFETY__\\rehash.bin"));
+                string staleKey = BuildBundleCacheKey(staleRecords);
+                string staleFinalPath = Path.Combine(cacheRoot, "bundle-cache-" + staleKey + ".zip");
+                WriteDevelopmentPseudoRandomFile(rehashSource, 131072, 2102);
+
+                bool rehashRejected = false;
+                try
+                {
+                    string ignoredStatus;
+                    double ignoredWait;
+                    BundleArtifact unexpected = AcquireBundleArtifact(staleRecords, 131072L, maxBundleBytes, out ignoredStatus, out ignoredWait);
+                    if (unexpected != null) ReleaseBundleArtifact(unexpected);
+                }
+                catch (Exception ex)
+                {
+                    rehashRejected = ex.Message.IndexOf("changed after the signed manifest", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+
+                DevelopmentAssert(rehashRejected, "same-size post-manifest source mutation was not rejected by source re-hash");
+                DevelopmentAssert(!DevelopmentCacheContains(staleKey), "failed re-hash build published a cache entry");
+                DevelopmentAssert(!File.Exists(staleFinalPath), "failed re-hash build published an immutable ZIP");
+                string[] failedTemps = Directory.GetFiles(cacheRoot, "bundle-build-*.tmp", SearchOption.TopDirectoryOnly);
+                DevelopmentAssert(failedTemps.Length == 0, "failed ZIP construction left a private bundle-build temp file");
+                if (_instance != null)
+                {
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS same-size post-manifest mutation aborted during source re-hash before publication.");
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS failed ZIP construction left no cache entry, published ZIP, or bundle-build temp file.");
+                }
+                DevelopmentResetBundleCacheForTest();
+
+                // TTL=0: identical active users share one immutable artifact; the file survives the first release and disappears only after the last release.
+                DevelopmentBundleCacheSecondsOverride = 0;
+                string zeroSource = Path.Combine(sourceRoot, "zero-ttl.bin");
+                WriteDevelopmentPseudoRandomFile(zeroSource, 131072, 3101);
+                List<FileRecord> zeroRecords = new List<FileRecord>();
+                zeroRecords.Add(CreateDevelopmentCacheRecord(zeroSource, "__AMS_PHASE3_SAFETY__\\zero-ttl.bin"));
+                string zeroStatus1;
+                string zeroStatus2;
+                double zeroWait1;
+                double zeroWait2;
+                BundleArtifact zeroA = AcquireBundleArtifact(zeroRecords, 131072L, maxBundleBytes, out zeroStatus1, out zeroWait1);
+                BundleArtifact zeroB = AcquireBundleArtifact(zeroRecords, 131072L, maxBundleBytes, out zeroStatus2, out zeroWait2);
+                DevelopmentAssert(String.Equals(zeroStatus1, "MISS", StringComparison.Ordinal), "zero-TTL first acquisition was not MISS");
+                DevelopmentAssert(String.Equals(zeroStatus2, "HIT", StringComparison.Ordinal), "zero-TTL overlapping acquisition did not share the active artifact");
+                DevelopmentAssert(Object.ReferenceEquals(zeroA, zeroB), "zero-TTL active acquisitions did not reference the same immutable artifact");
+                string zeroKey = zeroA.CacheKey;
+                string zeroPath = zeroA.ZipPath;
+                ReleaseBundleArtifact(zeroB);
+                DevelopmentAssert(DevelopmentCacheContains(zeroKey) && File.Exists(zeroPath), "zero-TTL artifact was removed while one active reference remained");
+                ReleaseBundleArtifact(zeroA);
+                DevelopmentAssert(!DevelopmentCacheContains(zeroKey) && !File.Exists(zeroPath), "zero-TTL artifact remained after the last active reference released");
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS BundleCacheSeconds=0 shared the active artifact and removed it only after the last release.");
+                DevelopmentResetBundleCacheForTest();
+
+                // TTL expiry: an old idle artifact expires, while an equally old active artifact remains present.
+                DevelopmentBundleCacheSecondsOverride = 1;
+                string ttlIdleSource = Path.Combine(sourceRoot, "ttl-idle.bin");
+                string ttlActiveSource = Path.Combine(sourceRoot, "ttl-active.bin");
+                WriteDevelopmentPseudoRandomFile(ttlIdleSource, 65536, 4101);
+                WriteDevelopmentPseudoRandomFile(ttlActiveSource, 65536, 4102);
+                List<FileRecord> ttlIdleRecords = new List<FileRecord>();
+                List<FileRecord> ttlActiveRecords = new List<FileRecord>();
+                ttlIdleRecords.Add(CreateDevelopmentCacheRecord(ttlIdleSource, "__AMS_PHASE3_SAFETY__\\ttl-idle.bin"));
+                ttlActiveRecords.Add(CreateDevelopmentCacheRecord(ttlActiveSource, "__AMS_PHASE3_SAFETY__\\ttl-active.bin"));
+                string ttlStatus;
+                double ttlWait;
+                BundleArtifact ttlIdle = AcquireBundleArtifact(ttlIdleRecords, 65536L, maxBundleBytes, out ttlStatus, out ttlWait);
+                BundleArtifact ttlActive = AcquireBundleArtifact(ttlActiveRecords, 65536L, maxBundleBytes, out ttlStatus, out ttlWait);
+                string ttlIdleKey = ttlIdle.CacheKey;
+                string ttlActiveKey = ttlActive.CacheKey;
+                string ttlIdlePath = ttlIdle.ZipPath;
+                string ttlActivePath = ttlActive.ZipPath;
+                ReleaseBundleArtifact(ttlIdle);
+                lock (BundleCacheLock)
+                {
+                    DateTime old = DateTime.UtcNow.AddSeconds(-5.0);
+                    ttlIdle.LastUsedUtc = old;
+                    ttlActive.LastUsedUtc = old;
+                    PruneBundleCacheLocked(DateTime.UtcNow);
+                }
+                DevelopmentAssert(!DevelopmentCacheContains(ttlIdleKey) && !File.Exists(ttlIdlePath), "TTL expiry did not remove the old idle artifact");
+                DevelopmentAssert(DevelopmentCacheContains(ttlActiveKey) && File.Exists(ttlActivePath), "TTL expiry removed an active artifact");
+                ReleaseBundleArtifact(ttlActive);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS TTL expiry removed only the idle artifact and preserved the active artifact.");
+                DevelopmentResetBundleCacheForTest();
+
+                // LRU budget: among idle artifacts, evict the oldest one first while an active artifact is never selected for deletion.
+                DevelopmentBundleCacheSecondsOverride = 600;
+                DevelopmentBundleCacheMaxBytesOverride = -1L;
+                string lruOldSource = Path.Combine(sourceRoot, "lru-old.bin");
+                string lruNewSource = Path.Combine(sourceRoot, "lru-new.bin");
+                string lruActiveSource = Path.Combine(sourceRoot, "lru-active.bin");
+                WriteDevelopmentPseudoRandomFile(lruOldSource, 131072, 5101);
+                WriteDevelopmentPseudoRandomFile(lruNewSource, 131072, 5102);
+                WriteDevelopmentPseudoRandomFile(lruActiveSource, 131072, 5103);
+                List<FileRecord> lruOldRecords = new List<FileRecord>();
+                List<FileRecord> lruNewRecords = new List<FileRecord>();
+                List<FileRecord> lruActiveRecords = new List<FileRecord>();
+                lruOldRecords.Add(CreateDevelopmentCacheRecord(lruOldSource, "__AMS_PHASE3_SAFETY__\\lru-old.bin"));
+                lruNewRecords.Add(CreateDevelopmentCacheRecord(lruNewSource, "__AMS_PHASE3_SAFETY__\\lru-new.bin"));
+                lruActiveRecords.Add(CreateDevelopmentCacheRecord(lruActiveSource, "__AMS_PHASE3_SAFETY__\\lru-active.bin"));
+                string lruStatus;
+                double lruWait;
+                BundleArtifact lruOld = AcquireBundleArtifact(lruOldRecords, 131072L, maxBundleBytes, out lruStatus, out lruWait);
+                BundleArtifact lruNew = AcquireBundleArtifact(lruNewRecords, 131072L, maxBundleBytes, out lruStatus, out lruWait);
+                BundleArtifact lruActive = AcquireBundleArtifact(lruActiveRecords, 131072L, maxBundleBytes, out lruStatus, out lruWait);
+                string lruOldKey = lruOld.CacheKey;
+                string lruNewKey = lruNew.CacheKey;
+                string lruActiveKey = lruActive.CacheKey;
+                string lruOldPath = lruOld.ZipPath;
+                string lruNewPath = lruNew.ZipPath;
+                string lruActivePath = lruActive.ZipPath;
+                ReleaseBundleArtifact(lruOld);
+                ReleaseBundleArtifact(lruNew);
+                lock (BundleCacheLock)
+                {
+                    DateTime now = DateTime.UtcNow;
+                    lruOld.LastUsedUtc = now.AddSeconds(-30.0);
+                    lruNew.LastUsedUtc = now.AddSeconds(-10.0);
+                    lruActive.LastUsedUtc = now.AddSeconds(-20.0);
+                    DevelopmentBundleCacheMaxBytesOverride = lruNew.Size + lruActive.Size;
+                    PruneBundleCacheLocked(now);
+                }
+                DevelopmentAssert(!DevelopmentCacheContains(lruOldKey) && !File.Exists(lruOldPath), "LRU budget did not evict the oldest idle artifact");
+                DevelopmentAssert(DevelopmentCacheContains(lruNewKey) && File.Exists(lruNewPath), "LRU budget evicted the newer idle artifact unnecessarily");
+                DevelopmentAssert(DevelopmentCacheContains(lruActiveKey) && File.Exists(lruActivePath), "LRU budget deleted an active artifact");
+                ReleaseBundleArtifact(lruActive);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 PASS cache-budget LRU evicted the oldest idle artifact while preserving newer idle and active artifacts.");
+
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST Phase 3 cache-safety suite PASS.");
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogError("AutoModSync DEV TEST Phase 3 cache-safety suite FAIL: " + ex);
+            }
+            finally
+            {
+                DevelopmentBundleCacheSecondsOverride = -1;
+                DevelopmentBundleCacheMaxBytesOverride = -1L;
+                DevelopmentResetBundleCacheForTest();
+                try { if (Directory.Exists(sourceRoot)) Directory.Delete(sourceRoot, true); } catch { }
+            }
+
+            return true;
+        }
+
+        // Intent: Creates one synthetic production-cache record from the exact current bytes of a development-only source file.
+        private static FileRecord CreateDevelopmentCacheRecord(string fullPath, string relativePath)
+        {
+            FileInfo info = new FileInfo(fullPath);
+            FileRecord record = new FileRecord();
+            record.Kind = 'P';
+            record.RelativePath = relativePath;
+            record.FullPath = fullPath;
+            record.SourceLabel = "Phase3DevelopmentCacheSafety";
+            record.Size = info.Length;
+            record.Sha256 = Sha256File(fullPath);
+            return record;
+        }
+
+        // Intent: Writes deterministic incompressible-enough bytes so cache-budget tests operate on meaningful ZIP sizes without large fixtures.
+        private static void WriteDevelopmentPseudoRandomFile(string path, int byteCount, int seed)
+        {
+            byte[] data = new byte[byteCount];
+            Random random = new Random(seed);
+            random.NextBytes(data);
+            File.WriteAllBytes(path, data);
+        }
+
+        // Intent: Fails a development cache-safety case immediately with a concise reason while leaving production cache behavior untouched.
+        private static void DevelopmentAssert(bool condition, string message)
+        {
+            if (!condition) throw new InvalidOperationException("Phase 3 cache-safety assertion failed: " + message + ".");
+        }
+
+        // Intent: Checks the production in-memory cache index under its real lock for deterministic development assertions.
+        private static bool DevelopmentCacheContains(string cacheKey)
+        {
+            lock (BundleCacheLock) return BundleArtifactCache.ContainsKey(cacheKey);
+        }
+
+        // Intent: Clears only this startup self-test's in-memory cache state and published artifacts between cases; no live transfers exist while this development suite runs.
+        private static void DevelopmentResetBundleCacheForTest()
+        {
+            lock (BundleCacheLock)
+            {
+                foreach (KeyValuePair<string, BundleArtifact> pair in BundleArtifactCache)
+                {
+                    BundleArtifact artifact = pair.Value;
+                    if (artifact == null || String.IsNullOrEmpty(artifact.ZipPath)) continue;
+                    try { if (File.Exists(artifact.ZipPath)) File.Delete(artifact.ZipPath); } catch { }
+                }
+                BundleArtifactCache.Clear();
+                BundleBuilds.Clear();
+            }
+
+            try
+            {
+                string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
+                if (Directory.Exists(cacheRoot))
+                {
+                    string[] temps = Directory.GetFiles(cacheRoot, "bundle-build-*.tmp", SearchOption.TopDirectoryOnly);
+                    int i;
+                    for (i = 0; i < temps.Length; i++)
+                    {
+                        try { File.Delete(temps[i]); } catch { }
+                    }
+                }
+            }
+            catch { }
+        }
+#endif
+
+        // Intent: Limits startup prewarming to the dedicated-server executable; Host & Play retains lazy cache behavior until it actually needs a bundle.
+        private static bool IsDedicatedServerProcess()
+        {
+            try
+            {
+                string name = Process.GetCurrentProcess().ProcessName ?? "";
+                return name.IndexOf("valheim_server", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -195,17 +1102,26 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Migrates the exact earlier 2.5-development transfer defaults so existing test servers do not remain unintentionally pinned to the 1 MiB/s floor after upgrading this branch.
-        // Scope: only the three known development-default values are changed; any administrator-customized value is preserved.
+        // Intent: Migrates only the exact earlier development-default tuples to the current 2.6 transfer baseline.
+        // Evidence: a 313.4 MiB fresh-client run stayed pinned to the configured 8 MiB/s Steam floor, so the next development baseline tests 16/64/32.
+        // Scope: administrator-customized values are preserved unless they exactly equal one of the known prior development defaults.
         private static void UpgradeDevelopmentTransferDefaults()
         {
-            if (_transferSendRateMin != null && _transferSendRateMax != null && _transferSendBufferBytes != null &&
-                _transferSendRateMin.Value == 1048576 && _transferSendRateMax.Value == 8388608 && _transferSendBufferBytes.Value == 8388608)
+            if (_transferSendRateMin == null || _transferSendRateMax == null || _transferSendBufferBytes == null) return;
+
+            bool old25Defaults = _transferSendRateMin.Value == 1048576 &&
+                                 _transferSendRateMax.Value == 8388608 &&
+                                 _transferSendBufferBytes.Value == 8388608;
+            bool old26Defaults = _transferSendRateMin.Value == 8388608 &&
+                                 _transferSendRateMax.Value == 33554432 &&
+                                 _transferSendBufferBytes.Value == 16777216;
+
+            if (old25Defaults || old26Defaults)
             {
-                _transferSendRateMin.Value = 8388608;
-                _transferSendRateMax.Value = 33554432;
-                _transferSendBufferBytes.Value = 16777216;
-                if (_instance != null) _instance.Logger.LogInfo("AutoModSync upgraded the earlier 2.5 development transfer defaults to Min=8 MiB/s, Max=32 MiB/s, Buffer=16 MiB.");
+                _transferSendRateMin.Value = 16777216;
+                _transferSendRateMax.Value = 67108864;
+                _transferSendBufferBytes.Value = 33554432;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync upgraded known development transfer defaults to Min=16 MiB/s, Max=64 MiB/s, Buffer=32 MiB.");
             }
         }
 
@@ -228,6 +1144,7 @@ namespace ValheimAutoModSync
                 rpc.Register<ZPackage>(RpcBundleChunk, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcBundleBatch, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcBundleEnd, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcQueueStatus, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcError, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 Registered.Add(rpc);
                 if (_instance != null) _instance.Logger.LogDebug("AutoModSync registered AMS4 handlers on a new peer ZRpc.");
@@ -248,6 +1165,20 @@ namespace ValheimAutoModSync
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                if (ManifestSentPeers.Contains(rpc))
+                {
+                    if (_instance != null) _instance.Logger.LogDebug("AutoModSync ignored a duplicate AMS4 preflight hello after this peer's manifest was already sent.");
+                    return;
+                }
+#if AMS_DEV_TESTS
+                // A one-shot marker selects the next peer, then every AMS4_Hello retry on that same connection stays silent.
+                if (DevelopmentSuppressedAmsPeers.Contains(rpc))
+                {
+                    if (_instance != null) _instance.Logger.LogDebug("AutoModSync DEV TEST continuing to suppress AMS response for the selected peer retry.");
+                    return;
+                }
+                if (ConsumeDevelopmentSuppressAmsResponseMarker(rpc)) return;
+#endif
                 if (_instance != null) _instance.Logger.LogInfo("AutoModSync received AMS4 preflight hello.");
                 int protocol = pkg.ReadInt();
                 string clientVersion = "";
@@ -256,17 +1187,71 @@ namespace ValheimAutoModSync
                 try { clientCapabilities = pkg.ReadString(); } catch { clientCapabilities = ""; }
                 ClientVersions[rpc] = clientVersion ?? "";
                 ClientCapabilities[rpc] = clientCapabilities ?? "";
+#if AMS_DEV_TESTS
+                bool emulateLegacyServer = ArmDevelopmentLegacyServerPeer(rpc);
+                string failClosedMode = ArmDevelopmentFailClosedMode(rpc);
+#else
+                bool emulateLegacyServer = false;
+                string failClosedMode = "";
+#endif
                 if (protocol != ProtocolVersion)
                 {
                     SendError(rpc, "AutoModSync protocol mismatch. Server=" + ProtocolVersion + " Client=" + protocol);
                     return;
                 }
 
+#if AMS_DEV_TESTS
+                if (String.Equals(failClosedMode, "bad-ack", StringComparison.Ordinal))
+                {
+                    ZPackage badAck = new ZPackage();
+                    badAck.Write(ProtocolVersion + 1);
+                    badAck.Write("DEV-INVALID");
+                    badAck.Write("");
+                    rpc.Invoke(RpcAck, new object[] { badAck });
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected malformed/protocol-mismatched AMS4_Ack.");
+                    return;
+                }
+#endif
+
+                string ackCapabilities = emulateLegacyServer
+                    ? "bundle-window1;bundle-batch1;bundle-pipeline1"
+                    : "bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1;bundle-scheduler1";
+#if AMS_DEV_TESTS
+                if (String.Equals(failClosedMode, "bad-legacy-chunk", StringComparison.Ordinal))
+                    ackCapabilities = "";
+#endif
+
                 ZPackage ack = new ZPackage();
                 ack.Write(ProtocolVersion);
+#if AMS_DEV_TESTS
+                ack.Write(emulateLegacyServer ? "2.5.0" : PluginVersion);
+#else
                 ack.Write(PluginVersion);
-                ack.Write("bundle-window1;bundle-batch1;bundle-pipeline1");
+#endif
+                ack.Write(ackCapabilities);
                 rpc.Invoke(RpcAck, new object[] { ack });
+
+#if AMS_DEV_TESTS
+                if (String.Equals(failClosedMode, "ack-no-manifest", StringComparison.Ordinal))
+                {
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED sent a valid AMS4_Ack and intentionally withheld the manifest.");
+                    return;
+                }
+
+                if (String.Equals(failClosedMode, "bad-manifest-header", StringComparison.Ordinal))
+                {
+                    ZPackage badBegin = new ZPackage();
+                    badBegin.Write(ProtocolVersion + 1);
+                    badBegin.Write(0);
+                    badBegin.Write("0");
+                    badBegin.Write(_publicKeyXml);
+                    badBegin.Write("AAAA");
+                    badBegin.Write("bundle1");
+                    rpc.Invoke(RpcManifestBegin, new object[] { badBegin });
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an invalid manifest header.");
+                    return;
+                }
+#endif
 
                 EnsureManifest(false);
                 if (ManifestRequiresRootSync() && clientCapabilities.IndexOf("roots1", StringComparison.Ordinal) < 0)
@@ -277,15 +1262,44 @@ namespace ValheimAutoModSync
                 byte[] bytes = Encoding.UTF8.GetBytes(_manifestText);
                 int partChars = 24000;
                 int totalParts = Math.Max(1, (_manifestText.Length + partChars - 1) / partChars);
+                string manifestSignature = _manifestSignature;
+#if AMS_DEV_TESTS
+                if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
+                    totalParts = 2;
+                else if (String.Equals(failClosedMode, "bad-signature", StringComparison.Ordinal))
+                    manifestSignature = "AAAA";
+#endif
 
                 ZPackage begin = new ZPackage();
                 begin.Write(ProtocolVersion);
                 begin.Write(totalParts);
                 begin.Write(bytes.Length.ToString(CultureInfo.InvariantCulture));
                 begin.Write(_publicKeyXml);
-                begin.Write(_manifestSignature);
+                begin.Write(manifestSignature);
                 begin.Write("bundle1");
                 rpc.Invoke(RpcManifestBegin, new object[] { begin });
+
+#if AMS_DEV_TESTS
+                if (String.Equals(failClosedMode, "server-error", StringComparison.Ordinal))
+                {
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injecting AMS4_Error after manifest recognition.");
+                    SendError(rpc, "DEV TEST server-reported AMS error after recognition.");
+                    return;
+                }
+
+                if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
+                {
+                    ZPackage partial = new ZPackage();
+                    partial.Write(0);
+                    partial.Write(_manifestText);
+                    rpc.Invoke(RpcManifestChunk, new object[] { partial });
+                    ZPackage incompleteEnd = new ZPackage();
+                    incompleteEnd.Write(2);
+                    rpc.Invoke(RpcManifestEnd, new object[] { incompleteEnd });
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an incomplete two-part manifest.");
+                    return;
+                }
+#endif
 
                 int part;
                 for (part = 0; part < totalParts; part++)
@@ -302,6 +1316,7 @@ namespace ValheimAutoModSync
                 ZPackage end = new ZPackage();
                 end.Write(totalParts);
                 rpc.Invoke(RpcManifestEnd, new object[] { end });
+                ManifestSentPeers.Add(rpc);
             }
             catch (Exception ex)
             {
@@ -310,8 +1325,8 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Builds a compressed package containing exactly the manifest records requested by this client.
-        // Security: every request is resolved against the current signed file map, duplicates are rejected, configured size limits are enforced, and only plugin-kind records can enter the archive.
+        // Intent: Builds a compressed package containing exactly the current signed manifest records requested by this client.
+        // Security: every request resolves to a fixed P/R/C manifest destination; duplicate/count/expanded/compressed limits are enforced before or during construction.
         private static void RPC_GetBundle(ZRpc rpc, ZPackage pkg)
         {
             try
@@ -323,6 +1338,8 @@ namespace ValheimAutoModSync
                 EnsureManifest(false);
                 List<FileRecord> records = new List<FileRecord>();
                 HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                long maxExpandedBytes = (long)Math.Max(1, _maxExpandedBundleMiB.Value) * 1024L * 1024L;
+                long expandedBytes = 0L;
                 int i;
                 for (i = 0; i < count; i++)
                 {
@@ -330,17 +1347,624 @@ namespace ValheimAutoModSync
                     FileRecord record = ResolveBundleRecord(requested);
                     string key = record.Kind + ":" + record.RelativePath;
                     if (!seen.Add(key)) throw new InvalidDataException("Duplicate file in AutoModSync bundle request.");
+                    expandedBytes = AutoModSyncServerResourceSafety.AddExpandedSource(
+                        record.Size,
+                        expandedBytes,
+                        maxExpandedBytes,
+                        "Requested AutoModSync content exceeds the configured expanded transfer limit.");
                     records.Add(record);
                 }
 
-                CleanupBundle(rpc);
-                string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
-                if (!Directory.Exists(cacheRoot)) Directory.CreateDirectory(cacheRoot);
-                string zipPath = Path.Combine(cacheRoot, "bundle-" + Guid.NewGuid().ToString("N") + ".zip");
+                AutoModSyncResumeCandidate resumeCandidate = null;
+                bool resumeNegotiated = ClientSupportsCapability(rpc, "bundle-resume1");
+#if AMS_DEV_TESTS
+                if (DevelopmentLegacyServerPeers.Contains(rpc))
+                {
+                    resumeNegotiated = false;
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-server compatibility confirmed: original AMS4 bundle request/header shape active.");
+                }
+                else if (!resumeNegotiated && _instance != null)
+                {
+                    _instance.Logger.LogInfo("AutoModSync DEV TEST legacy-client compatibility observed: peer omitted bundle-resume1; original AMS4 bundle request/header shape active.");
+                }
+#endif
+                if (resumeNegotiated)
+                {
+                    int hasResume = 0;
+                    try { hasResume = pkg.ReadInt(); } catch { hasResume = 0; }
+                    if (hasResume != 0)
+                    {
+                        AutoModSyncResumeCandidate candidate = new AutoModSyncResumeCandidate();
+                        candidate.BundleSha256 = pkg.ReadString();
+                        string resumeSizeText = pkg.ReadString();
+                        if (!Int64.TryParse(resumeSizeText, NumberStyles.Integer, CultureInfo.InvariantCulture, out candidate.BundleSize))
+                            throw new InvalidDataException("Invalid AutoModSync resume bundle size.");
+                        candidate.ChunkBytes = pkg.ReadInt();
+                        candidate.TotalChunks = pkg.ReadInt();
+                        candidate.FileCount = pkg.ReadInt();
+                        candidate.NextChunk = pkg.ReadInt();
+                        candidate.PrefixSha256 = pkg.ReadString();
+                        if (candidate.BundleSha256 == null || candidate.BundleSha256.Length > 128
+                            || candidate.PrefixSha256 == null || candidate.PrefixSha256.Length > 128
+                            || candidate.BundleSize <= 0
+                            || candidate.ChunkBytes < 1 || candidate.ChunkBytes > 65536
+                            || candidate.TotalChunks < 1 || candidate.TotalChunks > 524288
+                            || candidate.FileCount < 1 || candidate.FileCount > 4096
+                            || candidate.NextChunk < 1 || candidate.NextChunk > candidate.TotalChunks)
+                            throw new InvalidDataException("Invalid AutoModSync resume candidate.");
+                        resumeCandidate = candidate;
+                    }
+                }
 
-                using (FileStream output = new FileStream(zipPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+                // Canonical order makes the cache key and ZIP bytes independent of client request ordering.
+                records.Sort(delegate(FileRecord a, FileRecord b)
+                {
+                    int byKind = a.Kind.CompareTo(b.Kind);
+                    return byKind != 0 ? byKind : StringComparer.OrdinalIgnoreCase.Compare(a.RelativePath, b.RelativePath);
+                });
+
+                CancelScheduledTransferState(rpc);
+
+                long schedulerPeerId = GetOrCreateSchedulerPeerId(rpc);
+                PendingBundleRequest request = new PendingBundleRequest();
+                request.SchedulerPeerId = schedulerPeerId;
+                request.Records = records;
+                request.ExpandedBytes = expandedBytes;
+                request.ResumeNegotiated = resumeNegotiated;
+                request.ResumeCandidate = resumeCandidate;
+                request.QueuedUtc = DateTime.UtcNow;
+                PendingBundleRequests[rpc] = request;
+
+                if (_transferScheduler == null)
+                    throw new InvalidOperationException("AutoModSync transfer scheduler is unavailable.");
+                if (!_transferScheduler.Enqueue(schedulerPeerId))
+                {
+                    PendingBundleRequests.Remove(rpc);
+                    throw new InvalidDataException("AutoModSync synchronization queue is full; retry after an active transfer finishes.");
+                }
+                SendQueueStatus(rpc);
+
+                if (_instance != null)
+                {
+                    int position = _transferScheduler.QueuePosition(schedulerPeerId);
+                    _instance.Logger.LogInfo("AutoModSync bundle request admitted to scheduler: queuePosition=" +
+                        position.ToString(CultureInfo.InvariantCulture) +
+                        ", active=" + _transferScheduler.ActiveCount.ToString(CultureInfo.InvariantCulture) +
+                        "/" + _transferScheduler.MaxActive.ToString(CultureInfo.InvariantCulture) +
+                        ", requestedFiles=" + records.Count.ToString(CultureInfo.InvariantCulture) +
+                        ", expanded=" + FormatBytes(expandedBytes) + ".");
+                }
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Bundle request admission failed: " + ex);
+                CancelScheduledTransferState(rpc);
+                SendError(rpc, "Server failed while admitting the AutoModSync package request: " + ex.Message);
+            }
+        }
+
+        // Intent: Starts immutable bundle acquisition/build on a worker after the scheduler grants a slot, keeping Unity/ZRpc responsive so other real clients can enter the same single-flight build.
+        // Threading: the worker performs only cache/file preparation; all ZRpc, Steam transport, and transfer-state publication happens later on the Unity thread.
+        private static void StartScheduledBundleTransfer(ZRpc rpc, PendingBundleRequest request)
+        {
+            if (rpc == null || request == null || request.PreparationStarted) return;
+            request.PreparationStarted = true;
+
+            long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
+#if AMS_DEV_TESTS
+            ArmDevelopmentTwoClientBuildDelayIfRequested();
+            StartDevelopmentSingleFlightFollowerIfArmed(request, maxBundleBytes);
+#endif
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                PreparedBundleResult result = new PreparedBundleResult();
+                result.Rpc = rpc;
+                result.Request = request;
+                Stopwatch prepareWatch = Stopwatch.StartNew();
+                try
+                {
+                    string cacheStatus;
+                    double waitSeconds;
+                    result.Artifact = AcquireBundleArtifact(request.Records, request.ExpandedBytes, maxBundleBytes, out cacheStatus, out waitSeconds);
+                    result.CacheStatus = cacheStatus;
+                    result.WaitSeconds = waitSeconds;
+                }
+                catch (Exception ex)
+                {
+                    result.Error = ex;
+                }
+                finally
+                {
+                    prepareWatch.Stop();
+                    result.PrepareSeconds = prepareWatch.Elapsed.TotalSeconds;
+                    lock (PreparedBundleResultsLock)
+                    {
+                        PreparedBundleResults.Enqueue(result);
+                    }
+                }
+            });
+        }
+
+        // Intent: Drains completed background bundle preparations on the Unity thread before normal scheduler work.
+        // Safety: disconnected/cancelled peers release their prepared artifact without invoking ZRpc or publishing active transfer state.
+        private static void DrainPreparedBundleResults()
+        {
+            while (true)
+            {
+                PreparedBundleResult result = null;
+                lock (PreparedBundleResultsLock)
+                {
+                    if (PreparedBundleResults.Count == 0) return;
+                    result = PreparedBundleResults.Dequeue();
+                }
+
+                CompleteScheduledBundlePreparation(result);
+            }
+        }
+
+        // Intent: Publishes one completed background bundle preparation into the existing active-transfer path on the Unity thread.
+        // Threading: every ZRpc call, transport tune, scheduler mutation, and BundleTransfers mutation remains confined to the Unity thread.
+        private static void CompleteScheduledBundlePreparation(PreparedBundleResult result)
+        {
+            if (result == null || result.Rpc == null || result.Request == null)
+            {
+                if (result != null && result.Artifact != null) ReleaseBundleArtifact(result.Artifact);
+                return;
+            }
+
+            ZRpc rpc = result.Rpc;
+            PendingBundleRequest request = result.Request;
+            BundleArtifact artifact = result.Artifact;
+
+            bool connected = false;
+            try { connected = rpc.IsConnected(); } catch { connected = false; }
+
+            PendingBundleRequest currentRequest;
+            bool stillPending = PendingBundleRequests.TryGetValue(rpc, out currentRequest) && Object.ReferenceEquals(currentRequest, request);
+            if (!connected || !stillPending)
+            {
+                if (artifact != null) ReleaseBundleArtifact(artifact);
+                PendingBundleRequests.Remove(rpc);
+                if (_transferScheduler != null) _transferScheduler.Remove(request.SchedulerPeerId);
+                SendAllQueueStatuses();
+                return;
+            }
+
+            if (result.Error != null)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Scheduled bundle preparation failed: " + result.Error);
+                if (artifact != null) ReleaseBundleArtifact(artifact);
+                PendingBundleRequests.Remove(rpc);
+                if (_transferScheduler != null) _transferScheduler.Remove(request.SchedulerPeerId);
+                SendError(rpc, "Server failed while preparing the scheduled AutoModSync package: " + result.Error.Message);
+                SendAllQueueStatuses();
+                return;
+            }
+
+            FileStream readStream = null;
+            bool transferStored = false;
+            try
+            {
+                int rawChunk = Math.Max(4096, Math.Min(49152, _chunkBytes.Value));
+                BundleTransfer transfer = new BundleTransfer();
+                transfer.SchedulerPeerId = request.SchedulerPeerId;
+                transfer.Artifact = artifact;
+                transfer.ZipPath = artifact.ZipPath;
+                transfer.Size = artifact.Size;
+                transfer.Sha256 = artifact.Sha256;
+                transfer.ChunkBytes = rawChunk;
+                transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
+                transfer.FileCount = artifact.FileCount;
+                transfer.LastActivityUtc = DateTime.UtcNow;
+                transfer.StartedUtc = transfer.LastActivityUtc;
+                transfer.RawPayloadBytesSent = 0L;
+
+                readStream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, FileOptions.SequentialScan);
+                transfer.ReadStream = readStream;
+
+                int resumeStartChunk = 0;
+                long resumeBytes = 0L;
+                string resumeReason = "";
+                Stopwatch resumeWatch = new Stopwatch();
+                if (request.ResumeNegotiated && request.ResumeCandidate != null)
+                {
+                    resumeWatch.Start();
+                    if (AutoModSyncResumeState.TryAcceptServerCandidate(
+                        transfer.ZipPath,
+                        transfer.Sha256,
+                        transfer.Size,
+                        transfer.ChunkBytes,
+                        transfer.TotalChunks,
+                        transfer.FileCount,
+                        request.ResumeCandidate,
+                        out resumeBytes,
+                        out resumeReason))
+                    {
+                        resumeStartChunk = request.ResumeCandidate.NextChunk;
+                    }
+                    resumeWatch.Stop();
+                }
+
+                BundleTransfers[rpc] = transfer;
+                transferStored = true;
+                PendingBundleRequests.Remove(rpc);
+                TryTuneTransferTransport(rpc, transfer);
+
+                ZPackage begin = new ZPackage();
+#if AMS_DEV_TESTS
+                string bundleFailMode = GetDevelopmentFailClosedMode(rpc);
+                bool injectBadBundleHeader = String.Equals(bundleFailMode, "bad-bundle-header", StringComparison.Ordinal);
+                begin.Write(injectBadBundleHeader
+                    ? (2048L * 1024L * 1024L + 1L).ToString(CultureInfo.InvariantCulture)
+                    : transfer.Size.ToString(CultureInfo.InvariantCulture));
+#else
+                bool injectBadBundleHeader = false;
+                begin.Write(transfer.Size.ToString(CultureInfo.InvariantCulture));
+#endif
+                begin.Write(transfer.Sha256);
+                begin.Write(transfer.TotalChunks);
+                begin.Write(transfer.FileCount);
+                if (request.ResumeNegotiated)
+                {
+                    begin.Write(transfer.ChunkBytes);
+                    begin.Write(resumeStartChunk);
+                }
+                rpc.Invoke(RpcBundleBegin, new object[] { begin });
+#if AMS_DEV_TESTS
+                if (injectBadBundleHeader)
+                {
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an oversized bundle header.");
+                    CleanupBundle(rpc);
+                    SendAllQueueStatuses();
+                    return;
+                }
+#endif
+
+                if (_instance != null && request.ResumeCandidate != null)
+                {
+                    if (resumeStartChunk > 0)
+                        _instance.Logger.LogInfo("AutoModSync exact-artifact resume accepted at chunk " + resumeStartChunk.ToString(CultureInfo.InvariantCulture) + "/" + transfer.TotalChunks.ToString(CultureInfo.InvariantCulture) + " (" + FormatBytes(resumeBytes) + " retained, prefixVerify=" + resumeWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s).");
+                    else
+                        _instance.Logger.LogInfo("AutoModSync resume candidate rejected; restarting bundle at chunk 0: " + (resumeReason ?? "artifact mismatch") + ".");
+                }
+
+                if (_instance != null)
+                {
+                    double queueSeconds = Math.Max(0.0, (DateTime.UtcNow - request.QueuedUtc).TotalSeconds);
+                    _instance.Logger.LogInfo("AutoModSync bundle ready: cache=" + result.CacheStatus +
+                        ", key=" + ShortCacheKey(artifact.CacheKey) +
+                        ", sha256=" + artifact.Sha256 +
+                        ", compressedBytes=" + artifact.Size.ToString(CultureInfo.InvariantCulture) +
+                        ", files=" + artifact.FileCount.ToString(CultureInfo.InvariantCulture) +
+                        ", compressed=" + FormatBytes(artifact.Size) +
+                        ", expanded=" + FormatBytes(artifact.ExpandedBytes) +
+                        ", prepare=" + result.PrepareSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                        (result.WaitSeconds > 0.0005 ? ", singleFlightWait=" + result.WaitSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" : "") +
+                        (queueSeconds > 0.0005 ? ", schedulerQueue=" + queueSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" : "") + ".");
+                }
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("Scheduled bundle publication failed: " + ex);
+
+                if (transferStored)
+                {
+                    CleanupBundle(rpc);
+                }
+                else
+                {
+                    try { if (readStream != null) readStream.Dispose(); } catch { }
+                    if (artifact != null) ReleaseBundleArtifact(artifact);
+                    if (_transferScheduler != null) _transferScheduler.Remove(request.SchedulerPeerId);
+                }
+
+                PendingBundleRequests.Remove(rpc);
+                SendError(rpc, "Server failed while publishing the scheduled AutoModSync package: " + ex.Message);
+                SendAllQueueStatuses();
+            }
+        }
+
+        // Intent: Registers one outstanding sequential chunk-window demand with the aggregate scheduler; duplicate overlapping requests fail closed.
+        private static void ScheduleChunkRequest(BundleTransfer transfer, bool binaryBatch, int index, int count)
+        {
+            if (transfer == null || count < 1) throw new InvalidDataException("Invalid AutoModSync scheduled chunk request.");
+            if (transfer.PendingRequest != null)
+                throw new InvalidDataException("AutoModSync client requested another bundle window before the previous scheduled window completed.");
+
+            long bytes = ChunkRangeBytes(transfer, index, count);
+            if (bytes <= 0L) throw new InvalidDataException("AutoModSync scheduled chunk request contains no payload bytes.");
+
+            ScheduledChunkRequest request = new ScheduledChunkRequest();
+            request.BinaryBatch = binaryBatch;
+            request.Cursor = index;
+            request.RemainingChunks = count;
+            transfer.PendingRequest = request;
+            transfer.LastActivityUtc = DateTime.UtcNow;
+
+            if (_transferScheduler == null)
+                throw new InvalidOperationException("AutoModSync transfer scheduler is unavailable.");
+            _transferScheduler.SetDemand(transfer.SchedulerPeerId, bytes);
+        }
+
+        // Intent: Computes exact raw artifact bytes covered by a contiguous whole-chunk request, including a short final chunk.
+        private static long ChunkRangeBytes(BundleTransfer transfer, int index, int count)
+        {
+            if (transfer == null || index < 0 || count < 1) return 0L;
+            long start = (long)index * transfer.ChunkBytes;
+            long end = Math.Min(transfer.Size, (long)(index + count) * transfer.ChunkBytes);
+            return Math.Max(0L, end - start);
+        }
+
+        // Intent: Emits as many whole chunks as fit in one scheduler reservation while preserving the existing <=384 KiB per-RPC batch ceiling.
+        // Disk behavior: every active peer reuses one sequential FileStream instead of reopening the immutable ZIP for every request window.
+        private static int SendScheduledChunkGrant(ZRpc rpc, BundleTransfer transfer, int grantBytes)
+        {
+            if (rpc == null || transfer == null || transfer.PendingRequest == null || transfer.ReadStream == null || grantBytes <= 0) return 0;
+
+            ScheduledChunkRequest request = transfer.PendingRequest;
+            int actual = 0;
+            const int maxBatchBytes = 384 * 1024;
+
+            while (request.RemainingChunks > 0)
+            {
+                int nextLength = (int)Math.Min((long)transfer.ChunkBytes, transfer.Size - (long)request.Cursor * transfer.ChunkBytes);
+                if (nextLength <= 0) throw new EndOfStreamException("Unexpected end of scheduled AutoModSync package.");
+                if (actual > 0 && nextLength > grantBytes - actual) break;
+                if (actual == 0 && nextLength > grantBytes) break;
+
+                if (request.BinaryBatch)
+                {
+                    int batchStart = request.Cursor;
+                    List<byte[]> chunks = new List<byte[]>();
+                    int batchRawBytes = 0;
+
+                    while (request.RemainingChunks > 0)
+                    {
+                        nextLength = (int)Math.Min((long)transfer.ChunkBytes, transfer.Size - (long)request.Cursor * transfer.ChunkBytes);
+                        if (nextLength <= 0) throw new EndOfStreamException("Unexpected end of scheduled AutoModSync package.");
+                        if (batchRawBytes > 0 && batchRawBytes + nextLength > maxBatchBytes) break;
+                        if (actual + batchRawBytes + nextLength > grantBytes) break;
+
+                        byte[] data = ReadTransferChunk(transfer, request.Cursor, nextLength);
+                        chunks.Add(data);
+                        batchRawBytes += data.Length;
+                        request.Cursor++;
+                        request.RemainingChunks--;
+                    }
+
+                    if (chunks.Count == 0) break;
+
+                    ZPackage batch = new ZPackage();
+#if AMS_DEV_TESTS
+                    bool injectBadBatch = String.Equals(GetDevelopmentFailClosedMode(rpc), "bad-binary-batch", StringComparison.Ordinal);
+                    batch.Write(injectBadBatch ? batchStart + 1 : batchStart);
+#else
+                    bool injectBadBatch = false;
+                    batch.Write(batchStart);
+#endif
+                    batch.Write(chunks.Count);
+                    int i;
+                    for (i = 0; i < chunks.Count; i++)
+                    {
+                        batch.Write(batchStart + i);
+                        batch.Write(chunks[i]);
+                    }
+                    rpc.Invoke(RpcBundleBatch, new object[] { batch });
+#if AMS_DEV_TESTS
+                    if (injectBadBatch && _instance != null)
+                        _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an out-of-order binary bundle batch.");
+#endif
+                    actual += batchRawBytes;
+                }
+                else
+                {
+                    byte[] data = ReadTransferChunk(transfer, request.Cursor, nextLength);
+                    ZPackage chunk = new ZPackage();
+#if AMS_DEV_TESTS
+                    bool injectBadLegacyChunk = String.Equals(GetDevelopmentFailClosedMode(rpc), "bad-legacy-chunk", StringComparison.Ordinal);
+                    chunk.Write(injectBadLegacyChunk ? request.Cursor + 1 : request.Cursor);
+#else
+                    bool injectBadLegacyChunk = false;
+                    chunk.Write(request.Cursor);
+#endif
+                    chunk.Write(Convert.ToBase64String(data));
+                    rpc.Invoke(RpcBundleChunk, new object[] { chunk });
+#if AMS_DEV_TESTS
+                    if (injectBadLegacyChunk && _instance != null)
+                        _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an out-of-order legacy bundle chunk.");
+#endif
+                    request.Cursor++;
+                    request.RemainingChunks--;
+                    actual += data.Length;
+                }
+
+                if (actual >= grantBytes) break;
+            }
+
+            if (request.RemainingChunks == 0) transfer.PendingRequest = null;
+            return actual;
+        }
+
+        // Intent: Reads one exact immutable-artifact chunk through the transfer's persistent stream, seeking only when the requested offset differs from the current sequential position.
+        private static byte[] ReadTransferChunk(BundleTransfer transfer, int index, int length)
+        {
+            long offset = (long)index * transfer.ChunkBytes;
+            if (transfer.ReadStream.Position != offset) transfer.ReadStream.Seek(offset, SeekOrigin.Begin);
+
+            byte[] data = new byte[length];
+            int total = 0;
+            while (total < length)
+            {
+                int read = transfer.ReadStream.Read(data, total, length - total);
+                if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
+                total += read;
+            }
+            return data;
+        }
+
+        // Intent: Publishes the existing AMS4 completion message immediately when a client requests TotalChunks, then frees its active slot and artifact reference.
+        private static void SendBundleEndAndCleanup(ZRpc rpc, BundleTransfer transfer)
+        {
+            ZPackage end = new ZPackage();
+#if AMS_DEV_TESTS
+            bool injectBadEnd = String.Equals(GetDevelopmentFailClosedMode(rpc), "bad-bundle-end", StringComparison.Ordinal);
+            end.Write(injectBadEnd ? new string('0', 64) : transfer.Sha256);
+            end.Write(injectBadEnd ? transfer.FileCount + 1 : transfer.FileCount);
+#else
+            bool injectBadEnd = false;
+            end.Write(transfer.Sha256);
+            end.Write(transfer.FileCount);
+#endif
+            rpc.Invoke(RpcBundleEnd, new object[] { end });
+#if AMS_DEV_TESTS
+            if (injectBadEnd && _instance != null)
+                _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected a mismatched final bundle SHA-256/file count.");
+#endif
+
+            if (_instance != null && transfer != null)
+            {
+                double elapsed = transfer.StartedUtc == DateTime.MinValue ? 0.0 : Math.Max(0.001, (DateTime.UtcNow - transfer.StartedUtc).TotalSeconds);
+                double mibps = (transfer.RawPayloadBytesSent / (1024.0 * 1024.0)) / elapsed;
+                _instance.Logger.LogInfo("AutoModSync scheduler transfer complete: rawPayload=" + FormatBytes(transfer.RawPayloadBytesSent) +
+                    ", elapsed=" + elapsed.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                    ", avgRawPayload=" + mibps.ToString("0.00", CultureInfo.InvariantCulture) + " MiB/s" +
+                    ", aggregateCap=" + FormatBytes(_aggregateSendRateMax == null ? 0L : (long)_aggregateSendRateMax.Value) + "/s.");
+            }
+
+            CleanupBundle(rpc);
+            SendAllQueueStatuses();
+        }
+
+        // Intent: Returns a retained immutable bundle for this exact signed content set, or performs the one allowed build for that cache key.
+        // Concurrency: waiters for an identical key block on BundleBuildState and then acquire the published artifact; different keys are free to build independently.
+        private static BundleArtifact AcquireBundleArtifact(List<FileRecord> records, long expandedBytes, long maxBundleBytes, out string cacheStatus, out double waitSeconds)
+        {
+            string cacheKey = BuildBundleCacheKey(records);
+            DateTime waitStartedUtc = DateTime.MinValue;
+            bool waited = false;
+            BundleBuildState state = null;
+
+            while (true)
+            {
+                lock (BundleCacheLock)
+                {
+                    DateTime now = DateTime.UtcNow;
+                    PruneBundleCacheLocked(now);
+
+                    BundleArtifact cached;
+                    if (BundleArtifactCache.TryGetValue(cacheKey, out cached))
+                    {
+                        if (!File.Exists(cached.ZipPath))
+                        {
+                            BundleArtifactCache.Remove(cacheKey);
+                        }
+                        else
+                        {
+                            if (cached.Size > maxBundleBytes)
+                                throw new InvalidDataException("Cached AutoModSync package exceeds the current configured server transfer limit.");
+
+                            bool wasStartupPinned = cached.StartupPinned;
+                            double idleSeconds = Math.Max(0.0, (now - cached.LastUsedUtc).TotalSeconds);
+                            int ordinaryTtlSeconds = GetEffectiveBundleCacheSeconds();
+
+                            cached.ActiveTransfers++;
+                            cached.LastUsedUtc = now;
+                            // The startup baseline is pinned only until its first real client use; afterward normal TTL/LRU policy applies.
+                            cached.StartupPinned = false;
+                            if (wasStartupPinned && (ordinaryTtlSeconds == 0 || idleSeconds > ordinaryTtlSeconds) && _instance != null)
+                                _instance.Logger.LogInfo("AutoModSync startup-pinned bundle survived ordinary cache TTL until first real client use: idle=" +
+                                    idleSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s, BundleCacheSeconds=" +
+                                    ordinaryTtlSeconds.ToString(CultureInfo.InvariantCulture) + ", key=" + ShortCacheKey(cached.CacheKey) + ".");
+                            cacheStatus = waited ? "WAIT-HIT" : "HIT";
+                            waitSeconds = waited ? (now - waitStartedUtc).TotalSeconds : 0.0;
+                            return cached;
+                        }
+                    }
+
+                    if (BundleBuilds.TryGetValue(cacheKey, out state))
+                    {
+                        if (!waited)
+                        {
+                            waited = true;
+                            waitStartedUtc = now;
+                            if (_instance != null)
+                                _instance.Logger.LogInfo("AutoModSync bundle cache WAIT key=" + ShortCacheKey(cacheKey) + "; another client is building the identical artifact.");
+                        }
+
+                        while (!state.Complete) Monitor.Wait(BundleCacheLock);
+                        if (state.Error != null)
+                            throw new InvalidOperationException("The shared AutoModSync bundle build failed.", state.Error);
+
+                        continue;
+                    }
+
+                    state = new BundleBuildState();
+                    BundleBuilds.Add(cacheKey, state);
+                    break;
+                }
+            }
+
+            try
+            {
+                BundleArtifact built = BuildBundleArtifact(cacheKey, records, expandedBytes, maxBundleBytes);
+                lock (BundleCacheLock)
+                {
+                    built.ActiveTransfers = 1;
+                    built.LastUsedUtc = DateTime.UtcNow;
+                    BundleArtifactCache[cacheKey] = built;
+                    state.Complete = true;
+                    BundleBuilds.Remove(cacheKey);
+                    Monitor.PulseAll(BundleCacheLock);
+                }
+
+                cacheStatus = "MISS";
+                waitSeconds = 0.0;
+                return built;
+            }
+            catch (Exception ex)
+            {
+                lock (BundleCacheLock)
+                {
+                    state.Error = ex;
+                    state.Complete = true;
+                    BundleBuilds.Remove(cacheKey);
+                    Monitor.PulseAll(BundleCacheLock);
+                }
+                throw;
+            }
+        }
+
+        // Intent: Builds one ZIP to a private temporary path, hashes it, then atomically publishes the completed file under its deterministic content key.
+        // Safety: incomplete builds are never inserted into BundleArtifactCache and temporary files are removed on every failure path.
+        private static BundleArtifact BuildBundleArtifact(string cacheKey, List<FileRecord> records, long expandedBytes, long maxBundleBytes)
+        {
+            string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
+            if (!Directory.Exists(cacheRoot)) Directory.CreateDirectory(cacheRoot);
+
+            string tempPath = Path.Combine(cacheRoot, "bundle-build-" + Guid.NewGuid().ToString("N") + ".tmp");
+            string finalPath = Path.Combine(cacheRoot, "bundle-cache-" + cacheKey + ".zip");
+            Stopwatch totalWatch = Stopwatch.StartNew();
+            Stopwatch zipWatch = new Stopwatch();
+            Stopwatch hashWatch = new Stopwatch();
+
+            try
+            {
+                if (File.Exists(finalPath)) File.Delete(finalPath);
+#if AMS_DEV_TESTS
+                int developmentDelayMs = Interlocked.Exchange(ref DevelopmentDelayNextBundleBuildMs, 0);
+                if (developmentDelayMs > 0)
+                {
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST delaying one bundle build by " + developmentDelayMs.ToString(CultureInfo.InvariantCulture) + " ms to force an overlapping identical acquisition.");
+                    Thread.Sleep(developmentDelayMs);
+                }
+#endif
+
+                zipWatch.Start();
+                using (FileStream output = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
                 using (ZipArchive archive = new ZipArchive(output, ZipArchiveMode.Create, false))
                 {
+                    int i;
                     for (i = 0; i < records.Count; i++)
                     {
                         FileRecord record = records[i];
@@ -349,45 +1973,184 @@ namespace ValheimAutoModSync
                         using (Stream entryStream = entry.Open())
                         using (FileStream input = new FileStream(record.FullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                         {
-                            input.CopyTo(entryStream);
+                            CopyIntoBundleBounded(input, entryStream, output, maxBundleBytes, record.Sha256);
                         }
+                        AutoModSyncServerResourceSafety.EnsureCompressedWithinLimit(output.Length, maxBundleBytes);
                     }
                 }
+                zipWatch.Stop();
 
-                FileInfo fi = new FileInfo(zipPath);
-                long maxBundleBytes = (long)Math.Max(1, _maxBundleMiB.Value) * 1024L * 1024L;
-                if (fi.Length > maxBundleBytes)
+                FileInfo fi = new FileInfo(tempPath);
+                long compressedBytes = fi.Length;
+                AutoModSyncServerResourceSafety.EnsureCompressedWithinLimit(compressedBytes, maxBundleBytes);
+
+                hashWatch.Start();
+                string bundleSha256 = Sha256File(tempPath);
+                hashWatch.Stop();
+
+                File.Move(tempPath, finalPath);
+                totalWatch.Stop();
+
+                BundleArtifact artifact = new BundleArtifact();
+                artifact.CacheKey = cacheKey;
+                artifact.ZipPath = finalPath;
+                artifact.Size = compressedBytes;
+                artifact.Sha256 = bundleSha256;
+                artifact.FileCount = records.Count;
+                artifact.ExpandedBytes = expandedBytes;
+                artifact.CreatedUtc = DateTime.UtcNow;
+                artifact.LastUsedUtc = artifact.CreatedUtc;
+                artifact.ZipBuildSeconds = zipWatch.Elapsed.TotalSeconds;
+                artifact.ZipHashSeconds = hashWatch.Elapsed.TotalSeconds;
+
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync bundle cache MISS key=" + ShortCacheKey(cacheKey) +
+                        ": ZIP build=" + artifact.ZipBuildSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                        ", ZIP SHA-256=" + artifact.ZipHashSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                        ", total=" + totalWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s" +
+                        ", " + FormatBytes(artifact.Size) + " from " + FormatBytes(expandedBytes) + " expanded source bytes.");
+
+                return artifact;
+            }
+            catch
+            {
+                AutoModSyncServerResourceSafety.DeleteUnpublishedTemp(tempPath);
+                throw;
+            }
+        }
+
+        // Intent: Creates a deterministic identity for the exact requested signed records, independent of client request ordering.
+        // The key includes archive format generation plus kind/path/size/content hash, so any synchronized content change necessarily selects a different artifact.
+        private static string BuildBundleCacheKey(List<FileRecord> records)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append("ams4-zip-fastest-v1\n");
+            int i;
+            for (i = 0; i < records.Count; i++)
+            {
+                FileRecord record = records[i];
+                sb.Append(record.Kind).Append('\t')
+                  .Append(record.RelativePath).Append('\t')
+                  .Append(record.Size.ToString(CultureInfo.InvariantCulture)).Append('\t')
+                  .Append(record.Sha256).Append('\n');
+            }
+
+            using (SHA256 sha = SHA256.Create())
+                return ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString())));
+        }
+
+        // Intent: Releases one client's reference to a shared immutable artifact and performs bounded TTL/LRU cleanup only after it is no longer active.
+        private static void ReleaseBundleArtifact(BundleArtifact artifact)
+        {
+            if (artifact == null) return;
+            lock (BundleCacheLock)
+            {
+                if (artifact.ActiveTransfers > 0) artifact.ActiveTransfers--;
+                artifact.LastUsedUtc = DateTime.UtcNow;
+                PruneBundleCacheLocked(artifact.LastUsedUtc);
+            }
+        }
+
+        // Intent: Enforces the configured completed-artifact lifetime and total cache budget without deleting files still referenced by live transfers.
+        // Budget eviction is least-recently-used among idle artifacts; active artifacts may temporarily exceed the configured retained-cache budget.
+        private static void PruneBundleCacheLocked(DateTime now)
+        {
+            int cacheSeconds = GetEffectiveBundleCacheSeconds();
+            long maxCacheBytes = GetEffectiveBundleCacheMaxBytes();
+            List<string> removeKeys = new List<string>();
+
+            foreach (KeyValuePair<string, BundleArtifact> pair in BundleArtifactCache)
+            {
+                BundleArtifact artifact = pair.Value;
+                if (artifact == null)
                 {
-                    try { File.Delete(zipPath); } catch { }
-                    throw new InvalidDataException("Compressed AutoModSync package exceeds the configured server transfer limit.");
+                    removeKeys.Add(pair.Key);
+                    continue;
                 }
 
-                int rawChunk = Math.Max(4096, Math.Min(49152, _chunkBytes.Value));
-                BundleTransfer transfer = new BundleTransfer();
-                transfer.ZipPath = zipPath;
-                transfer.Size = fi.Length;
-                transfer.Sha256 = Sha256File(zipPath);
-                transfer.ChunkBytes = rawChunk;
-                transfer.TotalChunks = (int)((transfer.Size + rawChunk - 1L) / rawChunk);
-                transfer.FileCount = records.Count;
-                TryTuneTransferTransport(rpc, transfer);
-                BundleTransfers[rpc] = transfer;
-
-                ZPackage begin = new ZPackage();
-                begin.Write(transfer.Size.ToString(CultureInfo.InvariantCulture));
-                begin.Write(transfer.Sha256);
-                begin.Write(transfer.TotalChunks);
-                begin.Write(transfer.FileCount);
-                rpc.Invoke(RpcBundleBegin, new object[] { begin });
-
-                if (_instance != null) _instance.Logger.LogInfo("Prepared compressed AutoModSync package for " + records.Count + " changed file(s): " + FormatBytes(transfer.Size));
+                if (artifact.ActiveTransfers > 0) continue;
+                bool missing = String.IsNullOrEmpty(artifact.ZipPath) || !File.Exists(artifact.ZipPath);
+                bool expired = !artifact.StartupPinned && (cacheSeconds == 0 || (now - artifact.LastUsedUtc).TotalSeconds > cacheSeconds);
+                if (missing || expired) removeKeys.Add(pair.Key);
             }
-            catch (Exception ex)
+
+            int i;
+            for (i = 0; i < removeKeys.Count; i++) RemoveCachedArtifactLocked(removeKeys[i]);
+
+            long totalBytes = 0L;
+            List<BundleArtifact> idle = new List<BundleArtifact>();
+            foreach (KeyValuePair<string, BundleArtifact> pair in BundleArtifactCache)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Bundle preparation failed: " + ex);
-                CleanupBundle(rpc);
-                SendError(rpc, "Server failed while preparing the compressed AutoModSync package: " + ex.Message);
+                BundleArtifact artifact = pair.Value;
+                if (artifact == null || String.IsNullOrEmpty(artifact.ZipPath) || !File.Exists(artifact.ZipPath)) continue;
+                totalBytes += Math.Max(0L, artifact.Size);
+                if (artifact.ActiveTransfers <= 0) idle.Add(artifact);
             }
+
+            if (totalBytes <= maxCacheBytes) return;
+
+            idle.Sort(delegate(BundleArtifact a, BundleArtifact b)
+            {
+                return a.LastUsedUtc.CompareTo(b.LastUsedUtc);
+            });
+
+            for (i = 0; i < idle.Count && totalBytes > maxCacheBytes; i++)
+            {
+                BundleArtifact artifact = idle[i];
+                if (artifact.ActiveTransfers > 0) continue;
+                long bytes = Math.Max(0L, artifact.Size);
+                RemoveCachedArtifactLocked(artifact.CacheKey);
+                totalBytes -= bytes;
+            }
+        }
+
+        // Intent: Removes one idle artifact from the in-memory index and best-effort deletes its immutable ZIP.
+        // Caller must hold BundleCacheLock and must never pass an artifact that is actively referenced.
+        private static void RemoveCachedArtifactLocked(string cacheKey)
+        {
+            if (String.IsNullOrEmpty(cacheKey)) return;
+            BundleArtifact artifact;
+            if (!BundleArtifactCache.TryGetValue(cacheKey, out artifact)) return;
+            if (artifact != null && artifact.ActiveTransfers > 0) return;
+
+            BundleArtifactCache.Remove(cacheKey);
+            if (artifact != null && !String.IsNullOrEmpty(artifact.ZipPath))
+            {
+                try { if (File.Exists(artifact.ZipPath)) File.Delete(artifact.ZipPath); } catch { }
+            }
+        }
+
+        // Intent: Copies one signed source file into the ZIP while observing the compressed-output ceiling and re-hashing the exact bytes being archived.
+        // Cache correctness: a same-size local file change after manifest signing must fail this build instead of poisoning the shared artifact cache under the old signed hash.
+        // Resource safety: the final post-ZIP check remains authoritative because central-directory bytes are written when the archive closes.
+        private static void CopyIntoBundleBounded(Stream input, Stream entryStream, FileStream output, long maxBundleBytes, string expectedSha256)
+        {
+            byte[] buffer = new byte[81920];
+            using (SHA256 sourceHash = SHA256.Create())
+            {
+                while (true)
+                {
+                    int read = input.Read(buffer, 0, buffer.Length);
+                    if (read <= 0) break;
+
+                    // HashAlgorithm permits the same array for input/output; this avoids a second full source-file read before cache publication.
+                    sourceHash.TransformBlock(buffer, 0, read, buffer, 0);
+                    entryStream.Write(buffer, 0, read);
+                    AutoModSyncServerResourceSafety.EnsureCompressedWithinLimit(output.Length, maxBundleBytes);
+                }
+
+                sourceHash.TransformFinalBlock(new byte[0], 0, 0);
+                string actualSha256 = ToHex(sourceHash.Hash);
+                if (!String.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Server content changed after the signed manifest was created; reconnect to refresh synchronization state.");
+            }
+        }
+
+        // Intent: Formats a full bundle cache key into a compact log identifier while preserving enough entropy to correlate build/hit/wait events.
+        private static string ShortCacheKey(string cacheKey)
+        {
+            if (String.IsNullOrEmpty(cacheKey)) return "(none)";
+            return cacheKey.Length <= 12 ? cacheKey : cacheKey.Substring(0, 12);
         }
 
         // Intent: Serves one legacy chunk or a bounded 2.5 transfer window beginning at the requested chunk index, then emits the unchanged AMS4 completion message when the client requests TotalChunks.
@@ -409,36 +2172,18 @@ namespace ValheimAutoModSync
 
                 if (index == transfer.TotalChunks)
                 {
-                    ZPackage end = new ZPackage();
-                    end.Write(transfer.Sha256);
-                    end.Write(transfer.FileCount);
-                    rpc.Invoke(RpcBundleEnd, new object[] { end });
-                    CleanupBundle(rpc);
+                    SendBundleEndAndCleanup(rpc, transfer);
                     return;
                 }
 
-                byte[] buffer = new byte[transfer.ChunkBytes];
-                using (FileStream stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    stream.Seek((long)index * transfer.ChunkBytes, SeekOrigin.Begin);
-                    int sent;
-                    for (sent = 0; sent < requestedCount && index + sent < transfer.TotalChunks; sent++)
-                    {
-                        int read = stream.Read(buffer, 0, buffer.Length);
-                        if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
-
-                        ZPackage chunk = new ZPackage();
-                        chunk.Write(index + sent);
-                        chunk.Write(Convert.ToBase64String(buffer, 0, read));
-                        rpc.Invoke(RpcBundleChunk, new object[] { chunk });
-                    }
-                }
+                ScheduleChunkRequest(transfer, false, index, Math.Min(requestedCount, transfer.TotalChunks - index));
             }
             catch (Exception ex)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Bundle chunk transfer failed: " + ex);
+                if (_instance != null) _instance.Logger.LogWarning("Bundle chunk request failed: " + ex);
                 CleanupBundle(rpc);
-                SendError(rpc, "Server failed while transferring the compressed AutoModSync package: " + ex.Message);
+                SendError(rpc, "Server failed while scheduling the compressed AutoModSync package: " + ex.Message);
+                SendAllQueueStatuses();
             }
         }
 
@@ -461,84 +2206,157 @@ namespace ValheimAutoModSync
 
                 if (index == transfer.TotalChunks)
                 {
-                    ZPackage end = new ZPackage();
-                    end.Write(transfer.Sha256);
-                    end.Write(transfer.FileCount);
-                    rpc.Invoke(RpcBundleEnd, new object[] { end });
-                    CleanupBundle(rpc);
+                    SendBundleEndAndCleanup(rpc, transfer);
                     return;
                 }
 
-                const int maxBatchBytes = 384 * 1024;
-                int maxChunksPerMessage = Math.Max(1, maxBatchBytes / Math.Max(1, transfer.ChunkBytes));
-                int remaining = Math.Min(requestedCount, transfer.TotalChunks - index);
-                byte[] buffer = new byte[transfer.ChunkBytes];
-
-                using (FileStream stream = new FileStream(transfer.ZipPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    stream.Seek((long)index * transfer.ChunkBytes, SeekOrigin.Begin);
-                    int cursor = index;
-                    while (remaining > 0)
-                    {
-                        int count = Math.Min(maxChunksPerMessage, remaining);
-                        ZPackage batch = new ZPackage();
-                        batch.Write(cursor);
-                        batch.Write(count);
-
-                        int sent;
-                        for (sent = 0; sent < count; sent++)
-                        {
-                            int read = stream.Read(buffer, 0, buffer.Length);
-                            if (read <= 0) throw new EndOfStreamException("Unexpected end of compressed AutoModSync package.");
-                            batch.Write(cursor + sent);
-                            if (read == buffer.Length)
-                            {
-                                batch.Write(buffer);
-                            }
-                            else
-                            {
-                                byte[] tail = new byte[read];
-                                Buffer.BlockCopy(buffer, 0, tail, 0, read);
-                                batch.Write(tail);
-                            }
-                        }
-
-                        rpc.Invoke(RpcBundleBatch, new object[] { batch });
-                        cursor += count;
-                        remaining -= count;
-                    }
-                }
-
-                LogTransferSteamTelemetry(transfer);
+                ScheduleChunkRequest(transfer, true, index, Math.Min(requestedCount, transfer.TotalChunks - index));
             }
             catch (Exception ex)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Bundle batch transfer failed: " + ex);
+                if (_instance != null) _instance.Logger.LogWarning("Bundle batch request failed: " + ex);
                 CleanupBundle(rpc);
-                SendError(rpc, "Server failed while transferring the compressed AutoModSync package batch: " + ex.Message);
+                SendError(rpc, "Server failed while scheduling the compressed AutoModSync package batch: " + ex.Message);
+                SendAllQueueStatuses();
             }
         }
 
-        // Intent: Resolves a client request string to one current FileRecord from the server's manifest map.
-        // Security: validates kind/path, refreshes the manifest if necessary, checks existence, and enforces the per-file size limit before returning a source path.
+#if AMS_DEV_TESTS
+        // Intent: Binds one requested Phase 1 fail-closed fault mode to the next peer and keeps it for that connection.
+        // Scope: the marker is development-only; release builds contain none of these protocol fault injections.
+        private static string ArmDevelopmentFailClosedMode(ZRpc rpc)
+        {
+            if (rpc == null) return "";
+            string existing;
+            if (DevelopmentFailClosedModes.TryGetValue(rpc, out existing)) return existing ?? "";
+
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "phase1-failclosed-mode.once");
+                if (!File.Exists(marker)) return "";
+                string mode = "";
+                try { mode = (File.ReadAllText(marker) ?? "").Trim().ToLowerInvariant(); }
+                finally { try { File.Delete(marker); } catch { } }
+
+                string allowed = "|bad-ack|ack-no-manifest|bad-manifest-header|missing-manifest-part|bad-signature|trust-decline|server-error|bad-bundle-header|bad-legacy-chunk|bad-binary-batch|bad-bundle-end|apply-prep-failure|";
+                if (mode.Length == 0 || allowed.IndexOf("|" + mode + "|", StringComparison.Ordinal) < 0)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV fail-closed marker contained an unknown mode: " + mode);
+                    return "";
+                }
+
+                DevelopmentFailClosedModes[rpc] = mode;
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED armed mode '" + mode + "' for this peer.");
+                return mode;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV fail-closed marker could not be consumed: " + ex.Message);
+                return "";
+            }
+        }
+
+        // Intent: Returns the Phase 1 protocol fault mode bound to this development peer, or an empty string for normal behavior.
+        private static string GetDevelopmentFailClosedMode(ZRpc rpc)
+        {
+            if (rpc == null) return "";
+            string mode;
+            return DevelopmentFailClosedModes.TryGetValue(rpc, out mode) ? (mode ?? "") : "";
+        }
+
+        // Intent: Consumes a one-shot marker that makes the next AMS4_Hello receive no AutoModSync response at all.
+        // Scope: this emulates the client-visible discovery behavior of a non-AutoModSync server while retaining the same local dedicated server for controlled live validation.
+        private static bool ConsumeDevelopmentSuppressAmsResponseMarker(ZRpc rpc)
+        {
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "preflight-test-suppress-response.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                if (rpc == null) return false;
+                DevelopmentSuppressedAmsPeers.Add(rpc);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST suppressing all AMS responses for this peer until it disconnects.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV preflight-suppression marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+
+        // Intent: Consumes a one-shot server marker during AMS4_Hello and pins that peer to the pre-resume AMS4 wire shape for the life of the connection.
+        // Scope: the emulated server still supports roots1/batch/pipeline exactly as 2.5 did; bundle-resume1 and bundle-scheduler1 are withheld, and no 2.6 resume/queue extension fields are emitted.
+        private static bool ArmDevelopmentLegacyServerPeer(ZRpc rpc)
+        {
+            if (rpc == null) return false;
+            if (DevelopmentLegacyServerPeers.Contains(rpc)) return true;
+
+            try
+            {
+                string marker = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "resume-test-emulate-legacy-server.once");
+                if (!File.Exists(marker)) return false;
+                try { File.Delete(marker); } catch { }
+                DevelopmentLegacyServerPeers.Add(rpc);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV TEST emulating a pre-resume AMS4 server for this peer.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync DEV legacy-server marker could not be consumed: " + ex.Message);
+                return false;
+            }
+        }
+#endif
+
+        // Intent: Reads a negotiated feature token from the capability string captured during AMS4_Hello.
+        // Compatibility: capability additions are optional AMS4 extensions, so clients that do not advertise bundle-resume1 retain the original wire shape.
+        private static bool ClientSupportsCapability(ZRpc rpc, string capability)
+        {
+            if (rpc == null || String.IsNullOrEmpty(capability)) return false;
+            string value;
+            if (!ClientCapabilities.TryGetValue(rpc, out value) || String.IsNullOrEmpty(value)) return false;
+
+            string[] parts = value.Split(';');
+            int i;
+            for (i = 0; i < parts.Length; i++)
+                if (String.Equals(parts[i], capability, StringComparison.Ordinal)) return true;
+            return false;
+        }
+
+        // Intent: Resolves a client request string to one current FileRecord from the server's signed manifest map.
+        // Security: validates kind/path, existence, fixed BepInEx source containment, reparse points, and the configured per-file size limit before opening a source.
         private static FileRecord ResolveBundleRecord(string requested)
         {
             if (String.IsNullOrEmpty(requested) || requested.Length < 3 || requested[1] != ':')
                 throw new InvalidDataException("Invalid AutoModSync file request.");
+
             char kind = requested[0];
             if (!IsSupportedManifestKind(kind)) throw new InvalidDataException("Invalid AutoModSync file kind.");
             string relative = NormalizeRelative(requested.Substring(2));
             if (relative.Length == 0) throw new InvalidDataException("Invalid AutoModSync relative path.");
+
             string lookup = kind + ":" + relative;
             FileRecord record;
             if (!_files.TryGetValue(lookup, out record) || !File.Exists(record.FullPath))
             {
                 EnsureManifest(true);
                 if (!_files.TryGetValue(lookup, out record) || !File.Exists(record.FullPath))
-                    throw new FileNotFoundException("Requested plugin file is not available: " + relative);
+                    throw new FileNotFoundException("Requested synchronized file is not available: " + relative);
             }
+
+            string sourceRelative = NormalizeRelative(MakeRelative(Paths.BepInExRootPath, record.FullPath));
+            if (sourceRelative.Length == 0) throw new InvalidDataException("Requested source escaped the BepInEx root.");
+            string safeSource = AutoModSyncPathSafety.SafeUnderRoot(Paths.BepInExRootPath, sourceRelative, true);
+            if (!String.Equals(Path.GetFullPath(record.FullPath), safeSource, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Requested source path changed during bundle preparation.");
+
             long maxBytes = (long)Math.Max(1, _maxFileMiB.Value) * 1024L * 1024L;
-            if (record.Size > maxBytes) throw new InvalidDataException("File exceeds server transfer limit: " + relative);
+            FileInfo current = new FileInfo(safeSource);
+            if (current.Length > maxBytes) throw new InvalidDataException("File exceeds server transfer limit: " + relative);
+            if (current.Length != record.Size)
+                throw new InvalidDataException("Server content changed after the signed manifest was created; reconnect to refresh synchronization state.");
+
             return record;
         }
 
@@ -547,9 +2365,9 @@ namespace ValheimAutoModSync
         private static void TryTuneTransferTransport(ZRpc rpc, BundleTransfer transfer)
         {
             if (rpc == null || transfer == null) return;
-            int desiredMax = _transferSendRateMax == null ? 8388608 : Math.Max(153600, _transferSendRateMax.Value);
-            int desiredMin = _transferSendRateMin == null ? 1048576 : Math.Max(0, Math.Min(desiredMax, _transferSendRateMin.Value));
-            int desiredBuffer = _transferSendBufferBytes == null ? 8388608 : Math.Max(0, _transferSendBufferBytes.Value);
+            int desiredMax = _transferSendRateMax == null ? 67108864 : Math.Max(153600, _transferSendRateMax.Value);
+            int desiredMin = _transferSendRateMin == null ? 16777216 : Math.Max(0, Math.Min(desiredMax, _transferSendRateMin.Value));
+            int desiredBuffer = _transferSendBufferBytes == null ? 33554432 : Math.Max(0, _transferSendBufferBytes.Value);
 
             try
             {
@@ -746,37 +2564,74 @@ namespace ValheimAutoModSync
             finally { Marshal.FreeHGlobal(buffer); }
         }
 
-        // Intent: Removes per-client bundle-transfer state and deletes the temporary ZIP; safe to call after success or any failure.
+        // Intent: Removes one client's transfer state, restores its temporary Steam tuning, and releases its reference to the shared immutable bundle artifact.
+        // Cache lifetime/eviction is handled separately so a completed client cannot delete a ZIP still being read by another client.
         private static void CleanupBundle(ZRpc rpc)
         {
             BundleTransfer transfer;
             if (!BundleTransfers.TryGetValue(rpc, out transfer)) return;
             BundleTransfers.Remove(rpc);
-            RestoreTransferTransport(transfer);
-            if (transfer != null && !String.IsNullOrEmpty(transfer.ZipPath))
+
+            if (transfer != null)
             {
+                try { if (transfer.ReadStream != null) transfer.ReadStream.Dispose(); } catch { }
+                transfer.ReadStream = null;
+                transfer.PendingRequest = null;
+                if (_transferScheduler != null && transfer.SchedulerPeerId > 0L)
+                    _transferScheduler.Remove(transfer.SchedulerPeerId);
+            }
+
+            RestoreTransferTransport(transfer);
+
+            if (transfer != null && transfer.Artifact != null)
+            {
+                ReleaseBundleArtifact(transfer.Artifact);
+            }
+            else if (transfer != null && !String.IsNullOrEmpty(transfer.ZipPath))
+            {
+                // Compatibility fallback for any pre-cache transfer object created before a development hot reload.
                 try { if (File.Exists(transfer.ZipPath)) File.Delete(transfer.ZipPath); } catch { }
             }
         }
 
-        // Intent: Deletes abandoned AutoModSync bundle ZIPs older than six hours so interrupted transfers do not accumulate indefinitely.
+        // Intent: Removes orphaned bundle files from a previous server process.
+        // Published-cache metadata is intentionally in-memory only, so no ZIP from an earlier process is trusted/reused after restart.
         private static void CleanupOldBundleCache()
         {
             try
             {
                 string cacheRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "cache");
                 if (!Directory.Exists(cacheRoot)) return;
-                string[] files = Directory.GetFiles(cacheRoot, "bundle-*.zip", SearchOption.TopDirectoryOnly);
+
+                string[] zipFiles = Directory.GetFiles(cacheRoot, "bundle-*.zip", SearchOption.TopDirectoryOnly);
+                string[] tempFiles = Directory.GetFiles(cacheRoot, "bundle-build-*.tmp", SearchOption.TopDirectoryOnly);
+                int deletedZip = 0;
+                int deletedTemp = 0;
                 int i;
-                for (i = 0; i < files.Length; i++)
+                for (i = 0; i < zipFiles.Length; i++)
                 {
                     try
                     {
-                        FileInfo fi = new FileInfo(files[i]);
-                        if ((DateTime.UtcNow - fi.LastWriteTimeUtc).TotalHours > 6.0) fi.Delete();
+                        File.Delete(zipFiles[i]);
+                        if (!File.Exists(zipFiles[i])) deletedZip++;
                     }
                     catch { }
                 }
+                for (i = 0; i < tempFiles.Length; i++)
+                {
+                    try
+                    {
+                        File.Delete(tempFiles[i]);
+                        if (!File.Exists(tempFiles[i])) deletedTemp++;
+                    }
+                    catch { }
+                }
+
+                if (_instance != null && (zipFiles.Length > 0 || tempFiles.Length > 0))
+                    _instance.Logger.LogInfo("AutoModSync startup cache cleanup: discoveredZip=" + zipFiles.Length.ToString(CultureInfo.InvariantCulture) +
+                        ", deletedZip=" + deletedZip.ToString(CultureInfo.InvariantCulture) +
+                        ", discoveredTemp=" + tempFiles.Length.ToString(CultureInfo.InvariantCulture) +
+                        ", deletedTemp=" + deletedTemp.ToString(CultureInfo.InvariantCulture) + ".");
             }
             catch { }
         }
@@ -815,6 +2670,11 @@ namespace ValheimAutoModSync
                 List<FileRecord> records = new List<FileRecord>();
                 AddManifestRoot(records, 'P', Paths.PluginPath, false);
 
+                // Phase 6 client-only payload lives outside BepInEx/plugins, so the dedicated server never loads it.
+                // Files still map to ordinary signed P:<relative> client destinations and therefore need no new AMS wire kind.
+                string clientPayloadPluginRoot = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "ClientPayload", "plugins");
+                AddClientPayloadPluginRoot(records, clientPayloadPluginRoot);
+
                 string patcherRoot = Path.Combine(Paths.BepInExRootPath, "patchers");
                 if (_syncPatchers == null || _syncPatchers.Value) AddManifestRoot(records, 'R', patcherRoot, false);
 
@@ -826,12 +2686,16 @@ namespace ValheimAutoModSync
                 string releaseClientPlugin = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "ValheimAutoModSync.Client.dll");
                 if (!IsPackageManagedAutoModSync() && File.Exists(releaseClientPlugin))
                 {
+                    // The standalone release payload is outside BepInEx/plugins but still under the fixed BepInEx root.
+                    // Reparse validation prevents a local junction/symlink from turning that special source into an arbitrary read.
+                    AutoModSyncPathSafety.EnsureNoReparsePoints(Paths.BepInExRootPath, releaseClientPlugin, true);
                     records.RemoveAll(delegate(FileRecord x) { return x.Kind == 'P' && String.Equals(x.RelativePath, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase); });
                     FileInfo cfi = new FileInfo(releaseClientPlugin);
                     FileRecord cr = new FileRecord();
                     cr.Kind = 'P';
                     cr.RelativePath = "ValheimAutoModSync.Client.dll";
                     cr.FullPath = releaseClientPlugin;
+                    cr.SourceLabel = "BepInEx/AutoModSync/release";
                     cr.Size = cfi.Length;
                     cr.Sha256 = Sha256File(releaseClientPlugin);
                     records.Add(cr);
@@ -843,13 +2707,20 @@ namespace ValheimAutoModSync
                     return byKind != 0 ? byKind : StringComparer.OrdinalIgnoreCase.Compare(a.RelativePath, b.RelativePath);
                 });
                 Dictionary<string, FileRecord> map = new Dictionary<string, FileRecord>(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, string> destinationSources = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 StringBuilder sb = new StringBuilder();
                 int j;
                 for (j = 0; j < records.Count; j++)
                 {
                     FileRecord r = records[j];
                     if (r.RelativePath.IndexOf('\t') >= 0 || r.RelativePath.IndexOf('\r') >= 0 || r.RelativePath.IndexOf('\n') >= 0) continue;
-                    map[r.Kind + ":" + r.RelativePath] = r;
+                    string destinationKey = r.Kind + ":" + r.RelativePath;
+                    AutoModSyncClientPayload.RegisterUniqueDestination(
+                        destinationSources,
+                        r.Kind,
+                        r.RelativePath,
+                        r.SourceLabel ?? r.FullPath);
+                    map.Add(destinationKey, r);
                     sb.Append(r.Kind).Append('\t').Append(r.Sha256).Append('\t').Append(r.Size.ToString(CultureInfo.InvariantCulture)).Append('\t').Append(r.RelativePath).Append('\n');
                 }
 
@@ -863,17 +2734,27 @@ namespace ValheimAutoModSync
 
         // Intent: Adds one permitted BepInEx subtree to the signed manifest while preserving paths relative to that subtree.
         // Policy: plugin/patcher roots honor exclusion, server-only, and optional client-required rules; config files are included only by the explicit SyncConfigPatterns allowlist.
+        // Security: recursion never follows reparse-point directories/files, and every source is rechecked beneath the fixed root before hashing.
         private static void AddManifestRoot(List<FileRecord> records, char kind, string root, bool configAllowlistRequired)
         {
             if (records == null || String.IsNullOrEmpty(root) || !Directory.Exists(root)) return;
-            string[] files = Directory.GetFiles(root, "*", SearchOption.AllDirectories);
+            List<string> files = EnumerateManifestFiles(root);
             int i;
-            for (i = 0; i < files.Length; i++)
+            for (i = 0; i < files.Count; i++)
             {
                 string full = files[i];
                 string rel = NormalizeRelative(MakeRelative(root, full));
                 string name = Path.GetFileName(full);
-                if (rel.Length == 0 || IsExcluded(rel, name)) continue;
+                if (rel.Length == 0)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync skipped an unsafe Windows path while scanning " + root + ": " + full);
+                    continue;
+                }
+                if (IsExcluded(rel, name)) continue;
+
+                // Recheck after enumeration to narrow the window in which a local filesystem entry could be swapped for a junction/symlink.
+                full = AutoModSyncPathSafety.SafeUnderRoot(root, rel, true);
+
                 if (kind == 'C')
                 {
                     if (IsProtectedConfigName(name)) continue;
@@ -891,10 +2772,49 @@ namespace ValheimAutoModSync
                 r.Kind = kind;
                 r.RelativePath = rel;
                 r.FullPath = full;
+                r.SourceLabel = kind == 'P' ? "BepInEx/plugins" : (kind == 'R' ? "BepInEx/patchers" : "BepInEx/config");
                 r.Size = fi.Length;
                 r.Sha256 = Sha256File(full);
                 records.Add(r);
             }
+        }
+
+        // Intent: Adds recursively packaged client-only plugin payload without placing it in the dedicated server's loadable plugin directory.
+        // Policy: every safe non-excluded file under ClientPayload/plugins is implicitly client-required; ServerOnlyPatterns/ClientRequiredPatterns do not reclassify this explicit client-only tree.
+        // Security: shared production scanning rejects unsafe/reparse paths, while final manifest registration rejects case-insensitive collisions with normal plugin sources.
+        private static void AddClientPayloadPluginRoot(List<FileRecord> records, string root)
+        {
+            if (records == null || String.IsNullOrEmpty(root) || !Directory.Exists(root)) return;
+
+            List<AutoModSyncClientPayloadFile> payload = AutoModSyncClientPayload.CollectPluginFiles(
+                root,
+                delegate(string relative, string name) { return IsExcluded(relative, name); });
+
+            int i;
+            for (i = 0; i < payload.Count; i++)
+            {
+                AutoModSyncClientPayloadFile item = payload[i];
+                FileRecord record = new FileRecord();
+                record.Kind = 'P';
+                record.RelativePath = item.RelativePath;
+                record.FullPath = item.FullPath;
+                record.SourceLabel = "BepInEx/AutoModSync/ClientPayload/plugins";
+                record.Size = item.Size;
+                record.Sha256 = item.Sha256;
+                records.Add(record);
+            }
+        }
+
+        // Intent: Recursively enumerates one manifest source tree without following filesystem reparse points.
+        // Security: a junction/symlink inside plugins, patchers, or config must never expand the server's distributable source boundary.
+        private static List<string> EnumerateManifestFiles(string root)
+        {
+            return AutoModSyncManifestScanner.EnumerateFiles(
+                root,
+                delegate(string message)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning(message);
+                });
         }
 
         // Intent: Hard-blocks AutoModSync identity files and BepInEx's loader-wide config from remote config synchronization even when an administrator uses a broad allowlist.
@@ -1001,10 +2921,7 @@ namespace ValheimAutoModSync
         // Intent: Canonicalizes manifest relative paths and rejects parent traversal, drive/URI separators, tabs, and newline characters before they enter protocol data.
         private static string NormalizeRelative(string value)
         {
-            if (value == null) return "";
-            value = value.Replace('\\', '/').TrimStart('/');
-            if (value.IndexOf("../", StringComparison.Ordinal) >= 0 || value == ".." || value.IndexOf(':') >= 0) return "";
-            return value;
+            return AutoModSyncPathSafety.NormalizeRelative(value);
         }
 
         // Intent: Converts an absolute plugin path to a normalized relative path rooted at BepInEx/plugins; used only after the scan has already enumerated beneath that root.

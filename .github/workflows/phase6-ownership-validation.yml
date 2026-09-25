@@ -1,0 +1,28 @@
+name: Phase 6 Ownership Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+    paths:
+      - "Source/ValheimAutoModSync.Apply.cs"
+      - "Source/AutoModSync.OwnershipState.cs"
+      - "Source/AutoModSync.PathSafety.cs"
+      - "test-phase6-ownership.ps1"
+      - ".github/workflows/phase6-ownership-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ownership:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run isolated Phase 6 ownership/apply harness
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase6-ownership.ps1"

@@ -22,11 +22,13 @@ Package-manager installations are treated as package-managed AutoModSync install
 
 AutoModSync communicates only with the Valheim server the user chooses to join, using Valheim's existing game connection. Its core function is to compare a signed server manifest, transfer missing or changed synchronized BepInEx files from that server, verify them, stage them, restart Valheim when required, and reconnect.
 
+In 2.6, identical large client payloads can reuse one immutable cached/prewarmed server bundle; transfers are bounded by a server-wide scheduler and can resume from a retained prefix only after the server independently verifies that exact prefix. No additional synchronization port is required.
+
 ## Security
 
-BepInEx plugins and preloader patchers can execute code. Only trust AutoModSync server fingerprints belonging to server operators you recognize and trust.
+BepInEx plugins and preloader patchers can execute code. Only approve first-contact AutoModSync trust for servers you recognize and intend to join.
 
-Transferred files are covered by the server's signed manifest and verified with SHA-256 before application.
+First contact shows a short human-comparison security code; the complete server fingerprint remains internal for cryptographic trust/pinning. Transferred files are covered by the server's signed manifest and verified with SHA-256 before application. Ownership-safe cleanup preserves locally modified and unrelated files.
 
 ## Source
 

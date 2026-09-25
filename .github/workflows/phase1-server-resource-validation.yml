@@ -1,0 +1,27 @@
+name: Phase 1 Server Resource Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+    paths:
+      - "Source/ValheimAutoModSync.Server.cs"
+      - "Source/AutoModSync.ServerResourceSafety.cs"
+      - "test-phase1-server-resources.ps1"
+      - ".github/workflows/phase1-server-resource-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server-resources:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run isolated server resource-limit harness
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase1-server-resources.ps1"

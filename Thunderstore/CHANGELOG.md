@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.6.0
+
+- Adds content-addressed bundle caching, startup prewarming, and single-flight construction so identical fresh-client requests reuse one immutable verified ZIP rather than rebuilding it per client.
+- Adds a bounded FIFO bundle scheduler with configurable active/queued limits, round-robin aggregate bandwidth grants, Steam reliable-queue backpressure, persistent per-transfer streams, queue-position telemetry, and dead/idle cleanup.
+- Adds exact-artifact resumable downloads through the optional AMS4 `bundle-resume1` capability. Interrupted clients retain one bounded partial ZIP; the server independently verifies the exact retained prefix against the current immutable artifact before accepting a nonzero resume point.
+- Adds `BepInEx/AutoModSync/ClientPayload/plugins/**` for client-required files/assets that dedicated servers should distribute without loading themselves.
+- Adds conservative fingerprint-scoped ownership. AutoModSync claims only files it actually installs/replaces, does not claim matching pre-existing local files, and retires stale files only when the live bytes still exactly match the same trusted server's last-owned SHA-256/size.
+- Adds same-server continuity requirements for stale deletion so switching trusted servers cannot cause one server's ownership ledger to delete another server's files.
+- Replaces destructive per-file apply with a durable transactional helper. PREPARED transactions back up old destinations and roll back/retry after interruption; COMMITTED transactions preserve the complete new state and finish cleanup.
+- Adds strict client/server resource ceilings, bounded streaming ZIP extraction, fixed-root path containment, Windows reserved-name/trailing-dot-space defenses, and reparse-point rejection across client/server/apply.
+- Separates non-AMS fail-open discovery from recognized-AMS fail-closed behavior. Once a server positively identifies as AMS, signature/trust/path/resource/transfer/apply-preparation failures abort that protected join instead of silently bypassing synchronization.
+- Adds the state-driven AMS synchronization panel with signed-manifest comparison counts, queue state, download progress, current/average throughput, ETA, retained resume bytes, verification progress, apply/restart/reconnect status, and bounded failure presentation.
+- Replaces normal full-fingerprint display with a short first-contact human-comparison security code. The complete 256-bit fingerprint is still used internally for signature verification, trust pinning, server-change detection, and ownership scoping.
+- Adds passive Steam server-browser presence rules and a small client-side AMS badge. Badge binding uses Valheim's exact `m_serverListElements` ownership rather than index pairing, preventing pooled/reused rows from inheriting another server's badge. Server advertisement and client badge display are independently configurable.
+- Polishes the standalone installer with AMS charcoal/orange branding, embedded icons, complete/partial install detection, Repair / Update, and role-aware Uninstall.
+- Client uninstall removes synchronized files only when strict ownership metadata plus live size/SHA-256 prove the bytes are still AMS-owned; locally modified files, unrelated mods, and shared BepInEx are preserved.
+- Server uninstall preserves operator-managed `ClientPayload`, server config, and signing identity by default. Explicit identity removal deletes only the documented AMS server config/private/public identity files while preserving shared BepInEx and operator payloads.
+- Adds first-party PII guards to development/release builds and Windows CI for authored source/text plus printable strings in AutoModSync-authored binaries.
+- Adds reproducible AMS executable branding from the canonical PNG, including multi-size ICO output for the Apply helper and installer.
+- Adds SHA-256 release manifests plus GitHub/Sigstore build-provenance attestations for official GitHub-built standalone and store packages. Users can verify exact downloaded bytes with `gh attestation verify <artifact> -R GordonFreesay/ValheimAutoModSync`; this is separate from Windows Authenticode/SmartScreen trust.
+- Keeps AMS4 / protocol 4 and preserves negotiated compatibility fallbacks for older AMS4 peers.
+
 ## 2.5.0
 
 - Moves AutoModSync preflight ahead of the normal Valheim ServerHandshake so Jotunn/Epic Loot and similar mod-compatibility checks run only after synchronization has had a chance to complete.

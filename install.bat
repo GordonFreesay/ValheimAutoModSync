@@ -9,6 +9,7 @@ if exist "%PACKAGEROOT%VERSION" set /p AMS_VERSION=<"%PACKAGEROOT%VERSION"
 if not defined AMS_VERSION set "AMS_VERSION=unknown"
 set "CLIENTDLL_PAYLOAD=%PACKAGEROOT%Client\ValheimAutoModSync.Client.dll"
 set "CLIENTAPPLY_PAYLOAD=%PACKAGEROOT%Client\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe"
+set "CLIENTAPPLY_ICON_PAYLOAD=%PACKAGEROOT%Client\BepInEx\AutoModSync\ValheimAutoModSync.Apply.ico"
 set "CLIENTRUNTIME=%PACKAGEROOT%Client"
 set "LEGACY_BOOTSTRAP_SHA256=e5b15848829648dc97c7f40df2800c33372500e3b8047944ef1c84a2a107c3b8"
 set "SERVERDLL_PAYLOAD=%PACKAGEROOT%Server\ValheimAutoModSync.Server.dll"
@@ -155,6 +156,7 @@ echo.
 echo Installing transparent AutoModSync client runtime...
 if not exist "%CLIENTDLL_PAYLOAD%" goto :ClientPayloadMissing
 if not exist "%CLIENTAPPLY_PAYLOAD%" goto :ClientPayloadMissing
+if not exist "%CLIENTAPPLY_ICON_PAYLOAD%" goto :ClientPayloadMissing
 if not exist "%CLIENTRUNTIME%\winhttp.dll" goto :ClientPayloadMissing
 if not exist "%CLIENTRUNTIME%\doorstop_config.ini" goto :ClientPayloadMissing
 if not exist "%CLIENTRUNTIME%\BepInEx\core\BepInEx.dll" goto :ClientPayloadMissing
@@ -182,7 +184,9 @@ copy /y "%CLIENTDLL_PAYLOAD%" "%VALHEIMROOT%\BepInEx\plugins\ValheimAutoModSync.
 if errorlevel 1 goto :ClientCopyFailed
 copy /y "%CLIENTAPPLY_PAYLOAD%" "%VALHEIMROOT%\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe" >nul 2>&1
 if errorlevel 1 goto :ClientCopyFailed
-echo Installed AutoModSync client plugin and apply helper.
+copy /y "%CLIENTAPPLY_ICON_PAYLOAD%" "%VALHEIMROOT%\BepInEx\AutoModSync\ValheimAutoModSync.Apply.ico" >nul 2>&1
+if errorlevel 1 goto :ClientCopyFailed
+echo Installed AutoModSync client plugin, apply helper, and helper icon.
 exit /b 0
 
 :RemoveKnownLegacyBootstrap
@@ -226,6 +230,7 @@ if not exist "%BUILDTOOL%" goto :RuntimePayloadMissing
 if not exist "%SERVERDLL_PAYLOAD%" goto :RuntimePayloadMissing
 if not exist "%CLIENTDLL_PAYLOAD%" goto :RuntimePayloadMissing
 if not exist "%CLIENTAPPLY_PAYLOAD%" goto :RuntimePayloadMissing
+if not exist "%CLIENTAPPLY_ICON_PAYLOAD%" goto :RuntimePayloadMissing
 if not defined WORK set "WORK=%TEMP%\ValheimAutoModSync_%RANDOM%_%RANDOM%"
 if not exist "%WORK%" mkdir "%WORK%" >nul 2>&1
 exit /b 0

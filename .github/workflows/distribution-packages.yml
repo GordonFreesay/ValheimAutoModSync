@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -41,6 +43,40 @@ jobs:
           AMS_NO_PAUSE: "1"
           AMS_REQUIRE_SIGNING: "0"
         run: ./build-store-packages.ps1
+
+      - name: Validate SHA-256 release manifest
+        shell: pwsh
+        run: |
+          $manifest = Join-Path $PWD 'Dist/SHA256SUMS.txt'
+          if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw "Missing release checksum manifest: $manifest" }
+          $expected = @(
+            "ValheimAutoModSync-$env:AMS_VERSION.zip",
+            "ValheimAutoModSync-$env:AMS_VERSION-Nexus.zip",
+            "ValheimAutoModSync-$env:AMS_VERSION-CurseForge.zip",
+            "GordonFreesay-ValheimAutoModSync-$env:AMS_VERSION.zip"
+          )
+          $lines = @(Get-Content -LiteralPath $manifest)
+          foreach ($name in $expected) {
+            if (-not ($lines -match ("^[0-9a-f]{64} \*" + [regex]::Escape($name) + "$"))) { throw "SHA256SUMS.txt is missing $name" }
+          }
+
+      - name: Attest all release package digests
+        uses: actions/attest@v4
+        with:
+          subject-checksums: Dist/SHA256SUMS.txt
+
+      - name: Attest checksum manifest
+        uses: actions/attest@v4
+        with:
+          subject-path: Dist/SHA256SUMS.txt
+
+      - name: Upload checksum manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: ValheimAutoModSync-${{ env.AMS_VERSION }}-SHA256SUMS
+          path: Dist/SHA256SUMS.txt
+          archive: false
+          if-no-files-found: error
 
       - name: Upload standalone package
         uses: actions/upload-artifact@v7

@@ -4,18 +4,18 @@ AutoModSync uses **one semantic version across every distribution channel**.
 
 The authoritative version is the root `VERSION` file. Build scripts and GitHub Actions read that value. `verify-version.ps1` fails the build if the AutoModSync plugin/assembly metadata does not match it.
 
-For the current release, every channel is **2.5.0**. A store name in an archive filename identifies the packaging target; it is not a different software version.
+For the current release, every channel is **2.6.0**. A store name in an archive filename identifies the packaging target; it is not a different software version.
 
 ## Artifacts
 
 | Channel | Version shown to users | Artifact | Purpose |
 | --- | --- | --- | --- |
-| GitHub / website | `2.5.0` | `ValheimAutoModSync-2.5.0.zip` | Canonical standalone installer package with bundled, hash-pinned BepInEx |
-| Nexus Mods | `2.5.0` | `ValheimAutoModSync-2.5.0-Nexus.zip` | Lightweight Nexus package; BepInEx is a separate requirement and no archive is nested inside the ZIP |
-| CurseForge | `2.5.0` | `ValheimAutoModSync-2.5.0-CurseForge.zip` | Lightweight CurseForge package; BepInEx is a separate requirement |
-| Thunderstore / r2modman | `2.5.0` | `GordonFreesay-ValheimAutoModSync-2.5.0.zip` | Native Thunderstore package with `manifest.json` and BepInEx dependency metadata |
+| GitHub / website | `2.6.0` | `ValheimAutoModSync-2.6.0.zip` | Canonical standalone installer package with bundled, hash-pinned BepInEx |
+| Nexus Mods | `2.6.0` | `ValheimAutoModSync-2.6.0-Nexus.zip` | Lightweight Nexus package; BepInEx is a separate requirement and no archive is nested inside the ZIP |
+| CurseForge | `2.6.0` | `ValheimAutoModSync-2.6.0-CurseForge.zip` | Lightweight CurseForge package; BepInEx is a separate requirement |
+| Thunderstore / r2modman | `2.6.0` | `GordonFreesay-ValheimAutoModSync-2.6.0.zip` | Native Thunderstore package with `manifest.json` and BepInEx dependency metadata |
 
-Store-specific packages are **not separate GitHub releases**. The GitHub `v2.5.0` release remains the canonical standalone release, and the website should continue to say that the current AutoModSync version is **2.5.0**.
+Store-specific packages are **not separate GitHub releases**. The GitHub `v2.6.0` release is the canonical standalone release, and the website should identify **2.6.0** as the current AutoModSync version.
 
 GitHub Actions artifacts are used as staging outputs for the store packages. After publication, the Nexus/CurseForge/Thunderstore pages are the normal download locations for those variants.
 
@@ -39,7 +39,7 @@ The store-specific builders intentionally do not bundle BepInEx. Only the standa
 
 `.github/workflows/distribution-packages.yml`
 
-Runs manually or when a `v*` tag is pushed. It builds the standalone, Nexus, CurseForge, and Thunderstore ZIPs from the same source revision and uploads each as a GitHub Actions artifact.
+Runs manually or when a `v*` tag is pushed. It builds the standalone, Nexus, CurseForge, and Thunderstore ZIPs from the same source revision, generates one `SHA256SUMS.txt` covering all four package files, creates GitHub/Sigstore provenance attestations for those exact digests plus the checksum manifest, and uploads each package/checksum file as a GitHub Actions artifact.
 
 ### Nexus Mods
 
@@ -84,18 +84,25 @@ The token should belong to a Thunderstore team service account allowed to publis
 
 Run the workflow manually with `publish=true` to publish. With `publish=false`, it only builds and uploads the package as a GitHub Actions artifact.
 
+Each manual store-publishing workflow also SHA-256 hashes and attests the exact store ZIP produced in that publishing run before upload. Do not substitute an independently rebuilt ZIP merely because it has the same version number; provenance is digest-specific.
+
 ## Release procedure
 
-For a future release:
+For a release:
 
-1. Update the root `VERSION`.
-2. Update the matching AutoModSync source/assembly version declarations.
-3. Update changelog/release notes.
-4. Run the build. `verify-version.ps1` prevents version drift.
-5. Publish the canonical GitHub standalone release/tag.
-6. Run the distribution/store workflows for that same version.
-7. Keep the website's current version equal to the shared AutoModSync version; link to store pages as alternate installation channels rather than presenting them as different versions.
+1. Freeze the release branch: update `VERSION`, source/assembly metadata, changelog, README/store copy, and release notes; stop runtime feature changes.
+2. Run `test-release-readiness.ps1` and require the Release Readiness, privacy, installer, branding, and provenance CI gates to pass.
+3. Merge the reviewed release PR into `main` without changing release content after the validated head revision.
+4. Require the `main` Standalone Release Build/readiness workflows to pass.
+5. Tag the exact validated `main` commit as `v<version>`. The tag triggers **Distribution Packages**.
+6. Require Distribution Packages to build all four package variants, `SHA256SUMS.txt`, and GitHub/Sigstore attestations successfully.
+7. Download the workflow-produced canonical standalone ZIP and `SHA256SUMS.txt`; run `gh attestation verify <artifact> -R GordonFreesay/ValheimAutoModSync` against the exact downloaded bytes, and verify the checksum manifest too.
+8. Only after verification succeeds, publish the canonical GitHub Release using those exact workflow-produced bytes plus `SHA256SUMS.txt` and the checked-in release notes.
+9. Run the Nexus/CurseForge/Thunderstore publication workflows for the same version. Each workflow independently hashes and attests the exact store ZIP it uploads.
+10. Update the website to the same shared AutoModSync version and link the store pages as alternate installation channels rather than separate versions.
+
+Do not rebuild/repackage an artifact between attestation verification and publication. Provenance is tied to the exact digest.
 
 ## Signing
 
-Public Windows releases are currently unsigned. Store packaging does not change that status. See `SIGNING.md`.
+AutoModSync PE files are currently Authenticode-unsigned, but official GitHub-built 2.6+ packages receive SHA-256 manifests and GitHub/Sigstore provenance attestations. Store packaging does not convert provenance into Authenticode. See `SIGNING.md` and `VERIFYING-RELEASES.md`.

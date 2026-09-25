@@ -10,7 +10,7 @@ AutoModSync is compiled against BepInEx, Harmony, Valheim, and Unity APIs, but t
 
 Relevant upstream projects retain their own licenses and copyrights:
 
-- BepInEx â€” MIT
-- Harmony / HarmonyX â€” MIT
-- Valheim â€” Iron Gate AB / Coffee Stain Publishing
-- Unity â€” Unity Technologies
+- BepInEx — MIT
+- Harmony / HarmonyX — MIT
+- Valheim — Iron Gate AB / Coffee Stain Publishing
+- Unity — Unity Technologies

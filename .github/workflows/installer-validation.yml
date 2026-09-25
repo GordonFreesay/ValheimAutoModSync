@@ -1,0 +1,47 @@
+name: Installer Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+    paths:
+      - "Source/ValheimAutoModSync.Installer.cs"
+      - "Source/AutoModSync.IdentityDisplay.cs"
+      - "Source/AutoModSync.PathSafety.cs"
+      - "Source/AutoModSync.OwnershipState.cs"
+      - "Source/AutoModSyncInstaller.manifest"
+      - "Thunderstore/icon.png"
+      - "build-release.bat"
+      - "verify-source-docs.ps1"
+      - "verify-no-pii.ps1"
+      - "test-installer-contract.ps1"
+      - "test-installer-live.ps1"
+      - ".github/workflows/installer-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify C# intent comments
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\verify-source-docs.ps1"
+
+      - name: Parse isolated live installer gate
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\test-installer-live.ps1"), [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Host; throw "Installer live gate has PowerShell parse errors." }
+
+      - name: Run standalone installer contract
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-installer-contract.ps1"
