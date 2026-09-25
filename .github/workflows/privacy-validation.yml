@@ -27,4 +27,4 @@ jobs:
 
       - name: Validate server identity display
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase7-identity-display.ps1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-phase7-identity-display.ps1"
