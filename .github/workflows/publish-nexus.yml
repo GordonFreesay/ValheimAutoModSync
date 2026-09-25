@@ -96,7 +96,7 @@ jobs:
         shell: pwsh
         env:
           NEXUSMODS_API_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
-          NEXUSMODS_FILE_ID_OVERRIDE: ${{ vars.NEXUSMODS_FILE_ID }}
+          NEXUSMODS_FILE_ID_OVERRIDE: "8027793"
           NEXUSMODS_GAME_DOMAIN: valheim
           NEXUSMODS_GAME_SCOPED_MOD_ID: "4006"
         run: |
