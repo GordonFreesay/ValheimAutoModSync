@@ -6,7 +6,7 @@ on:
       - dev/2.6
     paths:
       - "Source/AutoModSync.PathSafety.cs"
-      - "test-phase1-paths.ps1"
+      - "tests/test-phase1-paths.ps1"
       - ".github/workflows/phase1-path-validation.yml"
   workflow_dispatch:
 
@@ -23,4 +23,4 @@ jobs:
 
       - name: Run isolated Phase 1 path-boundary harness
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase1-paths.ps1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-phase1-paths.ps1"
