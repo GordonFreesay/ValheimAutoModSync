@@ -6,7 +6,7 @@ on:
       - dev/2.6
     paths:
       - "Source/AutoModSync.TransferScheduler.cs"
-      - "test-phase5-scheduler.ps1"
+      - "tests/test-phase5-scheduler.ps1"
       - ".github/workflows/phase5-scheduler-validation.yml"
   workflow_dispatch:
 
@@ -23,4 +23,4 @@ jobs:
 
       - name: Run deterministic Phase 5 scheduler harness
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase5-scheduler.ps1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-phase5-scheduler.ps1"
