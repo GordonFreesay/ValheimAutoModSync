@@ -82,17 +82,15 @@ jobs:
         shell: pwsh
         env:
           CURSEFORGE_API_TOKEN: ${{ secrets.CURSEFORGE_API_TOKEN }}
-          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:CURSEFORGE_API_TOKEN)) { throw 'CURSEFORGE_API_TOKEN secret is not configured.' }
-          if ([string]::IsNullOrWhiteSpace($env:CURSEFORGE_PROJECT_ID)) { throw 'CURSEFORGE_PROJECT_ID variable is not configured.' }
 
       - name: Upload to CurseForge as manual-release file
         if: ${{ inputs.publish }}
         shell: pwsh
         env:
           CURSEFORGE_API_TOKEN: ${{ secrets.CURSEFORGE_API_TOKEN }}
-          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          CURSEFORGE_PROJECT_ID: "1702780"
           CURSEFORGE_BEPINEX_PROJECT_ID: ${{ vars.CURSEFORGE_BEPINEX_PROJECT_ID }}
         run: |
           $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
