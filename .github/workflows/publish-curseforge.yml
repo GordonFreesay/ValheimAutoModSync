@@ -103,7 +103,6 @@ jobs:
             changelog = $changelog
             changelogType = 'markdown'
             displayName = "Valheim AutoModSync $version"
-            gameVersionNames = @('Client','Server')
             releaseType = 'release'
             isMarkedForManualRelease = $true
           }
