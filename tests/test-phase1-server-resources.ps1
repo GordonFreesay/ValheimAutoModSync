@@ -10,7 +10,7 @@ Set-StrictMode -Version 2.0
 # request accumulation, ZIP-length checks, and failed-build temporary cleanup through it.
 # No real Valheim/BepInEx installation is touched and no large files are allocated.
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $repoRoot 'Source'
 $policySource = Join-Path $source 'AutoModSync.ServerResourceSafety.cs'
 $serverSource = Join-Path $source 'ValheimAutoModSync.Server.cs'

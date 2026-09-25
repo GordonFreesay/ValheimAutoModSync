@@ -10,7 +10,7 @@ Set-StrictMode -Version 2.0
 # lexical Windows-path rejection, exact-root handling, fixed-root containment, and existing junction rejection.
 # No real Valheim/BepInEx installation, trust store, server files, or release artifacts are touched.
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent $PSScriptRoot
 $pathSource = Join-Path $repoRoot 'Source\AutoModSync.PathSafety.cs'
 if (-not (Test-Path -LiteralPath $pathSource -PathType Leaf)) { throw "Missing source: $pathSource" }
 

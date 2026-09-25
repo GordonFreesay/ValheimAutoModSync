@@ -10,7 +10,7 @@ Set-StrictMode -Version 2.0
 # the production client target-path wrapper calls SafeUnderRoot(..., true), so existing leaf components
 # are included in the reparse check. No real Valheim/BepInEx installation is touched.
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent $PSScriptRoot
 $pathSource = Join-Path $repoRoot 'Source\AutoModSync.PathSafety.cs'
 $clientSource = Join-Path $repoRoot 'Source\ValheimAutoModSync.Client.cs'
 foreach ($p in @($pathSource,$clientSource)) {

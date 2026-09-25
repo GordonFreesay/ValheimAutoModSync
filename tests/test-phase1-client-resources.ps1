@@ -10,7 +10,7 @@ Set-StrictMode -Version 2.0
 # client routes manifest/header/chunk/extraction decisions through that policy. No large files are allocated:
 # boundary failures are exercised with arithmetic and small in-memory streams.
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $repoRoot 'Source'
 $policySource = Join-Path $source 'AutoModSync.ClientResourceSafety.cs'
 $clientSource = Join-Path $source 'ValheimAutoModSync.Client.cs'

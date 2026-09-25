@@ -1,5 +1,5 @@
 param(
-    [string]$Helper = (Join-Path $PSScriptRoot 'DevBuild\ValheimAutoModSync.Apply.exe'),
+    [string]$Helper = (Join-Path (Split-Path -Parent $PSScriptRoot) 'DevBuild\ValheimAutoModSync.Apply.exe'),
     [switch]$KeepSandbox
 )
 

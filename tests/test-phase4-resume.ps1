@@ -9,7 +9,7 @@ Set-StrictMode -Version 2.0
 # Compiles the production resume/path-safety sources with a tiny isolated harness and emulates interrupted partial files.
 # It does not load Valheim, contact a server, or touch the real BepInEx tree.
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $root 'Source'
 $resumeSource = Join-Path $source 'AutoModSync.ResumeState.cs'
 $pathSource = Join-Path $source 'AutoModSync.PathSafety.cs'

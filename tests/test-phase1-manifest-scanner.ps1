@@ -9,7 +9,7 @@ Set-StrictMode -Version 2.0
 # Compiles the production scanner + path-safety sources into an isolated harness.
 # A real Windows junction is always exercised. A file symlink is exercised when the host permits creating one.
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $repoRoot 'Source'
 $scannerSource = Join-Path $source 'AutoModSync.ManifestScanner.cs'
 $pathSource = Join-Path $source 'AutoModSync.PathSafety.cs'
