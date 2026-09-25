@@ -81,7 +81,7 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `TESTING-2.6.md` | Adds normal, pre-commit interruption, post-commit cleanup interruption, rollback, journal-validation, and path-safety tests for Phase 2. |
 | `Thunderstore/CHANGELOG.md` | Records the 2.6 transactional apply/recovery behavior in the development changelog. |
 | `build-dev.bat` | Defines `AMS_DEV_TESTS` only for the development Apply helper, enabling one-shot pre-COMMIT, post-rollback inspection, post-COMMIT, pre-first-write, and caught-failure test hooks used by the Phase 2 gate. Release builds do not define the symbol and therefore do not contain these fault-injection paths. |
-| `test-phase2-adversarial.ps1` | Runs the remaining Phase 2 helper adversarial cases in an isolated temporary BepInEx tree: caught per-file failure rollback, journal version rejection, protected/fixed-root path rejection, and reparse-point rejection. It does not touch the real Valheim install or server. |
+| `tests/test-phase2-adversarial.ps1` | Runs the remaining Phase 2 helper adversarial cases in an isolated temporary BepInEx tree: caught per-file failure rollback, journal version rejection, protected/fixed-root path rejection, and reparse-point rejection. It does not touch the real Valheim install or server. |
 | `IMPLEMENTATION-2.6.md` | Records the Phase 2 source/docs change set and keeps implementation status separate from runtime validation. |
 
 ### Phase 3 — cached/single-flight bundle construction
@@ -104,7 +104,7 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `Source/ValheimAutoModSync.Server.cs` | Advertises `bundle-resume1`, parses resume offers only for clients that negotiated it, verifies exact artifact identity plus prefix SHA-256 before returning a nonzero start chunk, and releases cache/Steam transport state for dead mid-transfer peers. Development builds add a one-shot pre-resume-server emulation marker that withholds the capability and keeps the original AMS4 request/header shape. |
 | `build-dev.bat` | Compiles the shared resume source into client/server and defines `AMS_DEV_TESTS` for both roles so transfer interruption and legacy-peer compatibility emulators are development-only. |
 | `build-release.bat` | Compiles the shared resume source into production client/server without any development fault-injection symbol. No release build has been authorized or run. |
-| `test-phase4-resume.ps1` | Compiles the production resume/path-safety sources into an isolated temporary harness and emulates interrupted, truncated, corrupt, wrong-change-set, wrong-server-fingerprint, changed-artifact/chunk-geometry, expired, malformed, and complete bundle-prefix cases without touching the real Valheim installation. |
+| `tests/test-phase4-resume.ps1` | Compiles the production resume/path-safety sources into an isolated temporary harness and emulates interrupted, truncated, corrupt, wrong-change-set, wrong-server-fingerprint, changed-artifact/chunk-geometry, expired, malformed, and complete bundle-prefix cases without touching the real Valheim installation. |
 | `.github/workflows/phase4-resume-validation.yml` | Runs the deterministic Phase 4 resume harness on a Windows GitHub Actions runner when the resume implementation, path-safety dependency, harness, or workflow changes; this provides an independent rerun of the exact production helper code without producing a release artifact. |
 | `SOURCE-WALKTHROUGH.md` | Documents the optional AMS4 resume capability, exact-prefix trust boundary, bounded client state, and safe fallback-to-zero behavior. |
 | `TESTING-2.6.md` | Adds deterministic helper and one-client real-socket interruption gates for Phase 4. |
@@ -121,7 +121,7 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `Server/server-config-example.cfg` | Documents active-slot, aggregate-bandwidth, scheduler-grant, Steam-queue-envelope, and idle-timeout controls. |
 | `build-dev.bat` | Compiles the production scheduler source into the development server runtime. |
 | `build-release.bat` | Compiles the same production scheduler source into the release server path without adding any new release-only behavior. No release build has been authorized or run. |
-| `test-phase5-scheduler.ps1` | Compiles the production scheduler source into an isolated deterministic 8-peer harness covering admission, FIFO promotion, aggregate budget, fairness, refund/backpressure semantics, and queued removal. |
+| `tests/test-phase5-scheduler.ps1` | Compiles the production scheduler source into an isolated deterministic 8-peer harness covering admission, FIFO promotion, aggregate budget, fairness, refund/backpressure semantics, and queued removal. |
 | `.github/workflows/phase5-scheduler-validation.yml` | Runs the deterministic scheduler harness on Windows when the scheduler/harness/workflow changes. It produces no release artifact. |
 | `SOURCE-WALKTHROUGH.md` | Documents Phase 5 admission, token-bucket fairness, persistent per-transfer streams, queue backpressure, and AMS4 compatibility. |
 | `TESTING-2.6.md` | Adds the deterministic and live Phase 5 validation gates and records the CI-discovered fairness fix. |
@@ -139,13 +139,13 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `Source/ValheimAutoModSync.Server.cs` | Adds the fixed client-only plugin source root under `BepInEx/AutoModSync/ClientPayload/plugins`, maps it to ordinary signed `P` destinations, keeps it outside the server's loadable plugin tree, treats every non-excluded payload file as client-required, and rejects final destination collisions instead of allowing source shadowing. |
 | `build-dev.bat` | Compiles ownership state into the development client/Apply helper and the client-payload scanner into the development server. |
 | `build-release.bat` | Compiles the same ownership/client-payload sources into the release-path client/helper/server without enabling development fault hooks. No release artifact has been authorized or built. |
-| `test-phase6-ownership.ps1` | Compiles production Apply/ownership/path-safety sources and exercises ownership acquisition, exact deletion, wrong-digest/cross-server rejection, PREPARED rollback, and COMMITTED recovery entirely inside a temporary BepInEx tree. |
-| `test-phase6-clientpayload.ps1` | Compiles production client-payload/ownership/path-safety sources and exercises recursive payload discovery/hash metadata, exclusion behavior, collision rejection, and immediately-prior-server marker semantics in an isolated temporary tree. |
-| `test-phase6-live.ps1` | Provides a bounded guided three-join live lifecycle fixture under a dedicated harmless test subtree: initial AMS acquisition versus matching pre-existing local bytes, rename + modified-local preservation/relinquishment, delete-only cleanup, and ownership/apply-log inspection. It never edits trust/config/real mod DLLs or ownership metadata directly. |
+| `tests/test-phase6-ownership.ps1` | Compiles production Apply/ownership/path-safety sources and exercises ownership acquisition, exact deletion, wrong-digest/cross-server rejection, PREPARED rollback, and COMMITTED recovery entirely inside a temporary BepInEx tree. |
+| `tests/test-phase6-clientpayload.ps1` | Compiles production client-payload/ownership/path-safety sources and exercises recursive payload discovery/hash metadata, exclusion behavior, collision rejection, and immediately-prior-server marker semantics in an isolated temporary tree. |
+| `tests/test-phase6-live.ps1` | Provides a bounded guided three-join live lifecycle fixture under a dedicated harmless test subtree: initial AMS acquisition versus matching pre-existing local bytes, rename + modified-local preservation/relinquishment, delete-only cleanup, and ownership/apply-log inspection. It never edits trust/config/real mod DLLs or ownership metadata directly. |
 | `.github/workflows/phase6-ownership-validation.yml` | Runs the isolated ownership/apply harness on Windows when Phase 6 transaction/ownership sources or the harness change. |
 | `.github/workflows/phase6-clientpayload-validation.yml` | Runs the isolated client-payload/prior-server production-policy harness on Windows. |
 | `.github/workflows/apply-transaction-regression.yml` | Recompiles the current development Apply helper and reruns the closed Phase 2 adversarial transaction suite whenever ownership/journal/apply safety sources change. |
-| `test-phase2-adversarial.ps1` | Updates Phase 2 journal-manipulation expectations for newly-written `AMSTXN2` while preserving the underlying rollback/path-safety regression coverage. |
+| `tests/test-phase2-adversarial.ps1` | Updates Phase 2 journal-manipulation expectations for newly-written `AMSTXN2` while preserving the underlying rollback/path-safety regression coverage. |
 | `SOURCE-WALKTHROUGH.md` | Documents fingerprint-scoped ownership, conservative stale deletion authority, metadata-only relinquishment, and AMSTXN1-to-AMSTXN2 recovery compatibility. |
 | `TESTING-2.6.md` | Adds deterministic and live Phase 6 lifecycle gates and records observed CI evidence only. |
 | `Thunderstore/CHANGELOG.md` | Records Phase 6 development behavior without publishing a release. |
@@ -156,7 +156,7 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | File | Purpose |
 | --- | --- |
 | `Source/ValheimAutoModSync.Installer.cs` | Polishes the standalone Windows installer with embedded AMS branding, live complete/partial install detection, `Repair / Update`, and a role-aware `Uninstall` button that appears only for complete selected-role installs. Client uninstall uses strict ownership metadata + live SHA-256 before retiring synchronized files, blocks on pending apply recovery, preserves changed/local files and shared BepInEx; server uninstall preserves operator ClientPayload and signing identity/config by default, with explicit opt-in identity removal. |
-| `test-installer-contract.ps1` / `.github/workflows/installer-validation.yml` | Compile the production installer with the shared identity/path/ownership helpers, enforce the branded/uninstall contract, run the source documentation gate, and PII-scan the compiled installer artifact. |
+| `tests/test-installer-contract.ps1` / `.github/workflows/installer-validation.yml` | Compile the production installer with the shared identity/path/ownership helpers, enforce the branded/uninstall contract, run the source documentation gate, and PII-scan the compiled installer artifact. |
 
 ## Release provenance
 
@@ -167,7 +167,7 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `.github/workflows/distribution-packages.yml` | On manual/tag builds, validates the four-package checksum manifest, attests all four subject digests plus the manifest, and uploads the checksum file with the package artifacts. |
 | `.github/workflows/publish-*.yml` | Each store workflow hashes and attests the exact store ZIP produced by that publishing run before uploading it, avoiding any assumption that separately rebuilt ZIPs are byte-identical. |
 | `VERIFYING-RELEASES.md` | Gives users direct `gh attestation verify` and SHA-256 verification commands while explicitly distinguishing provenance from Authenticode/SmartScreen trust. |
-| `test-release-provenance.ps1` / `.github/workflows/release-provenance-validation.yml` | Deterministically validate checksum ordering/digests, workflow permission/subject wiring, exact store coverage, and local-build non-attestation wording. |
+| `tests/test-release-provenance.ps1` / `.github/workflows/release-provenance-validation.yml` | Deterministically validate checksum ordering/digests, workflow permission/subject wiring, exact store coverage, and local-build non-attestation wording. |
 
 ## Phase 7 — telemetry / branded in-game product UI
 
@@ -184,12 +184,12 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `build-release.bat` | Applies the same embedded client-logo and helper-icon path to release compilation, embeds the icon into the standalone installer, and packages physical ICO files beside the user-facing executables. Release builds still omit all `AMS_DEV_TESTS` preview hooks. |
 | `deploy-dev.ps1` | Deploys and SHA-256 verifies the generated helper ICO beside the exact development Apply helper location in addition to the runtime binaries. |
 | `build-thunderstore.ps1` / `build-modsite-package.ps1` / `install.bat` | Keep `ValheimAutoModSync.Apply.ico` beside `ValheimAutoModSync.Apply.exe` for package-manager, Nexus/CurseForge, and standalone installation paths. |
-| `test-phase7-ui-state.ps1` | Deterministically validates the production presentation model: reset, comparison counters, transfer rate/ETA/progress, resume accounting, queue/verification bounds, and cross-session reset. |
-| `test-phase7-identity-display.ps1` | Compiles the production identity-display helper and verifies deterministic 64-bit code formatting, invalid-input behavior, full technical formatting, and absence of legacy full/partial fingerprint presentation from normal client UI. |
-| `test-phase7-server-browser-presence.ps1` | Arms the one-shot live browser-structure probe and verifies the dedicated server logged successful publication of the passive Steam AMS rule marker before badge rendering is implemented. |
+| `tests/test-phase7-ui-state.ps1` | Deterministically validates the production presentation model: reset, comparison counters, transfer rate/ETA/progress, resume accounting, queue/verification bounds, and cross-session reset. |
+| `tests/test-phase7-identity-display.ps1` | Compiles the production identity-display helper and verifies deterministic 64-bit code formatting, invalid-input behavior, full technical formatting, and absence of legacy full/partial fingerprint presentation from normal client UI. |
+| `tests/test-phase7-server-browser-presence.ps1` | Arms the one-shot live browser-structure probe and verifies the dedicated server logged successful publication of the passive Steam AMS rule marker before badge rendering is implemented. |
 | `verify-no-pii.ps1` / `.github/workflows/privacy-validation.yml` | Add a project-wide first-party privacy gate for tracked text plus AutoModSync-authored binaries, and independently validate the C# intent-comment requirement and identity display on Windows CI. Both dev and release builders invoke the guard before compilation and again against authored PE outputs. |
-| `test-phase7-branding.ps1` | Generates and structurally validates the ICO, checks the production client state/branding wiring, and verifies dev/release/deploy/distribution packaging contracts. |
-| `test-phase7-ui-preview.ps1` | Arms a one-shot development marker so the maintainer can visually inspect ten branded presentation states at the Valheim main menu without mutating synchronization state. |
+| `tests/test-phase7-branding.ps1` | Generates and structurally validates the ICO, checks the production client state/branding wiring, and verifies dev/release/deploy/distribution packaging contracts. |
+| `tests/test-phase7-ui-preview.ps1` | Arms a one-shot development marker so the maintainer can visually inspect ten branded presentation states at the Valheim main menu without mutating synchronization state. |
 | `.github/workflows/phase7-ui-state-validation.yml` / `.github/workflows/phase7-branding-validation.yml` | Independently rerun the deterministic model and branding/package contracts on Windows. |
 | `SOURCE-WALKTHROUGH.md` / `TESTING-2.6.md` / `Thunderstore/CHANGELOG.md` | Document the presentation-only trust boundary, visual/runtime gates, and 2.6 development behavior. |
 
