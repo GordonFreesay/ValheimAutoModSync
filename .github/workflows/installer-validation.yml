@@ -14,8 +14,8 @@ on:
       - "build-release.bat"
       - "verify-source-docs.ps1"
       - "verify-no-pii.ps1"
-      - "test-installer-contract.ps1"
-      - "test-installer-live.ps1"
+      - "tests/test-installer-contract.ps1"
+      - "tests/test-installer-live.ps1"
       - ".github/workflows/installer-validation.yml"
   workflow_dispatch:
 
@@ -39,9 +39,9 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\test-installer-live.ps1"), [ref]$tokens, [ref]$errors)
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\tests/test-installer-live.ps1"), [ref]$tokens, [ref]$errors)
           if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Host; throw "Installer live gate has PowerShell parse errors." }
 
       - name: Run standalone installer contract
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-installer-contract.ps1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-installer-contract.ps1"
