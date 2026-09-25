@@ -19,8 +19,11 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 - Explicit server-only/client-required wildcard classification; config synchronization remains opt-in.
 - Uses Valheim's existing game connection; no separate AutoModSync sync port is required.
 - Transfers only missing or changed synchronized files.
+- Content-addressed bundle caching, startup prewarming, bounded concurrent scheduling, and exact-artifact interrupted-download resume for large public-server payloads.
 - Signed server manifest and SHA-256 file verification.
-- In-game synchronization/download progress.
+- Durable transactional apply/recovery plus fingerprint-scoped ownership-safe stale cleanup.
+- Branded in-game synchronization UI with queue state, current/average throughput, ETA, verification, restart/reconnect, and resume-retained-byte telemetry.
+- Passive Steam server-browser AMS presence/badge with server/client opt-outs.
 - Automatic restart after synchronized files are staged.
 - Automatic reconnect to the server that triggered synchronization.
 - Existing extra client plugins are not automatically deleted.
