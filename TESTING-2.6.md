@@ -14,6 +14,8 @@ Release-provenance CI evidence, 2026-09-24: GitHub Actions run 36075480415 passe
 
 Installer client-uninstall live evidence, 2026-09-24: the branded installer detected the existing Client role as complete and exposed Repair/Update plus Uninstall. In an isolated disposable install, uninstall removed the client plugin and Apply helper, retired the exact AMS-owned fixture, preserved a locally modified AMS-owned fixture, preserved an unrelated local plugin, preserved shared BepInEx, and the disposable root was then removed successfully.
 
+Installer destructive identity-removal evidence, 2026-09-24: the disposable Dedicated Server install was uninstalled with `Also remove server config + signing identity` explicitly checked. The server plugin, release client payload, server config, private signing identity, and public signing identity were removed; operator-managed ClientPayload and shared BepInEx remained. The disposable root was then cleaned successfully.
+
 Installer server-uninstall live evidence, 2026-09-24: the isolated Dedicated Server role uninstall passed all preservation checks. The AMS server runtime/release payload were removed while shared BepInEx, operator-managed ClientPayload, server config, and both signing-identity files remained intact. The subsequent UI recheck also confirmed the widened Repair / Update label and literal Host & Play text.
 
 - [x] Windows CI compiles the production installer with the embedded AMS logo plus shared identity/path/ownership safety helpers.
@@ -26,7 +28,7 @@ Installer server-uninstall live evidence, 2026-09-24: the isolated Dedicated Ser
 - [x] Final window-chrome recheck: the installer title bar uses the embedded AMS ICO instead of the generic WinForms icon.
 - [x] Isolated live uninstall check: complete Client install exposes Uninstall, exact AMS-owned fixture is retired, locally changed fixture is preserved, BepInEx/unrelated mod remain, and disposable test state cleans up successfully.
 - [x] Isolated server uninstall preservation check: server runtime/release payload are removed while shared BepInEx, operator ClientPayload, server config, and signing identity remain intact when identity removal is left unchecked.
-- [ ] Isolated server identity-removal check: with the explicit warning option enabled, uninstall deletes only the documented server config/private/public identity files while preserving shared BepInEx and operator ClientPayload.
+- [x] Isolated server identity-removal check: with the explicit warning option enabled, uninstall deletes the documented server config/private/public identity files while preserving shared BepInEx and operator ClientPayload.
 
 # AutoModSync 2.6 validation checklist
 
