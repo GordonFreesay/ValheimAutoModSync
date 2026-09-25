@@ -1,0 +1,51 @@
+name: Release Readiness Validation
+
+on:
+  push:
+    branches:
+      - dev/2.6
+      - main
+    paths:
+      - "VERSION"
+      - "Source/**"
+      - "README.md"
+      - "DISTRIBUTION.md"
+      - "SIGNING.md"
+      - "VERIFYING-RELEASES.md"
+      - "RELEASE-NOTES-2.6.0.md"
+      - "TESTING-2.6.md"
+      - "Thunderstore/**"
+      - "ModSites/**"
+      - "build-release.bat"
+      - "write-release-checksums.ps1"
+      - "verify-version.ps1"
+      - "verify-source-docs.ps1"
+      - "verify-no-pii.ps1"
+      - "test-release-provenance.ps1"
+      - "test-installer-contract.ps1"
+      - "test-release-readiness.ps1"
+      - ".github/workflows/release-readiness-validation.yml"
+      - ".github/workflows/release-build.yml"
+      - ".github/workflows/distribution-packages.yml"
+      - ".github/workflows/publish-nexus.yml"
+      - ".github/workflows/publish-curseforge.yml"
+      - ".github/workflows/publish-thunderstore.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    name: Verify 2.6 release freeze
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Run final release-readiness gate
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-release-readiness.ps1"
