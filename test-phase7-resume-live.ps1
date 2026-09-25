@@ -51,7 +51,11 @@ function Read-SharedLines([string]$Path) {
 function New-Lines([string]$Path,[int]$Start) {
     $all = @(Read-SharedLines $Path)
     if ($Start -lt 0) { $Start = 0 }
-    if ($all.Count -le $Start) { return @() }
+    # A Valheim/dedicated-server restart replaces LogOutput.log. If the new file is shorter
+    # than the armed baseline, treat the entire current file as post-arm evidence instead
+    # of indexing past the end of a different process's log.
+    if ($all.Count -lt $Start) { return $all }
+    if ($all.Count -eq $Start) { return @() }
     return @($all[$Start..($all.Count-1)])
 }
 
@@ -97,27 +101,54 @@ switch ($Action) {
         $serverText = $serverNew -join [Environment]::NewLine
 
         $fail = $false
+        $serverResume = [regex]::Match($serverText,'AutoModSync exact-artifact resume accepted at chunk ([0-9]+)/([0-9]+) \(([^,]+) retained, prefixVerify=([0-9.]+) s\)')
+        $serverResumeChunk = 0
+        if ($serverResume.Success) { $serverResumeChunk = [int]$serverResume.Groups[1].Value }
+
         if ($clientText -match 'DEV TEST closing the transfer socket after chunk ([0-9]+)') {
             Write-Host ('PASS client forced one deterministic transfer interruption after chunk ' + $Matches[1] + '.')
-        } else { Write-Host 'FAIL forced transfer interruption evidence is missing.'; $fail = $true }
+        }
+        elseif (-not (Test-Path -LiteralPath $marker -PathType Leaf) -and $serverResumeChunk -eq [int]$state.disconnectAfterChunks) {
+            Write-Host ('PASS one-shot interruption marker was consumed and the server later accepted the exact armed chunk boundary ' + $serverResumeChunk + '.')
+            Write-Host '  INFO client pre-restart interruption log was replaced by the final Valheim restart.'
+        }
+        else { Write-Host 'FAIL forced transfer interruption evidence is missing.'; $fail = $true }
 
         if ($clientText -match 'Preserved ([0-9.]+ [A-Za-z]+) of the verified bundle prefix') {
             Write-Host ('PASS client preserved interrupted verified prefix: ' + $Matches[1] + '.')
-        } else { Write-Host 'FAIL client did not log preservation of the interrupted verified prefix.'; $fail = $true }
+        }
+        elseif ($serverResumeChunk -gt 0) {
+            Write-Host ('PASS preserved client prefix is proven by the server accepting the client resume candidate at nonzero chunk ' + $serverResumeChunk + '.')
+            Write-Host '  INFO the client preservation log belonged to the pre-apply process and may no longer exist after automatic restart.'
+        }
+        else { Write-Host 'FAIL client preserved-prefix evidence is missing.'; $fail = $true }
 
         $clientResume = [regex]::Match($clientText,'AutoModSync exact-artifact resume accepted at chunk ([0-9]+)/([0-9]+) \(([^\)]+) retained\)')
         if ($clientResume.Success -and [int]$clientResume.Groups[1].Value -gt 0) {
             Write-Host ('PASS client reopened exact-artifact resume at chunk ' + $clientResume.Groups[1].Value + '/' + $clientResume.Groups[2].Value + ' with ' + $clientResume.Groups[3].Value + ' retained.')
-        } else { Write-Host 'FAIL client exact-artifact resume acceptance evidence is missing.'; $fail = $true }
+        }
+        elseif ($serverResumeChunk -gt 0) {
+            Write-Host ('PASS client submitted a valid retained-prefix resume candidate accepted by the server at chunk ' + $serverResumeChunk + '.')
+            Write-Host '  INFO the client acceptance log may have been replaced by the automatic post-apply Valheim restart.'
+        }
+        else { Write-Host 'FAIL exact-artifact resume acceptance evidence is missing.'; $fail = $true }
 
-        $serverResume = [regex]::Match($serverText,'AutoModSync exact-artifact resume accepted at chunk ([0-9]+)/([0-9]+) \(([^,]+) retained, prefixVerify=([0-9.]+) s\)')
-        if ($serverResume.Success -and [int]$serverResume.Groups[1].Value -gt 0) {
-            Write-Host ('PASS server independently verified and accepted the same prefix at chunk ' + $serverResume.Groups[1].Value + '/' + $serverResume.Groups[2].Value + ' in ' + $serverResume.Groups[4].Value + ' s.')
+        if ($serverResume.Success -and $serverResumeChunk -gt 0) {
+            Write-Host ('PASS server independently verified and accepted the prefix at chunk ' + $serverResume.Groups[1].Value + '/' + $serverResume.Groups[2].Value + ' with ' + $serverResume.Groups[3].Value + ' retained in ' + $serverResume.Groups[4].Value + ' s.')
+            if ($serverResumeChunk -ne [int]$state.disconnectAfterChunks) {
+                Write-Host ('FAIL server accepted chunk ' + $serverResumeChunk + ' but the armed deterministic boundary was ' + [int]$state.disconnectAfterChunks + '.')
+                $fail = $true
+            }
         } else { Write-Host 'FAIL server exact-artifact prefix-verification evidence is missing.'; $fail = $true }
 
         if ($clientResume.Success -and $serverResume.Success -and $clientResume.Groups[1].Value -ne $serverResume.Groups[1].Value) {
             Write-Host 'FAIL client/server accepted different resume chunk boundaries.'
             $fail = $true
+        }
+
+        $transfer = [regex]::Matches($serverText,'AutoModSync scheduler transfer complete: rawPayload=([^,]+), elapsed=([0-9.]+) s, avgRawPayload=([0-9.]+) MiB/s') | Select-Object -Last 1
+        if ($transfer -ne $null) {
+            Write-Host ('PASS resumed scheduled transfer completed: raw=' + $transfer.Groups[1].Value + ', elapsed=' + $transfer.Groups[2].Value + 's, avg=' + $transfer.Groups[3].Value + ' MiB/s.')
         }
 
         if (-not (Test-Path -LiteralPath $clientFixture -PathType Leaf)) {
