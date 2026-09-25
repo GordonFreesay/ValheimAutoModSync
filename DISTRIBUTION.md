@@ -90,15 +90,18 @@ Each manual store-publishing workflow also SHA-256 hashes and attests the exact 
 
 For a release:
 
-1. Update the root `VERSION`.
-2. Update the matching AutoModSync source/assembly version declarations.
-3. Update changelog/release notes.
-4. Run the build. `verify-version.ps1` prevents version drift.
-5. Push the matching `v<version>` tag and require the Distribution Packages workflow to pass.
-6. Download/use the workflow-produced canonical standalone ZIP and `SHA256SUMS.txt`; verify the ZIP with `gh attestation verify <artifact> -R GordonFreesay/ValheimAutoModSync`.
-7. Publish the canonical GitHub release using those exact workflow-produced bytes and attach `SHA256SUMS.txt`.
-8. Run the store publication workflows for the same version; each workflow attests the exact package it uploads.
-9. Keep the website's current version equal to the shared AutoModSync version; link to store pages as alternate installation channels rather than presenting them as different versions.
+1. Freeze the release branch: update `VERSION`, source/assembly metadata, changelog, README/store copy, and release notes; stop runtime feature changes.
+2. Run `test-release-readiness.ps1` and require the Release Readiness, privacy, installer, branding, and provenance CI gates to pass.
+3. Merge the reviewed release PR into `main` without changing release content after the validated head revision.
+4. Require the `main` Standalone Release Build/readiness workflows to pass.
+5. Tag the exact validated `main` commit as `v<version>`. The tag triggers **Distribution Packages**.
+6. Require Distribution Packages to build all four package variants, `SHA256SUMS.txt`, and GitHub/Sigstore attestations successfully.
+7. Download the workflow-produced canonical standalone ZIP and `SHA256SUMS.txt`; run `gh attestation verify <artifact> -R GordonFreesay/ValheimAutoModSync` against the exact downloaded bytes, and verify the checksum manifest too.
+8. Only after verification succeeds, publish the canonical GitHub Release using those exact workflow-produced bytes plus `SHA256SUMS.txt` and the checked-in release notes.
+9. Run the Nexus/CurseForge/Thunderstore publication workflows for the same version. Each workflow independently hashes and attests the exact store ZIP it uploads.
+10. Update the website to the same shared AutoModSync version and link the store pages as alternate installation channels rather than separate versions.
+
+Do not rebuild/repackage an artifact between attestation verification and publication. Provenance is tied to the exact digest.
 
 ## Signing
 
