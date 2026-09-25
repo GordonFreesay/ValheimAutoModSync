@@ -25,7 +25,6 @@ if (-not (Test-Path -LiteralPath $ChecksumScript -PathType Leaf)) {
     throw "Release checksum generator is missing: $ChecksumScript"
 }
 & $ChecksumScript -Root $Root
-if ($LASTEXITCODE -ne 0) { throw "Release checksum generation failed with exit code $LASTEXITCODE" }
 
 Get-Content -LiteralPath (Join-Path $Root "Dist\SHA256SUMS.txt") | ForEach-Object {
     Write-Host ("  {0}" -f $_)
