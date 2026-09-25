@@ -21,9 +21,9 @@ on:
       - "verify-version.ps1"
       - "verify-source-docs.ps1"
       - "verify-no-pii.ps1"
-      - "test-release-provenance.ps1"
-      - "test-installer-contract.ps1"
-      - "test-release-readiness.ps1"
+      - "tests/test-release-provenance.ps1"
+      - "tests/test-installer-contract.ps1"
+      - "tests/test-release-readiness.ps1"
       - ".github/workflows/release-readiness-validation.yml"
       - ".github/workflows/release-build.yml"
       - ".github/workflows/distribution-packages.yml"
@@ -48,4 +48,4 @@ jobs:
 
       - name: Run final release-readiness gate
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-release-readiness.ps1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-release-readiness.ps1"
