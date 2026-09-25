@@ -32,9 +32,9 @@ Installer server-uninstall live evidence, 2026-09-24: the isolated Dedicated Ser
 
 # AutoModSync 2.6 validation checklist
 
-**Status:** PARTIAL RUNTIME VALIDATION. Only explicitly checked items and the dated runtime evidence below have passed; all other items remain pending.
+**Status:** RUNTIME VALIDATION COMPLETE; RELEASE QUALIFICATION PENDING. All implementation/runtime gates recorded below are passed. The only remaining unchecked gate is verification of retrievable GitHub/Sigstore attestations for the exact final 2.6 release/tag artifacts.
 
-Release builds/publication remain deferred until the maintainer has functionally validated the implementation.
+Publication remains deferred until the final release workflow produces and verifies those exact artifacts.
 
 ## Baseline
 
