@@ -6,7 +6,7 @@ on:
       - dev/2.6
     paths:
       - "Source/ValheimAutoModSync.Client.cs"
-      - "test-phase3-stale-trust-live.ps1"
+      - "tests/test-phase3-stale-trust-live.ps1"
       - ".github/workflows/phase3-stale-trust-harness-validation.yml"
   workflow_dispatch:
 
@@ -34,7 +34,7 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\\test-phase3-stale-trust-live.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\\tests/test-phase3-stale-trust-live.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count -gt 0) {
             $errors | ForEach-Object { Write-Error $_.Message }
             exit 1
