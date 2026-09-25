@@ -1,3 +1,13 @@
+## Release provenance / public verification
+
+- [x] Deterministic checksum generator writes sorted shasum-compatible SHA-256 lines for all four distribution packages.
+- [x] Canonical main/tag workflows request GitHub OIDC + attestation permissions and use `actions/attest@v4` for package/checksum subjects.
+- [x] Nexus, CurseForge, and Thunderstore publication workflows attest the exact ZIP produced by the same run that uploads it.
+- [x] Local release builds generate SHA-256 output but explicitly state they are not GitHub-attested.
+- [x] Public verification documentation distinguishes GitHub/Sigstore provenance from Authenticode/SmartScreen trust and provides direct `gh attestation verify` commands.
+- [ ] GitHub-hosted provenance validation workflow passes at the final 2.6 source revision.
+- [ ] Real tag/release workflow creates retrievable attestations for the exact final 2.6 package digests and `SHA256SUMS.txt`; this can only be closed during release qualification.
+
 ## Standalone installer polish / uninstall
 
 Installer client-uninstall live evidence, 2026-09-24: the branded installer detected the existing Client role as complete and exposed Repair/Update plus Uninstall. In an isolated disposable install, uninstall removed the client plugin and Apply helper, retired the exact AMS-owned fixture, preserved a locally modified AMS-owned fixture, preserved an unrelated local plugin, preserved shared BepInEx, and the disposable root was then removed successfully.
@@ -11,7 +21,7 @@ Installer server-uninstall live evidence, 2026-09-24: the isolated Dedicated Ser
 - [x] Installer normal identity output uses the short verification code rather than the full fingerprint.
 - [x] Compiled installer artifact passes the first-party PII guard.
 - [x] Final visual recheck after polish: embedded logo/dark-orange layout remain clean, `Host & Play` renders literally, and the widened `Repair / Update` label is no longer clipped at normal Windows scaling.
-- [ ] Final window-chrome recheck: the installer title-bar/taskbar icon uses the embedded AMS ICO instead of the generic WinForms icon.
+- [x] Final window-chrome recheck: the installer title bar uses the embedded AMS ICO instead of the generic WinForms icon.
 - [x] Isolated live uninstall check: complete Client install exposes Uninstall, exact AMS-owned fixture is retired, locally changed fixture is preserved, BepInEx/unrelated mod remain, and disposable test state cleans up successfully.
 - [ ] Isolated server uninstall check: server plugin/cache/release payload are removed while config/key/ClientPayload remain; explicit identity-removal option deletes only the documented server config/key files.
 
