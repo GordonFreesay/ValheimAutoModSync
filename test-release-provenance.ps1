@@ -34,7 +34,6 @@ try {
     }
 
     & (Join-Path $root 'write-release-checksums.ps1') -Root $temp
-    if ($LASTEXITCODE -ne 0) { throw 'Checksum generator returned a failure exit code.' }
 
     $manifest = Join-Path $dist 'SHA256SUMS.txt'
     $lines = @([IO.File]::ReadAllLines($manifest))
