@@ -96,7 +96,10 @@ switch ($Action) {
         if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { throw 'No armed resume state exists. Run -Action Arm first.' }
         $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
         $clientNew = @(New-Lines $clientLog ([int]$state.clientLogLines))
-        $serverNew = @(New-Lines $serverLog ([int]$state.serverLogLines))
+        # The guided sequence deliberately starts/restarts the dedicated server after Arm, so its
+        # LogOutput.log is a new process file. Search that current process log in full for the exact
+        # armed resume boundary rather than applying a line index captured from the prior process.
+        $serverNew = @(Read-SharedLines $serverLog)
         $clientText = $clientNew -join [Environment]::NewLine
         $serverText = $serverNew -join [Environment]::NewLine
 
