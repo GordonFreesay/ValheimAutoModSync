@@ -7,7 +7,7 @@ on:
     paths:
       - "Source/ValheimAutoModSync.Client.cs"
       - "Source/ValheimAutoModSync.Server.cs"
-      - "test-phase1-legacy25-live.ps1"
+      - "tests/test-phase1-legacy25-live.ps1"
       - "TESTING-2.6.md"
       - ".github/workflows/phase1-legacy25-live-harness-validation.yml"
   workflow_dispatch:
@@ -36,7 +36,7 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\\test-phase1-legacy25-live.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\\tests/test-phase1-legacy25-live.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count -gt 0) {
             $errors | ForEach-Object { Write-Error $_.Message }
             exit 1
