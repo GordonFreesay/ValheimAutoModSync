@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet('PrepareClient','SeedOwnership','InspectClientUninstall','PrepareServer','SeedServerPreservation','InspectServerUninstall','Cleanup')]
+    [ValidateSet('PrepareClient','SeedOwnership','InspectClientUninstall','PrepareServer','SeedServerPreservation','InspectServerUninstall','SeedServerIdentityRemoval','InspectServerIdentityRemoval','Cleanup')]
     [string]$Action
 )
 
@@ -133,6 +133,30 @@ switch ($Action) {
         Write-Host 'Click Uninstall and confirm. Then run -Action InspectServerUninstall.'
     }
 
+    'SeedServerIdentityRemoval' {
+        $serverDll = Join-Path $pluginRoot 'ValheimAutoModSync.Server.dll'
+        $releaseClient = Join-Path $ams 'release\ValheimAutoModSync.Client.dll'
+        $serverConfig = Join-Path $bep 'config\com.gordonfreesay.valheimautomodsync.server.cfg'
+        $privateKey = Join-Path $bep 'config\ValheimAutoModSync.private.xml'
+        $publicKey = Join-Path $bep 'config\ValheimAutoModSync.public.xml'
+        $bepDll = Join-Path $bep 'core\BepInEx.dll'
+        foreach ($required in @($serverDll,$releaseClient,$serverConfig,$privateKey,$publicKey,$bepDll)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+                throw ('Server install is incomplete; missing ' + $required)
+            }
+        }
+
+        $clientPayload = Join-Path $ams 'ClientPayload\plugins'
+        New-Item -ItemType Directory -Path $clientPayload -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $clientPayload 'operator-owned.txt'),'preserve-me',[Text.UTF8Encoding]::new($false))
+
+        Write-Host 'Seeded destructive identity-removal preservation fixture.'
+        Write-Host 'Reopen the installer, choose Dedicated Server, Browse to the same temp folder.'
+        Write-Host 'Expected: selected role is complete and Uninstall is visible.'
+        Write-Host 'CHECK "Also remove server config + signing identity".'
+        Write-Host 'Click Uninstall and confirm the warning. Then run -Action InspectServerIdentityRemoval.'
+    }
+
     'InspectServerUninstall' {
         $serverDll = Join-Path $pluginRoot 'ValheimAutoModSync.Server.dll'
         $releaseClient = Join-Path $ams 'release\ValheimAutoModSync.Client.dll'
@@ -174,6 +198,29 @@ switch ($Action) {
         if ($fail) { exit 1 }
         Write-Host ''
         Write-Host 'PASS: isolated installer server uninstall removes AMS runtime while preserving shared BepInEx, ClientPayload, config, and signing identity.'
+    }
+
+    'InspectServerIdentityRemoval' {
+        $serverDll = Join-Path $pluginRoot 'ValheimAutoModSync.Server.dll'
+        $releaseClient = Join-Path $ams 'release\ValheimAutoModSync.Client.dll'
+        $serverConfig = Join-Path $bep 'config\com.gordonfreesay.valheimautomodsync.server.cfg'
+        $privateKey = Join-Path $bep 'config\ValheimAutoModSync.private.xml'
+        $publicKey = Join-Path $bep 'config\ValheimAutoModSync.public.xml'
+        $payload = Join-Path $ams 'ClientPayload\plugins\operator-owned.txt'
+        $bepDll = Join-Path $bep 'core\BepInEx.dll'
+
+        $fail = $false
+        if (Test-Path -LiteralPath $serverDll) { Write-Host 'FAIL server plugin still exists.'; $fail = $true } else { Write-Host 'PASS server plugin removed.' }
+        if (Test-Path -LiteralPath $releaseClient) { Write-Host 'FAIL server release client payload still exists.'; $fail = $true } else { Write-Host 'PASS server release client payload removed.' }
+        if (Test-Path -LiteralPath $serverConfig) { Write-Host 'FAIL server config still exists.'; $fail = $true } else { Write-Host 'PASS server config removed by explicit opt-in.' }
+        if (Test-Path -LiteralPath $privateKey) { Write-Host 'FAIL server private signing identity still exists.'; $fail = $true } else { Write-Host 'PASS server private signing identity removed by explicit opt-in.' }
+        if (Test-Path -LiteralPath $publicKey) { Write-Host 'FAIL server public signing identity still exists.'; $fail = $true } else { Write-Host 'PASS server public signing identity removed by explicit opt-in.' }
+        if (-not (Test-Path -LiteralPath $payload)) { Write-Host 'FAIL operator-managed ClientPayload was removed.'; $fail = $true } else { Write-Host 'PASS operator-managed ClientPayload preserved.' }
+        if (-not (Test-Path -LiteralPath $bepDll)) { Write-Host 'FAIL shared BepInEx was removed.'; $fail = $true } else { Write-Host 'PASS shared BepInEx preserved.' }
+
+        if ($fail) { exit 1 }
+        Write-Host ''
+        Write-Host 'PASS: explicit server identity-removal uninstall deletes only AMS server runtime/config/identity while preserving shared BepInEx and operator ClientPayload.'
     }
 
     'Cleanup' {
