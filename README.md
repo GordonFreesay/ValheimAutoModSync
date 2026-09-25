@@ -12,6 +12,8 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 - Repository: https://github.com/gordonfreesay/ValheimAutoModSync
 - Releases: https://github.com/gordonfreesay/ValheimAutoModSync/releases
 - 2.6.0 release notes: [RELEASE-NOTES-2.6.0.md](RELEASE-NOTES-2.6.0.md)
+- Verify official downloads: [VERIFYING-RELEASES.md](VERIFYING-RELEASES.md)
+- 2.6.0 release notes: [RELEASE-NOTES-2.6.0.md](RELEASE-NOTES-2.6.0.md)
 
 ## Features
 
@@ -76,43 +78,41 @@ The generated server private signing identity (`BepInEx/config/ValheimAutoModSyn
 
 ## Repository layout
 
+High-level layout of the checked-in source tree:
+
 ```text
-Source/                         Authoritative AutoModSync C# source
-Server/                         Dedicated-server configuration example
-Thunderstore/                   Thunderstore/r2modman metadata, README, notices, icon, and tcli config
+Source/                         AutoModSync C# client/server/apply/installer and shared safety/state code
+Server/                         Example dedicated-server configuration
+Thunderstore/                   Thunderstore/r2modman metadata, README, changelog, notices, icon, and tcli config
 ModSites/                       Nexus Mods / CurseForge package documentation
-tests/                          Deterministic, live-runtime, installer, and release-qualification harnesses
-.github/workflows/              CI, release-build, provenance, and store-publishing workflows
+tests/                          Development, CI, live-runtime, installer, and release-qualification harnesses
+.github/scripts/                GitHub Actions build-preparation helpers
+.github/workflows/              CI, validation, release, attestation, and store-publishing workflows
 THIRD_PARTY_LICENSES/           Third-party license texts
 
-VERSION                         Authoritative semantic version shared by every distribution target
 README.md                       Project overview and installation/security documentation
-RELEASE-NOTES-2.6.0.md          GitHub release notes for AutoModSync 2.6.0
-DISTRIBUTION.md                 Distribution/version/publishing policy
-SIGNING.md                      Authenticode status and GitHub/Sigstore provenance policy
-VERIFYING-RELEASES.md           Exact provenance and SHA-256 verification commands
-SOURCE-WALKTHROUGH.md           End-to-end source/trust/handshake/restart flow map
-IMPLEMENTATION-2.6.md           2.6 engineering implementation record
-TESTING-2.6.md                  2.6 validation evidence and release gates
+RELEASE-NOTES-2.6.0.md          Human-facing AutoModSync 2.6.0 release notes
+TESTING-2.6.md                  Authoritative 2.6 validation evidence and release-gate record
+IMPLEMENTATION-2.6.md           2.6 engineering/implementation record
+SOURCE-WALKTHROUGH.md           End-to-end source, trust-boundary, handshake, apply, and reconnect map
+DISTRIBUTION.md                 Versioning, artifact, attestation, and publishing policy
+SIGNING.md                      Authenticode status and GitHub/Sigstore provenance model
+VERIFYING-RELEASES.md           Commands for verifying official package provenance and SHA-256
+THIRD-PARTY-NOTICES.md          Third-party/runtime attribution
+VERSION                         Authoritative semantic version shared by every distribution target
 
-build-release.bat               Canonical standalone release builder
-build-store-packages.ps1        Builds standalone + all store package variants
-build-thunderstore.ps1          Thunderstore/r2modman package builder
-build-nexus.ps1                 Nexus Mods package builder
-build-curseforge.ps1            CurseForge package builder
-build-all-releases.bat          Convenience entry point for all distribution formats
-build-dev.bat                   Development-only binary builder
+build-*.bat / build-*.ps1       Development, standalone, branding, and store-package builders
 deploy-dev.ps1                  Development deployment helper
-install.bat                     Readable/manual fallback installer
-verify-source-docs.ps1          Source-level Intent documentation gate
-verify-version.ps1              Version-consistency gate
-verify-no-pii.ps1               First-party PII guard
-write-release-checksums.ps1     SHA-256 release-manifest generator
+install.bat                     Readable/manual standalone-install fallback
+verify-*.ps1                    Source/version/privacy build guards
+write-release-checksums.ps1     Deterministic release SHA-256 manifest generator
 ```
 
-Generated runtime/build outputs such as `DevBuild/`, `Client/`, `Tools/`, compiled server DLLs, installers, and `Dist/` are intentionally ignored rather than versioned. Installable binaries are published through GitHub Releases and the supported mod stores.
+The validation harnesses intentionally live under `tests/` rather than cluttering the repository root. See `tests/README.md` for how the phase, installer, and release gates are grouped.
 
-Maintainer validation scripts live under `tests/` rather than at repository root; see `tests/README.md` for the suite map.
+Generated runtime payloads such as `Client/`, `Tools/`, the compiled server DLL, installers, `DevBuild/`, and `Dist/` are build outputs and are intentionally not versioned. Installable binaries are published through GitHub Releases or the corresponding mod-distribution channel rather than stored in the source tree.
+
+There are intentionally no nested `README.txt` files; the Markdown documents above are the maintained project documentation.
 
 ## Building from source
 
