@@ -8,7 +8,7 @@ on:
       - "Source/ValheimAutoModSync.Apply.cs"
       - "Source/AutoModSync.OwnershipState.cs"
       - "Source/AutoModSync.PathSafety.cs"
-      - "test-phase6-ownership.ps1"
+      - "tests/test-phase6-ownership.ps1"
       - ".github/workflows/phase6-ownership-validation.yml"
   workflow_dispatch:
 
@@ -25,4 +25,4 @@ jobs:
 
       - name: Run isolated Phase 6 ownership/apply harness
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase6-ownership.ps1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-phase6-ownership.ps1"
