@@ -4,18 +4,18 @@ AutoModSync uses **one semantic version across every distribution channel**.
 
 The authoritative version is the root `VERSION` file. Build scripts and GitHub Actions read that value. `verify-version.ps1` fails the build if the AutoModSync plugin/assembly metadata does not match it.
 
-For the current release, every channel is **2.5.0**. A store name in an archive filename identifies the packaging target; it is not a different software version.
+For the current release, every channel is **2.6.0**. A store name in an archive filename identifies the packaging target; it is not a different software version.
 
 ## Artifacts
 
 | Channel | Version shown to users | Artifact | Purpose |
 | --- | --- | --- | --- |
-| GitHub / website | `2.5.0` | `ValheimAutoModSync-2.5.0.zip` | Canonical standalone installer package with bundled, hash-pinned BepInEx |
-| Nexus Mods | `2.5.0` | `ValheimAutoModSync-2.5.0-Nexus.zip` | Lightweight Nexus package; BepInEx is a separate requirement and no archive is nested inside the ZIP |
-| CurseForge | `2.5.0` | `ValheimAutoModSync-2.5.0-CurseForge.zip` | Lightweight CurseForge package; BepInEx is a separate requirement |
-| Thunderstore / r2modman | `2.5.0` | `GordonFreesay-ValheimAutoModSync-2.5.0.zip` | Native Thunderstore package with `manifest.json` and BepInEx dependency metadata |
+| GitHub / website | `2.6.0` | `ValheimAutoModSync-2.6.0.zip` | Canonical standalone installer package with bundled, hash-pinned BepInEx |
+| Nexus Mods | `2.6.0` | `ValheimAutoModSync-2.6.0-Nexus.zip` | Lightweight Nexus package; BepInEx is a separate requirement and no archive is nested inside the ZIP |
+| CurseForge | `2.6.0` | `ValheimAutoModSync-2.6.0-CurseForge.zip` | Lightweight CurseForge package; BepInEx is a separate requirement |
+| Thunderstore / r2modman | `2.6.0` | `GordonFreesay-ValheimAutoModSync-2.6.0.zip` | Native Thunderstore package with `manifest.json` and BepInEx dependency metadata |
 
-Store-specific packages are **not separate GitHub releases**. The GitHub `v2.5.0` release remains the canonical standalone release, and the website should continue to say that the current AutoModSync version is **2.5.0**.
+Store-specific packages are **not separate GitHub releases**. The GitHub `v2.6.0` release is the canonical standalone release, and the website should identify **2.6.0** as the current AutoModSync version.
 
 GitHub Actions artifacts are used as staging outputs for the store packages. After publication, the Nexus/CurseForge/Thunderstore pages are the normal download locations for those variants.
 
@@ -88,7 +88,7 @@ Each manual store-publishing workflow also SHA-256 hashes and attests the exact 
 
 ## Release procedure
 
-For a future release:
+For a release:
 
 1. Update the root `VERSION`.
 2. Update the matching AutoModSync source/assembly version declarations.
