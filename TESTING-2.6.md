@@ -1,11 +1,13 @@
 ## Release provenance / public verification
 
+Release-provenance CI evidence, 2026-09-24: GitHub Actions run 36075480415 passed the four-part deterministic gate after an earlier harness-only `$LASTEXITCODE` misuse was removed. The passing run generated and verified four sorted SHA-256 subjects, validated `id-token: write` + `attestations: write` + `actions/attest@v4` wiring, proved all three store publishing workflows target their exact upload ZIP paths with no escaped GitHub-expression regression, and verified that local release builds explicitly state they are not GitHub-attested.
+
 - [x] Deterministic checksum generator writes sorted shasum-compatible SHA-256 lines for all four distribution packages.
 - [x] Canonical main/tag workflows request GitHub OIDC + attestation permissions and use `actions/attest@v4` for package/checksum subjects.
 - [x] Nexus, CurseForge, and Thunderstore publication workflows attest the exact ZIP produced by the same run that uploads it.
 - [x] Local release builds generate SHA-256 output but explicitly state they are not GitHub-attested.
 - [x] Public verification documentation distinguishes GitHub/Sigstore provenance from Authenticode/SmartScreen trust and provides direct `gh attestation verify` commands.
-- [ ] GitHub-hosted provenance validation workflow passes at the final 2.6 source revision.
+- [x] GitHub-hosted provenance validation workflow passes: checksum generation, canonical/tag attestation wiring, exact store-package attestation coverage, and local-build non-attestation wording all passed on Windows CI.
 - [ ] Real tag/release workflow creates retrievable attestations for the exact final 2.6 package digests and `SHA256SUMS.txt`; this can only be closed during release qualification.
 
 ## Standalone installer polish / uninstall
