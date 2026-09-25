@@ -19,6 +19,26 @@ if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
 $version = ([IO.File]::ReadAllText($versionPath)).Trim()
 if ([String]::IsNullOrWhiteSpace($version)) { throw 'VERSION is empty.' }
 
+function Get-Sha256Hex([string]$Path) {
+    # Use the .NET crypto API directly instead of Get-FileHash so the release builder
+    # works even when invoked through a legacy/minimal Windows PowerShell host.
+    $stream = [IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            $bytes = $algorithm.ComputeHash($stream)
+        }
+        finally {
+            $algorithm.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    return ([BitConverter]::ToString($bytes)).Replace('-','').ToLowerInvariant()
+}
+
 $dist = Join-Path $rootPath 'Dist'
 if ([String]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $dist 'SHA256SUMS.txt'
@@ -48,7 +68,7 @@ foreach ($file in $Files) {
 
 $lines = New-Object 'System.Collections.Generic.List[string]'
 foreach ($file in @($resolved | Sort-Object Name)) {
-    $sha = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sha = Get-Sha256Hex $file.FullName
     [void]$lines.Add(($sha + ' *' + $file.Name))
 }
 
