@@ -53,10 +53,12 @@ Before enabling automated publication:
 2. Create the Nexus mod page and perform the initial file submission as required by Nexus.
 3. After staff clearance, configure:
    - secret: `NEXUSMODS_API_KEY`
-   - variable: `NEXUSMODS_MOD_ID`
-   - variable: `NEXUSMODS_FILE_ID`
    - variable: `NEXUS_NETWORK_TOOL_CLEARANCE=approved`
 4. Run **Publish Nexus** manually with `publish=true`.
+
+The workflow knows the public AutoModSync Nexus page is Valheim mod `3863`. At publish time it resolves Nexus's internal mod ID and the single active file ID through the v3 API, so a normal update does not require copying either ID into GitHub. If the mod later has multiple active file slots, repository variable `NEXUSMODS_FILE_ID` can be set as an explicit override.
+
+The official Nexus upload action creates a new version of an existing file slot. AutoModSync already has an existing 2.4.5 file, so the 2.6 workflow can resolve and update that slot automatically. A brand-new Nexus page with no file at all would still need an initial file submission before this workflow can use the official upload action.
 
 The Nexus package contains no nested ZIP/7z/RAR/tar archive and does not bundle BepInEx.
 
@@ -67,8 +69,9 @@ The Nexus package contains no nested ZIP/7z/RAR/tar archive and does not bundle 
 Configure:
 
 - secret: `CURSEFORGE_API_TOKEN`
-- variable: `CURSEFORGE_PROJECT_ID`
 - optional variable: `CURSEFORGE_BEPINEX_PROJECT_ID` if a suitable BepInEx project exists on CurseForge and should be recorded as a required dependency
+
+The AutoModSync CurseForge project ID (`1702780`) is pinned in the project-specific publishing workflow, so it does not need to be duplicated as a repository variable.
 
 Run the workflow manually. With `publish=true`, it uploads through CurseForge's project upload API as a `release`, marks the file for **manual release**, and labels it for Client/Server compatibility. Manual release staging means moderation/upload can complete without automatically making the file public before you review it.
 
