@@ -8,7 +8,7 @@ on:
       - "Source/ValheimAutoModSync.Apply.cs"
       - "Source/AutoModSync.OwnershipState.cs"
       - "Source/AutoModSync.PathSafety.cs"
-      - "test-phase2-adversarial.ps1"
+      - "tests/test-phase2-adversarial.ps1"
       - ".github/workflows/apply-transaction-regression.yml"
   workflow_dispatch:
 
@@ -33,4 +33,4 @@ jobs:
 
       - name: Run Phase 2 adversarial regression harness
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase2-adversarial.ps1" -Helper ".\ValheimAutoModSync.Apply.exe"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-phase2-adversarial.ps1" -Helper ".\ValheimAutoModSync.Apply.exe"
