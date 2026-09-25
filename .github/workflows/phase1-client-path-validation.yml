@@ -7,7 +7,7 @@ on:
     paths:
       - "Source/ValheimAutoModSync.Client.cs"
       - "Source/AutoModSync.PathSafety.cs"
-      - "test-phase1-client-paths.ps1"
+      - "tests/test-phase1-client-paths.ps1"
       - ".github/workflows/phase1-client-path-validation.yml"
   workflow_dispatch:
 
@@ -24,4 +24,4 @@ jobs:
 
       - name: Run isolated client live-destination path harness
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase1-client-paths.ps1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-phase1-client-paths.ps1"
