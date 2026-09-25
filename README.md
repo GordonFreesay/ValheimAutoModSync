@@ -13,7 +13,6 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 - Releases: https://github.com/gordonfreesay/ValheimAutoModSync/releases
 - 2.6.0 release notes: [RELEASE-NOTES-2.6.0.md](RELEASE-NOTES-2.6.0.md)
 - Verify official downloads: [VERIFYING-RELEASES.md](VERIFYING-RELEASES.md)
-- 2.6.0 release notes: [RELEASE-NOTES-2.6.0.md](RELEASE-NOTES-2.6.0.md)
 
 ## Features
 
