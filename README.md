@@ -11,6 +11,7 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 - Website: https://gordonfreesay.com/AutoModSync
 - Repository: https://github.com/gordonfreesay/ValheimAutoModSync
 - Releases: https://github.com/gordonfreesay/ValheimAutoModSync/releases
+- 2.6.0 release notes: [RELEASE-NOTES-2.6.0.md](RELEASE-NOTES-2.6.0.md)
 
 ## Features
 
@@ -76,30 +77,42 @@ The generated server private signing identity (`BepInEx/config/ValheimAutoModSyn
 ## Repository layout
 
 ```text
-VERSION                         Authoritative semantic version shared by every distribution target
 Source/                         Authoritative AutoModSync C# source
-Server/server-config-example.cfg  Example server configuration
-Thunderstore/                   Thunderstore/r2modman metadata, documentation, icon, and tcli config
-ModSites/                       Nexus/CurseForge package documentation
+Server/                         Dedicated-server configuration example
+Thunderstore/                   Thunderstore/r2modman metadata, README, notices, icon, and tcli config
+ModSites/                       Nexus Mods / CurseForge package documentation
+tests/                          Deterministic, live-runtime, installer, and release-qualification harnesses
+.github/workflows/              CI, release-build, provenance, and store-publishing workflows
 THIRD_PARTY_LICENSES/           Third-party license texts
-build-release.bat               Windows standalone release builder
+
+VERSION                         Authoritative semantic version shared by every distribution target
+README.md                       Project overview and installation/security documentation
+RELEASE-NOTES-2.6.0.md          GitHub release notes for AutoModSync 2.6.0
+DISTRIBUTION.md                 Distribution/version/publishing policy
+SIGNING.md                      Authenticode status and GitHub/Sigstore provenance policy
+VERIFYING-RELEASES.md           Exact provenance and SHA-256 verification commands
+SOURCE-WALKTHROUGH.md           End-to-end source/trust/handshake/restart flow map
+IMPLEMENTATION-2.6.md           2.6 engineering implementation record
+TESTING-2.6.md                  2.6 validation evidence and release gates
+
+build-release.bat               Canonical standalone release builder
+build-store-packages.ps1        Builds standalone + all store package variants
 build-thunderstore.ps1          Thunderstore/r2modman package builder
-build-nexus.ps1                 Nexus package builder
+build-nexus.ps1                 Nexus Mods package builder
 build-curseforge.ps1            CurseForge package builder
-build-store-packages.ps1        Builds every distribution package from one compiled release
 build-all-releases.bat          Convenience entry point for all distribution formats
-DISTRIBUTION.md                 Distribution/version/publishing policy and required store credentials
-install.bat                     Readable/manual fallback installer included in standalone releases
-SIGNING.md                      Authenticode status, GitHub/Sigstore provenance, and optional future trusted signing paths
-VERIFYING-RELEASES.md           One-line provenance and SHA-256 verification instructions for downloaded packages
-SOURCE-WALKTHROUGH.md           End-to-end source, trust-boundary, handshake, and restart flow map
-verify-source-docs.ps1          Verifies source-level Intent documentation
-verify-version.ps1              Prevents package/plugin/assembly version drift
+build-dev.bat                   Development-only binary builder
+deploy-dev.ps1                  Development deployment helper
+install.bat                     Readable/manual fallback installer
+verify-source-docs.ps1          Source-level Intent documentation gate
+verify-version.ps1              Version-consistency gate
+verify-no-pii.ps1               First-party PII guard
+write-release-checksums.ps1     SHA-256 release-manifest generator
 ```
 
-Generated runtime payloads such as `Client/`, `Tools/`, the compiled server DLL, installers, and `Dist/` are build outputs and are intentionally not versioned. Installable binaries are published through GitHub Releases rather than stored in the source tree.
+Generated runtime/build outputs such as `DevBuild/`, `Client/`, `Tools/`, compiled server DLLs, installers, and `Dist/` are intentionally ignored rather than versioned. Installable binaries are published through GitHub Releases and the supported mod stores.
 
-There are intentionally no nested `README.txt` files; this root `README.md` is the project documentation.
+Maintainer validation scripts live under `tests/` rather than at repository root; see `tests/README.md` for the suite map.
 
 ## Building from source
 
