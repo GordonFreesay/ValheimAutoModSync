@@ -17,10 +17,10 @@ on:
       - "build-thunderstore.ps1"
       - "build-modsite-package.ps1"
       - "install.bat"
-      - "test-phase7-branding.ps1"
-      - "test-phase7-identity-display.ps1"
+      - "tests/test-phase7-branding.ps1"
+      - "tests/test-phase7-identity-display.ps1"
       - "verify-no-pii.ps1"
-      - "test-phase7-ui-preview.ps1"
+      - "tests/test-phase7-ui-preview.ps1"
       - "test-phase7-live.ps1"
       - "test-phase7-server-browser-presence.ps1"
       - ".github/workflows/phase7-branding-validation.yml"
@@ -63,4 +63,4 @@ jobs:
 
       - name: Run deterministic Phase 7 branding/package harness
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\test-phase7-branding.ps1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-phase7-branding.ps1"
