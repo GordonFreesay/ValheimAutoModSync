@@ -28,6 +28,7 @@ BepInEx/
 *.key
 
 # Generated release payloads
+/DevBuild/
 /Client/
 /Tools/
 /Server/ValheimAutoModSync.Server.dll
