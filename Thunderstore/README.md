@@ -36,6 +36,16 @@ A server or host automatically creates a unique signing identity if one does not
 
 Back up the private identity. Deleting it changes the server fingerprint and clients will need to trust the new fingerprint.
 
+## Third-party mod redistribution
+
+AutoModSync is only the transport mechanism. It does **not** grant redistribution rights for third-party mods selected by a server operator.
+
+Before serving a third-party mod or related file to connecting clients, the operator is responsible for confirming that the mod's license or author permissions allow that redistribution and for complying with any conditions. A private/password-protected or noncommercial server does not by itself grant permission. Public-server operators should review every distributed mod before opening the server to unrestricted players.
+
+Mods that prohibit redistribution, or whose permissions are unclear, should be excluded from AutoModSync transfer unless appropriate permission is obtained from the rights holder.
+
+Full policy: https://github.com/GordonFreesay/ValheimAutoModSync/blob/main/THIRD-PARTY-MOD-REDISTRIBUTION.md
+
 ## Security
 
 BepInEx plugins and preloader patchers can execute code. Only approve first-contact AutoModSync trust for servers you recognize and intend to join.
@@ -52,4 +62,4 @@ https://gordonfreesay.com/AutoModSync
 
 ## License
 
-AutoModSync-authored code is MIT licensed.
+AutoModSync-authored code is MIT licensed. That license does not apply to third-party mods a server operator chooses to synchronize.

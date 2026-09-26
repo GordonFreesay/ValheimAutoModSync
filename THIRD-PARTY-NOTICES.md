@@ -22,3 +22,11 @@ Bundled/runtime components include:
 Copies of the relevant license texts are included under `THIRD_PARTY_LICENSES/`.
 
 AutoModSync does not claim ownership of Valheim, BepInEx, Harmony, MonoMod, Mono.Cecil, Unity Doorstop, Unity, or their trademarks. Valheim game/Unity assemblies used as local build references are not included in this repository.
+
+## Operator-served third-party mods
+
+The notices above describe third-party components intentionally distributed as part of AutoModSync itself. They do **not** cover arbitrary gameplay mods that a server operator later chooses to synchronize.
+
+AutoModSync's MIT license does not relicense those operator-selected mods. Operators are responsible for confirming that each selected mod's license or author permissions allow server-to-client redistribution and for satisfying any applicable conditions. A private/password-protected or noncommercial server does not by itself create redistribution permission.
+
+See [THIRD-PARTY-MOD-REDISTRIBUTION.md](THIRD-PARTY-MOD-REDISTRIBUTION.md) for the project policy.

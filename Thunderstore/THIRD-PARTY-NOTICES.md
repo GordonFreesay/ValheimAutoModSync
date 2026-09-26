@@ -14,3 +14,11 @@ Relevant upstream projects retain their own licenses and copyrights:
 - Harmony / HarmonyX — MIT
 - Valheim — Iron Gate AB / Coffee Stain Publishing
 - Unity — Unity Technologies
+
+## Operator-served third-party mods
+
+This package notice covers AutoModSync and its declared/runtime dependencies. It does not grant redistribution rights for unrelated gameplay mods that a server operator chooses to synchronize through AutoModSync.
+
+Server operators are responsible for confirming that each selected mod's license or author permissions allow redistribution to connecting clients and for complying with any conditions. A private/password-protected or noncommercial server does not by itself create redistribution permission.
+
+Policy: https://github.com/GordonFreesay/ValheimAutoModSync/blob/main/THIRD-PARTY-MOD-REDISTRIBUTION.md

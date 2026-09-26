@@ -19,6 +19,14 @@ Store-specific packages are **not separate GitHub releases**. The GitHub `v2.6.0
 
 GitHub Actions artifacts are used as staging outputs for the store packages. After publication, the Nexus/CurseForge/Thunderstore pages are the normal download locations for those variants.
 
+## Scope: AutoModSync artifacts vs. operator-served mods
+
+This distribution policy covers AutoModSync's own release artifacts and the third-party runtime components intentionally included in those artifacts.
+
+It does **not** grant redistribution rights for arbitrary third-party gameplay mods later selected by an AutoModSync server operator. Operators are responsible for confirming that every third-party file they configure AutoModSync to send to clients may be redistributed under the applicable license or author permissions. This applies to private and public servers; public operators should be especially careful because the recipient set may be unrestricted.
+
+See [THIRD-PARTY-MOD-REDISTRIBUTION.md](THIRD-PARTY-MOD-REDISTRIBUTION.md).
+
 ## Local build commands
 
 Build every distribution format from the same compiled binaries:

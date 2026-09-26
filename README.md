@@ -67,6 +67,14 @@ Store-specific archive names identify packaging targets only; they do not create
 5. **Restart** — changed files are staged and Valheim restarts so BepInEx can load them.
 6. **Reconnect** — AutoModSync returns to the same server when the connection type permits it. Valheim still owns any server password prompt.
 
+## Third-party mod redistribution
+
+AutoModSync does not grant redistribution rights for third-party mods. Before configuring a server to send a third-party mod or related file to clients, the server operator is responsible for confirming that the applicable license or author permissions allow that redistribution and for complying with any conditions.
+
+A private, password-protected, friends-only, or noncommercial server does **not by itself** create redistribution permission. This is especially important for public servers, where synchronized files may be distributed to an unrestricted number of players. Mods that prohibit redistribution, or whose permissions are unclear, should be excluded from AutoModSync transfer unless the operator obtains appropriate permission from the rights holder.
+
+AutoModSync itself does not bundle arbitrary third-party gameplay mods or fetch them from mod repositories on behalf of the operator. See [THIRD-PARTY-MOD-REDISTRIBUTION.md](THIRD-PARTY-MOD-REDISTRIBUTION.md) for the operator policy.
+
 ## Security model
 
 BepInEx plugins and preloader patchers can execute code. Only approve first-contact AutoModSync trust for servers you recognize and intend to join.
@@ -170,6 +178,8 @@ The canonical checksum manifest is also attested. See `VERIFYING-RELEASES.md` fo
 AutoModSync-authored source is released under the **MIT License**. See `LICENSE`.
 
 The client runtime includes third-party BepInEx/Unity Doorstop components as normal visible files. Those components remain under their respective upstream licenses; see `THIRD-PARTY-NOTICES.md` and `THIRD_PARTY_LICENSES/`.
+
+The MIT license covers AutoModSync-authored code only. It does not license or grant redistribution rights for third-party mods selected by a server operator for synchronization. See `THIRD-PARTY-MOD-REDISTRIBUTION.md`.
 
 ## Release notes (2.4.5+)
 
