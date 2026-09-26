@@ -1,261 +1,145 @@
 # AutoModSync 2.6.1 patch-release plan
 
-This document is the planning baseline for Valheim AutoModSync **2.6.1**.
+This document is the authoritative planning baseline for Valheim AutoModSync **2.6.1**.
 
-2.6.1 is intended to be a focused documentation/safety/release-pipeline patch over 2.6.0. It must not silently replace, mutate, or republish the already-attested 2.6.0 release artifact.
+## Release purpose
 
-## Baseline and release invariants
+**2.6.1 is a single-purpose access-control patch over the released 2.6.0 behavior.**
 
-- Public release being patched: **2.6.0**
-- 2.6.0 release tag commit: `0da61e625220766aca6c47bd990e063d000d3bea`
-- Planning baseline on `main`: `a149aa74942cff0729bedfba3e6685ed6c1ec61f`
-- Planned release: **2.6.1**
-- Network protocol baseline remains **AMS4 / protocol 4**.
-- The existing `v2.6.0` tag, GitHub release asset, checksum, and attestation are immutable historical artifacts. Do **not** overwrite the 2.6.0 ZIP or move/reuse the `v2.6.0` tag.
-- 2.6.1 must be built, hashed, attested, and published as new exact artifacts under a new `v2.6.1` tag.
-- No public 2.6.1 release is authorized until every required gate in this document has passed on the exact release candidate.
+Except for the password-protected-server boundary described below, 2.6.1 must behave like 2.6.0. Do not use this release to bundle unrelated safety fixes, UI changes, packaging changes, release-pipeline changes, transfer changes, licensing features, or cleanup work.
 
-## Required 2.6.1 scope
+The release should be reviewable as:
 
-### 1. Ship the third-party redistribution policy inside every package
+> **2.6.0 + password-authenticated AutoModSync access on password-protected servers + unavoidable version/release metadata.**
 
-The repository now documents operator responsibility in:
+## Baseline and invariants
 
-- `THIRD-PARTY-MOD-REDISTRIBUTION.md`
-- `README.md`
-- `THIRD-PARTY-NOTICES.md`
-- `ModSites/README.md`
-- `Thunderstore/README.md`
-- `Thunderstore/THIRD-PARTY-NOTICES.md`
-- `Server/server-config-example.cfg`
+- Baseline public release: **2.6.0**.
+- 2.6.0 release tag commit: `0da61e625220766aca6c47bd990e063d000d3bea`.
+- Planned release: **2.6.1**.
+- Network protocol remains **AMS4 / protocol 4** unless implementation proves a wire change is absolutely required; protocol churn is not a goal of this patch.
+- The existing `v2.6.0` tag, release ZIP, checksum, and attestation remain immutable historical artifacts.
+- 2.6.1 receives its own version, tag, exact build artifacts, hashes, attestations, release notes, and publication.
+- Runtime/package behavior not required for the password boundary should remain equivalent to released 2.6.0.
+- Prefer implementing and qualifying 2.6.1 from the released 2.6.0 baseline so unrelated post-2.6.0 `main` work cannot accidentally enter the patch.
 
-2.6.1 must make sure newly downloaded packages actually contain the warning, not merely that the repository contains it.
+## The only runtime change: authenticate before protected AMS access
 
-Required packaging behavior:
+Password-protected Valheim servers must treat successful server-side Valheim password authentication as an access-control boundary for AutoModSync.
 
-- Standalone ZIP includes `THIRD-PARTY-MOD-REDISTRIBUTION.md` at the package root in addition to the updated README and third-party notices.
-- Nexus and CurseForge ZIPs include the same policy at the package root in addition to their updated README/notices.
-- Thunderstore/r2modman ZIP includes the same policy at the package root in addition to its updated README/notices.
-- Package generation fails if the policy file is absent.
-- A release regression test opens all four ZIPs and verifies the policy file and key operator-responsibility language are present.
-- Release notes explicitly state that AutoModSync grants no redistribution rights over operator-selected third-party mods.
+A peer that can reach the server socket but has **not** supplied the correct server password must not be able to download synchronized mods or obtain protected synchronization information.
 
-The warning must retain these points:
+### Required behavior
 
-1. AutoModSync is a transport/synchronization tool and does not grant or expand rights to third-party mods.
-2. Operators are responsible for checking applicable licenses/author permissions and satisfying their conditions.
-3. Private, password-protected, friends-only, or noncommercial use does not by itself create redistribution permission.
-4. Public servers deserve particular review because recipients may be unrestricted.
-5. AutoModSync itself does not bundle arbitrary third-party gameplay mods or fetch them from mod repositories on behalf of the operator.
+On a password-protected server, before the **server** has accepted the Valheim password for that exact live connection, AutoModSync must not disclose or serve:
 
-### 2. Remove forced Valheim termination from the Apply helper
+- the server signing identity/fingerprint or trust material;
+- the signed synchronization manifest;
+- synchronized paths or filenames;
+- file hashes or file sizes;
+- bundle identifiers or bundle contents;
+- synchronized configuration contents;
+- cache/build metadata that reveals synchronized content; or
+- any other protected synchronization state.
 
-Current 2.6.0 behavior waits for the originating Valheim PID and, after 15 seconds, can call `Process.Kill()`.
+Most importantly, **no synchronized mod/configuration bytes may be downloadable before successful password authentication**.
 
-2.6.1 must remove that forced-termination behavior.
+Enforcement must be server-side. A modified client that sends `AMS4_Hello`, manifest requests, bundle requests, resume requests, or any other AMS RPC before authentication must not bypass the boundary.
 
-Required behavior:
+If a pre-authentication AMS response is needed for compatibility, it must be minimal and reveal no protected synchronization state. An `AMS present / authentication required` capability response is acceptable if necessary.
 
-- The helper may wait a bounded amount of time for the exact originating PID to exit naturally.
-- If the process remains alive past that wait, the helper must abort **before any live synchronized file mutation**.
-- It must not terminate Valheim, Steam, or any unrelated process.
-- Verified staging/pending state must remain recoverable for a later retry.
-- The failure must be clearly recorded in the apply log.
-- A subsequent clean retry after the old process exits must still be able to complete the existing transactional apply/recovery path.
+The passive Steam server-browser `automodsync` / `automodsync_protocol` presence advertisement may remain public because it exposes only product capability/version information.
 
-Required regression:
+Authorization must be bound to the exact live connection/`ZRpc` generation:
 
-- Start the helper against a deliberately long-lived dummy PID.
-- Prove the dummy process remains alive.
-- Prove no synchronized live file changes occurred.
-- Prove pending/staging state remains usable.
-- Exit the dummy process and prove a later helper invocation completes successfully.
+- successful authentication authorizes only that connection;
+- disconnect immediately revokes the authorization;
+- a later connection cannot inherit authorization from an earlier peer;
+- restart/reconnect must pass through Valheim's normal password authentication again before AMS disclosure or transfer resumes.
 
-This is an AV-hygiene and user-safety improvement. It must **not** be described as a guarantee that Defender/SmartScreen/other AV products will stop flagging the helper.
+No-password/public servers retain the released 2.6.0 AMS behavior.
 
-### 3. Fix stale first-contact trust dialogs after connection failure/timeout
+### Required ordering
 
-Observed 2.6.0 regression: if the user leaves the first-contact fingerprint/security-code prompt unanswered long enough for the protected connection attempt to fail, the native AutoModSync trust dialog can remain visible after the connection is gone.
-
-2.6.1 must bind native trust-prompt lifetime to the exact connection/trust generation that created it.
-
-Required behavior:
-
-- When that protected connection is invalidated, its trust prompt is dismissed reliably.
-- A late Yes/No result from an invalidated prompt can never establish trust or resume a later connection.
-- A later connection uses a new generation and, when appropriate, presents a fresh prompt.
-- Prompt cleanup must not block Unity networking or the main thread.
-
-Required regression:
-
-- Reproduce the actual user-visible case: open first-contact trust prompt, do not answer it, allow the connection/preflight to fail or time out, and verify the native dialog disappears.
-- Verify late/stale prompt results are ignored.
-- Verify a subsequent connection can prompt and proceed normally.
-- Extend the existing stale-trust live harness rather than relying only on a synthetic path that does not reproduce the reported timeout lifecycle.
-
-Do not redesign the entire trust UX in this patch unless the minimal reliable fix requires it.
-
-### 4. Enforce Valheim password authentication before AMS disclosure
-
-Password-protected servers must treat successful Valheim password authentication as an access-control boundary for AutoModSync. A peer that can reach the server socket but has not successfully authenticated must not be able to obtain protected synchronization metadata or content.
-
-Required behavior:
-
-- On a password-protected server, AutoModSync must not disclose the server signing identity/fingerprint, signed manifest, synchronized paths, filenames, file hashes, file sizes, bundle identifiers, bundle contents, configuration contents, cache metadata, or other synchronization details until the **server** has accepted the Valheim password for that exact live connection.
-- Enforcement must be server-side. A modified client sending `AMS4_Hello` or later AMS RPCs early must not bypass the boundary.
-- Any pre-authentication AMS response, if one is needed for compatibility, must be minimal and reveal no protected synchronization state; an `AMS_PRESENT/AUTH_REQUIRED`-style capability response is acceptable if required.
-- The existing passive Steam server-browser `automodsync` / `automodsync_protocol` presence advertisement may remain public because it exposes only product capability/version, not protected synchronization state.
-- Authorization must be bound to the exact `ZRpc` / connection generation. Disconnect invalidates it immediately, and a later connection cannot inherit authorization from an earlier authenticated peer.
-- Restart/reconnect must pass through Valheim's normal password/authentication lifecycle again before AMS resumes.
-- Public/no-password servers retain the current early AMS preflight behavior.
-- The implementation must preserve the reason AMS moved ahead of the normal Valheim `ServerHandshake` in 2.5: third-party compatibility checks such as Jotunn/Epic Loot must not reject a client before required synchronization can run. Identify and gate on the earliest reliable point at which Valheim has accepted the password but before third-party compatibility validation is allowed to reject the connection.
-
-Target ordering for password-protected servers:
+For password-protected servers, the target ordering is:
 
 ```text
 transport established
-  -> Valheim password authentication
-  -> server marks this exact connection authenticated
+  -> normal Valheim password challenge
+  -> server accepts the correct password for this exact connection
   -> AutoModSync discovery/trust/manifest/compare/transfer
   -> normal third-party mod compatibility validation
   -> normal join
 ```
 
-Required regression:
+The implementation must preserve the reason AMS moved ahead of the normal Valheim `ServerHandshake` in 2.5: Jotunn/Epic Loot/other compatibility checks must not reject a client before required synchronization has had a chance to complete.
 
-- No password submitted: zero protected AMS metadata/content disclosure.
-- Wrong password: zero protected AMS metadata/content disclosure.
-- Correct password: AMS becomes available for that exact connection and normal synchronization can proceed.
-- A deliberately modified/test client sending AMS RPCs before authentication receives no protected synchronization state.
-- Authentication of connection A cannot authorize connection B.
-- Disconnect immediately revokes AMS authorization.
-- Restart/reconnect requires normal authentication again before AMS disclosure.
-- No-password servers preserve the current fail-open AMS discovery behavior.
-- Existing Jotunn/legacy AMS4 compatibility gates remain green so the password boundary does not reintroduce the pre-2.5 handshake-ordering problem.
+Therefore the implementation must identify the earliest reliable point where the server has accepted the password **while still holding back the compatibility stage that must occur after AMS synchronization**.
 
-This is an access-control/privacy fix. It does not change the separate rule that password protection by itself does not grant third-party redistribution rights.
+### Required regressions
 
-### 5. Promote canonical store artifacts instead of recompiling during publication
+2.6.1 cannot release until live/deterministic tests demonstrate:
 
-The tag-triggered `Distribution Packages` workflow already builds standalone/Nexus/CurseForge/Thunderstore packages from one compilation. The manual per-store publishing workflows currently compile again.
+- **No password submitted:** zero protected AMS metadata and zero synchronized bytes are disclosed.
+- **Wrong password:** zero protected AMS metadata and zero synchronized bytes are disclosed.
+- **Correct password:** AMS becomes available only after the server accepts the password, and normal synchronization can proceed.
+- **Malicious/early AMS RPC:** deliberately sending AMS requests before authentication reveals no protected state and transfers no bytes.
+- **Connection isolation:** authentication of connection A cannot authorize connection B.
+- **Disconnect revocation:** closing an authenticated connection immediately removes its AMS authorization.
+- **Reconnect:** a restarted/reconnected client must authenticate normally again before AMS can resume.
+- **No-password server:** released 2.6.0 fail-open discovery/synchronization behavior remains unchanged.
+- **Compatibility:** existing AMS4/Jotunn-style handshake-order behavior remains valid; the patch must not reintroduce the pre-2.5 compatibility problem.
+- **2.6.0 regression:** existing 2.6.0 transfer/cache/resume/scheduler/apply/ownership behavior remains otherwise unchanged.
 
-2.6.1 must make **single-build promotion** the release invariant.
+## Release implementation rule
 
-Required behavior:
+Do not opportunistically fix unrelated issues while implementing this boundary.
 
-- `Distribution Packages` remains the canonical compiler/package producer for a release tag.
-- `publish-nexus.yml`, `publish-curseforge.yml`, and `publish-thunderstore.yml` do not compile AutoModSync PE files.
-- Each publishing workflow resolves the successful canonical `Distribution Packages` run for the requested release tag/version and downloads the exact store ZIP plus the canonical `SHA256SUMS.txt`.
-- Publication fails if the artifact name, version, tag/commit association, or SHA-256 does not match the canonical manifest.
-- The already-generated GitHub/Sigstore provenance remains tied to the exact promoted artifact bytes.
-- The publishing workflow uploads those exact bytes to the store without repackaging them.
+Allowed changes are limited to:
 
-Add a regression gate that extracts all four canonical distribution ZIPs and proves that the AutoModSync-authored runtime binaries are byte-identical across applicable channels:
+1. the minimum client/server connection-state changes required to place AMS behind successful password authentication on password-protected servers;
+2. focused tests/harness changes proving the boundary;
+3. comments/docs directly explaining the boundary;
+4. the normal version bump to 2.6.1 and version-specific release notes/metadata required to build and publish a distinct release.
 
-- `ValheimAutoModSync.Client.dll`
-- `ValheimAutoModSync.Server.dll`
-- `ValheimAutoModSync.Apply.exe`
+If implementation uncovers an unrelated bug, record it for 2.6.2+ rather than expanding 2.6.1 unless it makes the password boundary impossible to implement safely.
 
-Deterministic compiler output may still be investigated later, but it is not a substitute for this single-build promotion rule.
+## Explicitly deferred to 2.6.2 and beyond
 
-### 6. Make release-readiness/version machinery patch-release safe
+The following previously discussed work is **not part of 2.6.1**:
 
-Current release-readiness checks contain 2.6.0-specific constants.
+- removing the Apply helper's forced Valheim termination fallback;
+- fixing stale first-contact trust dialogs after connection timeout/failure;
+- adding redistribution-policy files to every release package;
+- changing store publication to promote canonical Distribution Packages artifacts instead of recompiling;
+- broader patch-release/readiness refactoring;
+- deterministic/reproducible compiler work;
+- expanded Defender/Microsoft release-gate changes beyond the release process already used for 2.6.0;
+- verify-only / do-not-transfer required mods;
+- provider handoff/acquisition UX for Nexus, Thunderstore, CurseForge, or other authorized sources;
+- broad UI redesign;
+- new transfer algorithms, throughput tuning, synchronization roots, or protocol features.
 
-For 2.6.1:
+Those items are tracked separately for **2.6.2+** so this access-control correction can be released independently.
 
-- Bump the authoritative `VERSION` to `2.6.1` only when implementation work begins.
-- Update client/server/apply/installer/build-tool assembly/product metadata consistently.
-- Update Thunderstore package metadata/changelog.
-- Create `RELEASE-NOTES-2.6.1.md`.
-- Update README/distribution text at release freeze.
-- Refactor release-readiness checks where practical to derive the current version from `VERSION` rather than hard-coding `2.6.0`.
-- Release-readiness must require the correct version-specific release-notes file and distribution filenames.
-- Preserve the existing rule that development-only `AMS_DEV_TESTS` code cannot enter release binaries.
+## Recommended implementation/release order
 
-### 7. Final exact-candidate Microsoft Defender gate
-
-Because 2.6.0's Apply helper received generic Defender ML classifications, 2.6.1 must test the **exact canonical candidate bytes**, not a locally rebuilt approximation. This is the final release gate after the candidate is frozen, tagged, built, hashed, and attested, but before public publication.
-
-Microsoft's software-developer submission channel is an analysis/false-positive process, not a pre-certification, permanent allowlist, or release-signing service. Therefore the release gate is conditional on the exact candidate's Defender result rather than pretending every version can receive formal Microsoft "approval."
-
-Required final sequence:
-
-1. Freeze the exact 2.6.1 release candidate. No source/runtime/package changes after this point without restarting the gate.
-2. Tag `v2.6.1` and let the canonical `Distribution Packages` workflow produce the exact standalone and store artifacts.
-3. Download the exact canonical standalone ZIP and extract the exact canonical `ValheimAutoModSync.Apply.exe`.
-4. Verify the ZIP/checksum manifest with SHA-256 and GitHub/Sigstore attestation.
-5. Update Microsoft Defender Security Intelligence to the latest available definitions and make sure no local allow/exclusion is masking the test.
-6. Fresh-download or otherwise present the exact canonical bytes to Defender and record:
-   - Defender definition version
-   - ZIP SHA-256
-   - Apply-helper SHA-256
-   - any detection name/classification
-   - date/time of the test
-7. **If either exact artifact is detected or blocked:** submit the exact affected ZIP and/or Apply helper through Microsoft's **Software developer** file-submission path, record every Submission ID, and hold public release until Microsoft returns a final determination or corrective update sufficient for a fresh current-definition retest.
-8. After Microsoft closes a detected-file submission as clean/false positive, update Defender definitions again and repeat a fresh exact-byte test with no local allow-rule. Release only after the exact candidate no longer reproduces the Defender malware block, or after an explicitly documented maintainer decision to ship despite an unresolved Microsoft classification.
-9. **If the exact canonical candidate is not detected:** record the clean current-definition result and proceed. A proactive Microsoft submission may be made for additional analysis, but it is not treated as certification and is not required to delay release when there is no detection to dispute.
-10. Do not tell users to disable Defender, add a permanent exclusion, or blindly allow the file as a normal installation step.
-
-If an unresolved Defender classification remains and the maintainer deliberately chooses to publish anyway, the release page, website, and store listings must carry a conspicuous current-status notice identifying the exact affected version and explaining that the file is under Microsoft review. Do **not** use a permanent boilerplate warning on every clean release; the notice is only for a release that is actually shipping with a known unresolved classification.
-
-A clean Defender result or Microsoft false-positive correction is distribution evidence, not a substitute for code review, provenance, or Authenticode.
-
-## Release packaging gates
-
-Create or extend tests so 2.6.1 cannot ship unless all of the following are true:
-
-| Gate | Required evidence |
-| --- | --- |
-| Redistribution docs | All four release ZIPs contain the policy file and updated warning text |
-| No forced kill | Production Apply source/binary path contains no Valheim `Process.Kill()` fallback and long-lived-PID regression passes |
-| Trust-dialog lifecycle | Real timeout/disconnect case closes the native prompt and stale results cannot affect another connection |
-| Password access boundary | Password-protected servers disclose no protected AMS metadata/content until server-side Valheim authentication succeeds for that exact connection; disconnect/reconnect revokes/requires authorization |
-| Transaction safety | Existing Phase 2/6 apply/ownership regression suites remain green |
-| Transfer compatibility | Existing AMS4 resume/scheduler/cache/ownership gates remain green |
-| Binary identity | Client/Server/Apply hashes match across all applicable canonical channel packages |
-| Canonical promotion | Store workflows consume canonical Distribution Packages artifacts and perform no compilation/repackaging |
-| Version consistency | `VERSION`, assembly metadata, package metadata, docs, and release notes all resolve to 2.6.1 |
-| Provenance | Canonical packages and checksum manifest have valid GitHub/Sigstore attestations |
-| Defender/Microsoft final gate | Exact canonical candidate tested with current definitions; any reproduced detection submitted through the Software developer channel and resolved/retested before normal publication |
-
-## Recommended implementation order
-
-1. **Planning baseline only** — this document; do not bump version yet.
-2. **Apply-helper safety fix** — remove forced kill and add regression.
-3. **Trust-dialog timeout fix** — reproduce first, then make the smallest lifecycle correction and extend live regression.
-4. **Password-authentication AMS boundary** — on password-protected servers, prove server-side Valheim authentication succeeds for the exact connection before any protected AMS disclosure or transfer, without reintroducing third-party handshake-order failures.
-5. **Package-policy inclusion** — update builders and add ZIP-content regression.
-6. **Single-build store promotion** — change publishing workflows and add binary-identity/promotion gate.
-7. **2.6.1 version/release metadata** — bump version and create release notes once implementation is stable.
-8. **Full CI + targeted live tests** — rerun existing safety/transfer/apply gates plus the new 2.6.1 gates.
-9. **Release freeze** — no runtime changes after the candidate used for final qualification.
-10. **Tag `v2.6.1`** — canonical Distribution Packages workflow builds the exact release bytes.
-11. **Verify/download/test exact tagged artifacts** — checksum, attestation, package contents, binary identity, and the final Microsoft Defender gate. If Defender reproduces a detection, submit the exact affected artifact(s) to Microsoft as a Software developer and wait for final determination/corrective definitions before normal publication.
-12. **Publish GitHub release** from the exact canonical artifact bytes only after the final Defender/Microsoft gate is satisfied or an unresolved-classification exception is explicitly documented.
-13. **Promote the exact canonical Nexus/CurseForge/Thunderstore artifacts**; do not rebuild.
-14. **Update website/store descriptions** to 2.6.1 and retain the third-party redistribution warning.
-15. Keep 2.6.0 available as historical provenance unless there is a separate reason to withdraw it; do not mutate its artifact.
-
-## Explicit non-goals for 2.6.1
-
-Keep this patch small enough to qualify quickly.
-
-The following are useful ideas but should not be allowed to expand 2.6.1 unless a blocker proves they are necessary:
-
-- New network protocol generation.
-- New transfer algorithms or throughput tuning.
-- Broad UI redesign.
-- Arbitrary new synchronization roots.
-- Automatic license detection.
-- A new "required but verify-only / do-not-transfer" third-party-mod feature.
-
-The verify-only concept is worth designing separately because it could let an operator require a locally installed mod without redistributing its bytes, but it introduces product/UX/configuration semantics that deserve their own reviewed workstream rather than being rushed into this safety patch.
+1. Start from the exact released 2.6.0 baseline or otherwise prove the candidate contains no unrelated post-2.6.0 runtime/package changes.
+2. Reproduce the current behavior on a password-protected test server.
+3. Identify the exact Valheim server-side password-acceptance point and the compatibility handshake ordering around it.
+4. Implement the minimum per-connection authorization gate.
+5. Add the password-boundary regression matrix.
+6. Rerun the relevant existing 2.6.0 regression/live gates to prove no unrelated behavior changed.
+7. Bump only required version/release metadata to 2.6.1.
+8. Freeze the candidate.
+9. Tag **`v2.6.1`** and build/verify the exact release artifacts using the existing release process.
+10. Publish 2.6.1 as its own release.
+11. Resume deferred work under 2.6.2+.
 
 ## Release-note headline
 
-The eventual 2.6.1 release notes should present the patch approximately as:
+The 2.6.1 release notes should be intentionally narrow:
 
-> **AutoModSync 2.6.1 is a safety, documentation, and release-integrity patch.** It adds explicit third-party mod redistribution guidance to shipped packages, removes the Apply helper's forced Valheim termination fallback, fixes stale first-contact trust prompts after failed connections, prevents password-protected servers from disclosing protected AutoModSync state before successful Valheim authentication, and changes store publication to promote the exact canonical GitHub-built artifacts instead of recompiling them.
+> **AutoModSync 2.6.1 closes a password-protected-server access-control gap.** On servers that require a Valheim password, AutoModSync will not expose synchronization details or allow synchronized mods/configuration files to be downloaded until the server has accepted the correct password for that connection. Other AutoModSync behavior remains aligned with 2.6.0.
 
-Do not claim that the AV change guarantees a clean malware scan, and do not imply that AutoModSync itself grants permission to redistribute third-party mods.
+Password protection still does **not** itself grant a server operator redistribution rights for third-party mods; that separate licensing responsibility remains unchanged.
