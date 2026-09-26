@@ -21,8 +21,8 @@ using UnityEngine;
 [assembly: AssemblyDescription("Client-side Valheim plugin synchronization, trust, verification, restart, and reconnect component.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+[assembly: AssemblyVersion("2.6.1.0")]
+[assembly: AssemblyFileVersion("2.6.1.0")]
 
 namespace ValheimAutoModSync
 {
@@ -31,11 +31,12 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.client";
         public const string PluginName = "Valheim AutoModSync Client";
-        public const string PluginVersion = "2.6.0";
+        public const string PluginVersion = "2.6.1";
         public const int ProtocolVersion = 4;
 
         private const string RpcHello = "AMS4_Hello";
         private const string RpcAck = "AMS4_Ack";
+        private const string RpcAuth = "AMS4_Auth";
         private const string RpcManifestBegin = "AMS4_ManifestBegin";
         private const string RpcManifestChunk = "AMS4_ManifestChunk";
         private const string RpcManifestEnd = "AMS4_ManifestEnd";
@@ -50,7 +51,7 @@ namespace ValheimAutoModSync
         private const string RpcError = "AMS4_Error";
         private const int BundleBatchChunks = 16;
         private const int BundlePipelineChunks = 128;
-        private const string ClientCapabilities = "roots1;bundle-resume1;bundle-scheduler1";
+        private const string ClientCapabilities = "roots1;bundle-resume1;bundle-scheduler1;password-auth1";
 
         // 2.6 client-side hard ceilings are deliberately independent of server configuration.
         // A trusted server may choose smaller limits, but it cannot make this client allocate/write unbounded payloads.
@@ -70,6 +71,10 @@ namespace ValheimAutoModSync
         private static bool _waitingForServer;
         private static bool _serverRecognized;
         private static bool _serverAcknowledged;
+        private static bool _serverRequiresPasswordAuth;
+        private static bool _passwordAuthenticatedForAms;
+        private static ZRpc _passwordReplayRpc;
+        private static bool _replayPasswordOnNextPeerInfo;
         private static bool _serverSupportsBundleWindow;
         private static bool _serverSupportsBundleBatch;
         private static bool _serverSupportsBundlePipeline;
@@ -206,6 +211,7 @@ namespace ValheimAutoModSync
                 harmony.PatchAll(typeof(OnNewConnectionPatch));
                 harmony.PatchAll(typeof(InvokeServerHandshakeGatePatch));
                 harmony.PatchAll(typeof(SendPeerInfoPatch));
+                harmony.PatchAll(typeof(ClientHandshakePasswordReplayPatch));
                 harmony.PatchAll(typeof(ReconnectCharacterSelectionPatch));
                 harmony.PatchAll(typeof(ReconnectJoinServerPatch));
                 harmony.PatchAll(typeof(CaptureOriginalJoinRequestPatch));
@@ -827,15 +833,71 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(ZNet), "SendPeerInfo")]
         private static class SendPeerInfoPatch
         {
-            // Intent: Legacy/fallback SendPeerInfo gate for connection paths that bypass the new pre-handshake gate.
-            // Compatibility: a connection already completed by preflight passes through untouched; otherwise the older AMS4 probe behavior is retained.
+            [HarmonyPriority(Priority.First + 100)]
+            // 2.6.1: on passworded AMS servers, Valheim's password dialog still owns input, but the
+            // first SendPeerInfo is converted into AMS4_Auth so neither vanilla PeerInfo nor third-party
+            // compatibility validation can run before the server accepts the password.
             private static bool Prefix(ZNet __instance, ZRpc rpc, string password)
             {
                 if (__instance == null || __instance.IsServer() || _allowPeerInfo) return true;
                 if (rpc == null) return true;
+
+                if (_serverRequiresPasswordAuth && _waitingForServer && rpc == _pendingRpc)
+                {
+                    if (String.IsNullOrEmpty(password))
+                    {
+                        AbortAutoModSyncJoin("A server password is required before AutoModSync can receive protected synchronization information.");
+                        return false;
+                    }
+
+                    _pendingPassword = password;
+                    string proof;
+                    if (!TryCreateValheimPasswordProof(password, out proof))
+                    {
+                        _pendingPassword = "";
+                        AbortAutoModSyncJoin("AutoModSync could not create the Valheim password proof; protected synchronization was not requested.");
+                        return false;
+                    }
+
+                    try
+                    {
+                        ZPackage auth = new ZPackage();
+                        auth.Write(proof);
+                        rpc.Invoke(RpcAuth, new object[] { auth });
+                        _helloSentUtc = DateTime.UtcNow;
+                        ShowSyncOverlay(AutoModSyncUiPhase.Checking, "Authenticating server password...",
+                            "AutoModSync is waiting for the server to accept the password before requesting any protected mod information.");
+                        if (_instance != null) _instance.Logger.LogInfo("AutoModSync sent the Valheim password proof; no protected synchronization information has been requested yet.");
+                    }
+                    catch (Exception ex)
+                    {
+                        _pendingPassword = "";
+                        AbortAutoModSyncJoin("AutoModSync password authentication could not be sent: " + ex.Message);
+                    }
+                    return false;
+                }
+
+                // After AMS finishes on the same already-authenticated connection, replay the saved password
+                // exactly once into Valheim's original PeerInfo so the player is not prompted a second time.
+                if (_passwordAuthenticatedForAms && _replayPasswordOnNextPeerInfo && rpc == _passwordReplayRpc)
+                {
+                    string replayPassword = _pendingPassword;
+                    _replayPasswordOnNextPeerInfo = false;
+                    try
+                    {
+                        InvokeValheimSendPeerInfo(rpc, replayPassword);
+                    }
+                    finally
+                    {
+                        ClearPasswordAuthenticationState();
+                    }
+                    return false;
+                }
+
                 if (PreflightComplete.Contains(rpc)) return true;
                 if (_preflightGateActive && rpc == _pendingRpc) return true;
 
+                // Legacy/fallback path retained for connection paths that bypass the early ServerHandshake gate.
                 RegisterRpc(rpc);
                 _pendingRpc = rpc;
                 _pendingPassword = password ?? "";
@@ -856,6 +918,8 @@ namespace ValheimAutoModSync
                 _waitingForServer = true;
                 _serverRecognized = false;
                 _serverAcknowledged = false;
+                _serverRequiresPasswordAuth = false;
+                _passwordAuthenticatedForAms = false;
                 _serverSupportsBundleWindow = false;
                 _serverSupportsBundleBatch = false;
                 _serverSupportsBundlePipeline = false;
@@ -886,6 +950,23 @@ namespace ValheimAutoModSync
             }
         }
 
+        [HarmonyPatch(typeof(ZNet), "RPC_ClientHandshake")]
+        private static class ClientHandshakePasswordReplayPatch
+        {
+            [HarmonyPriority(Priority.First + 100)]
+            // The post-sync ServerHandshake is intentionally allowed to run so Jotunn/other compatibility
+            // prefixes execute after synchronization. The password itself was already accepted for this ZRpc,
+            // so suppress a second password dialog and feed the saved value to the following SendPeerInfo once.
+            private static void Prefix(ZNet __instance, ZRpc rpc, ref bool needPassword)
+            {
+                if (__instance == null || __instance.IsServer() || rpc == null) return;
+                if (!_passwordAuthenticatedForAms || rpc != _passwordReplayRpc || String.IsNullOrEmpty(_pendingPassword)) return;
+                needPassword = false;
+                _replayPasswordOnNextPeerInfo = true;
+                if (_instance != null) _instance.Logger.LogDebug("AutoModSync reused the already-accepted password for Valheim's post-sync handshake; no second password prompt is required.");
+            }
+        }
+
         // Intent: Registers all AMS4 RPC names exactly once on a ZRpc so manifest and bundle messages can be handled without replacing Valheim's own RPC table entries.
         private static void RegisterRpc(ZRpc rpc)
         {
@@ -894,6 +975,7 @@ namespace ValheimAutoModSync
             {
                 rpc.Register<ZPackage>(RpcHello, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcAck, new Action<ZRpc, ZPackage>(RPC_Ack));
+                rpc.Register<ZPackage>(RpcAuth, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcManifestBegin, new Action<ZRpc, ZPackage>(RPC_ManifestBegin));
                 rpc.Register<ZPackage>(RpcManifestChunk, new Action<ZRpc, ZPackage>(RPC_ManifestChunk));
                 rpc.Register<ZPackage>(RpcManifestEnd, new Action<ZRpc, ZPackage>(RPC_ManifestEnd));
@@ -917,8 +999,8 @@ namespace ValheimAutoModSync
         // Intent: Safe placeholder for protocol messages that are outbound-only on the client; receiving one requires no action.
         private static void RPC_NoOp(ZRpc rpc, ZPackage pkg) { }
 
-        // Intent: Handles the optional AMS4 preflight acknowledgement sent before server manifest hashing.
-        // Workflow: validates protocol version, records that an AutoModSync server responded, and extends the timeout while manifest generation proceeds.
+        // Intent: Handles the AMS4 acknowledgement. 2.6.1 uses a presence-only auth-required
+        // acknowledgement on passworded servers and a second full-capability acknowledgement only after authentication.
         private static void RPC_Ack(ZRpc rpc, ZPackage pkg)
         {
             if (!_waitingForServer || rpc != _pendingRpc) return;
@@ -930,7 +1012,35 @@ namespace ValheimAutoModSync
                 try { serverVersion = pkg.ReadString(); } catch { serverVersion = ""; }
                 try { capabilities = pkg.ReadString(); } catch { capabilities = ""; }
                 if (protocol != ProtocolVersion) throw new InvalidDataException("AutoModSync protocol mismatch during preflight acknowledgement.");
+
+                bool authenticationRequired = capabilities.IndexOf("auth-required1", StringComparison.Ordinal) >= 0;
                 _serverAcknowledged = true;
+                if (authenticationRequired)
+                {
+                    _serverRequiresPasswordAuth = true;
+                    _passwordAuthenticatedForAms = false;
+                    _serverSupportsBundleWindow = false;
+                    _serverSupportsBundleBatch = false;
+                    _serverSupportsBundlePipeline = false;
+                    _serverSupportsBundleResume = false;
+                    _serverSupportsBundleScheduler = false;
+                    _helloSentUtc = DateTime.MinValue;
+                    ShowSyncOverlay(AutoModSyncUiPhase.Checking, "Server password required.",
+                        "This server has AutoModSync, but its fingerprint, mod list, hashes, sizes, configuration, and files remain hidden until the server accepts the password.");
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync server detected; protected synchronization state is gated behind Valheim password authentication.");
+                    return;
+                }
+
+                bool completedPasswordAuthentication = _serverRequiresPasswordAuth;
+                _serverRequiresPasswordAuth = false;
+                if (completedPasswordAuthentication)
+                {
+                    _passwordAuthenticatedForAms = true;
+                    _helloSentUtc = DateTime.UtcNow;
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync server accepted the password proof; signed synchronization discovery may now begin.");
+                }
+
                 _serverSupportsBundleWindow = capabilities.IndexOf("bundle-window1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleBatch = capabilities.IndexOf("bundle-batch1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundlePipeline = capabilities.IndexOf("bundle-pipeline1", StringComparison.Ordinal) >= 0;
@@ -1804,6 +1914,7 @@ namespace ValheimAutoModSync
         private static void BeginApplyAndRestart()
         {
             if (_restartRequested) return;
+            ClearPasswordAuthenticationState();
             _restartRequested = true;
             ShowSyncOverlay(AutoModSyncUiPhase.Applying, "Preparing synchronized changes...",
                 "Verified files are ready. Preparing a crash-safe apply transaction before Valheim restarts.");
@@ -2014,11 +2125,13 @@ namespace ValheimAutoModSync
 #if AMS_DEV_TESTS
             _devUiPreviewActive = false;
 #endif
+            ClearPasswordAuthenticationState();
             _pendingRpc = rpc;
             _pendingPassword = "";
             _waitingForServer = true;
             _serverRecognized = false;
             _serverAcknowledged = false;
+            _serverRequiresPasswordAuth = false;
             _serverSupportsBundleWindow = false;
             _serverSupportsBundleBatch = false;
             _serverSupportsBundlePipeline = false;
@@ -2041,6 +2154,52 @@ namespace ValheimAutoModSync
             _reconnectBackend = _capturedServerBackend >= 0 ? _capturedServerBackend : GetCurrentOnlineBackend();
             if (_instance != null && _reconnectHost.Length > 0)
                 _instance.Logger.LogDebug("AutoModSync preflight captured reconnect endpoint " + _reconnectHost + ".");
+        }
+
+        // Intent: Produces the exact salted proof Valheim itself would place in PeerInfo, without sending the plaintext password to the AMS server.
+        private static bool TryCreateValheimPasswordProof(string password, out string proof)
+        {
+            proof = "";
+            try
+            {
+                FieldInfo saltField = AccessTools.Field(typeof(ZNet), "m_serverPasswordSalt");
+                MethodInfo hashMethod = AccessTools.Method(typeof(ZNet), "HashPassword", new Type[] { typeof(string), typeof(string) });
+                if (saltField == null || hashMethod == null) return false;
+                string salt = saltField.GetValue(null) as string ?? "";
+                if (String.IsNullOrEmpty(salt)) return false;
+                proof = hashMethod.Invoke(null, new object[] { password ?? "", salt }) as string ?? "";
+                return !String.IsNullOrEmpty(proof);
+            }
+            catch
+            {
+                proof = "";
+                return false;
+            }
+        }
+
+        private static void ClearPasswordAuthenticationState()
+        {
+            _pendingPassword = "";
+            _serverRequiresPasswordAuth = false;
+            _passwordAuthenticatedForAms = false;
+            _passwordReplayRpc = null;
+            _replayPasswordOnNextPeerInfo = false;
+        }
+
+        private static void InvokeValheimSendPeerInfo(ZRpc rpc, string password)
+        {
+            if (rpc == null || ZNet.instance == null) return;
+            MethodInfo send = AccessTools.Method(typeof(ZNet), "SendPeerInfo", new Type[] { typeof(ZRpc), typeof(string) });
+            if (send == null) throw new MissingMethodException("ZNet.SendPeerInfo(ZRpc,string)");
+            try
+            {
+                _allowPeerInfo = true;
+                send.Invoke(ZNet.instance, new object[] { rpc, password ?? "" });
+            }
+            finally
+            {
+                _allowPeerInfo = false;
+            }
         }
 
         // Intent: Starts the AMS4_Hello preflight after Valheim has registered its base RPC handlers while preserving the timestamp of the first attempt for the fail-open deadline.
@@ -2092,9 +2251,20 @@ namespace ValheimAutoModSync
                 ZRpc rpc = _pendingRpc;
                 bool releaseServerHandshake = _serverHandshakeHeld;
                 object[] serverHandshakeParameters = _heldServerHandshakeParameters == null ? new object[0] : (object[])_heldServerHandshakeParameters.Clone();
+                bool replayAcceptedPassword = _passwordAuthenticatedForAms && !String.IsNullOrEmpty(_pendingPassword) && rpc != null;
+                if (replayAcceptedPassword)
+                {
+                    _passwordReplayRpc = rpc;
+                    _replayPasswordOnNextPeerInfo = true;
+                }
+                else
+                {
+                    ClearPasswordAuthenticationState();
+                }
                 _waitingForServer = false;
                 _serverRecognized = false;
                 _serverAcknowledged = false;
+                _serverRequiresPasswordAuth = false;
                 _serverSupportsBundleWindow = false;
                 _serverSupportsBundleBatch = false;
                 _serverSupportsBundlePipeline = false;
@@ -2149,13 +2319,9 @@ namespace ValheimAutoModSync
             _pendingRpc = null;
             if (!_restartRequested && _uiState.Phase != AutoModSyncUiPhase.Complete) HideSyncOverlay();
             ResetManifestState();
-            if (rpc == null || ZNet.instance == null) return;
             try
             {
-                MethodInfo send = AccessTools.Method(typeof(ZNet), "SendPeerInfo", new Type[] { typeof(ZRpc), typeof(string) });
-                if (send == null) throw new MissingMethodException("ZNet.SendPeerInfo(ZRpc,string)");
-                _allowPeerInfo = true;
-                send.Invoke(ZNet.instance, new object[] { rpc, password });
+                InvokeValheimSendPeerInfo(rpc, password);
             }
             catch (Exception ex)
             {
@@ -2163,7 +2329,7 @@ namespace ValheimAutoModSync
             }
             finally
             {
-                _allowPeerInfo = false;
+                ClearPasswordAuthenticationState();
             }
         }
 
@@ -2188,6 +2354,7 @@ namespace ValheimAutoModSync
             _waitingForServer = false;
             _serverRecognized = true;
             _serverAcknowledged = true;
+            ClearPasswordAuthenticationState();
             _allowPeerInfo = false;
             _allowServerHandshake = false;
 
@@ -2958,6 +3125,8 @@ namespace ValheimAutoModSync
                              "Security code: " + code + "\r\n\r\n" +
                              "This short code is derived from the server's full signing-key fingerprint for human comparison only. " +
                              "AutoModSync verifies and pins the complete identity internally.\r\n\r\n" +
+                             "By choosing Yes, you also confirm that you have permission to receive any mods or configuration files provided by this server. " +
+                             "AutoModSync does not verify or enforce third-party mod licensing or redistribution requirements; you are confirming that permission yourself.\r\n\r\n" +
                              "Choose Yes only if you intended to join this server. If this first contact was unexpected, compare the code with one published by the server owner.";
 
             Thread thread = new Thread(delegate()
@@ -3140,6 +3309,7 @@ namespace ValheimAutoModSync
             _waitingForServer = false;
             _serverRecognized = false;
             _serverAcknowledged = false;
+            ClearPasswordAuthenticationState();
             _serverSupportsBundleWindow = false;
             _serverSupportsBundleBatch = false;
             _serverSupportsBundlePipeline = false;
