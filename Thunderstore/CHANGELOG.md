@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.6.1
+
+- Password-protected servers now expose only AutoModSync presence/version/protocol until the correct Valheim password is proven for that exact connection.
+- Signing identity, manifest contents/metadata, synchronized mod/config paths, hashes, sizes, bundle identifiers/content, and transfer capabilities remain behind the password boundary.
+- The normal Valheim password dialog is retained; AMS sends Valheim's salted proof rather than the plaintext password.
+- First-contact trust now also confirms permission to receive server-provided mods/configuration and states that AutoModSync is not responsible for verifying or enforcing third-party licensing/redistribution requirements.
+- Public/no-password servers retain the 2.6.0 AMS4/protocol-4 behavior.
+
+
 ## 2.6.0
 
 - Adds content-addressed bundle caching, startup prewarming, and single-flight construction so identical fresh-client requests reuse one immutable verified ZIP rather than rebuilding it per client.
