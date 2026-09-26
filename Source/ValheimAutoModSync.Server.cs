@@ -1126,6 +1126,7 @@ namespace ValheimAutoModSync
         private static class ProtectedServerHandshakeGatePatch
         {
             [HarmonyPriority(Priority.First + 100)]
+            // Intent: Blocks an AMS-aware passworded peer from invoking ServerHandshake before that exact connection authenticates.
             private static bool Prefix(ZNet __instance, ZRpc rpc)
             {
                 if (__instance == null || !__instance.IsServer() || rpc == null || !AmsPreflightPeers.Contains(rpc)) return true;
@@ -1142,6 +1143,7 @@ namespace ValheimAutoModSync
         private static class ProtectedPeerInfoGatePatch
         {
             [HarmonyPriority(Priority.First + 100)]
+            // Intent: Blocks an AMS-aware passworded peer from sending vanilla PeerInfo before that exact connection authenticates.
             private static bool Prefix(ZNet __instance, ZRpc rpc)
             {
                 if (__instance == null || !__instance.IsServer() || rpc == null || !AmsPreflightPeers.Contains(rpc)) return true;
@@ -1229,6 +1231,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Treats an unreadable password state as protected so reflection drift cannot become a disclosure bypass.
         private static bool IsPasswordProtectedServer()
         {
             string passwordHash;
@@ -1237,6 +1240,7 @@ namespace ValheimAutoModSync
             return !String.IsNullOrEmpty(passwordHash);
         }
 
+        // Intent: Obtains Valheim's existing per-server password salt solely to drive the normal client password challenge.
         private static bool TryGetServerPasswordSalt(out string salt)
         {
             salt = "";
@@ -1255,8 +1259,8 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Only public/no-password servers or the exact still-connected ZRpc that successfully proved
-        // the current Valheim password may observe fingerprints, manifests, bundle metadata, or bytes.
+        // Intent: Allows protected synchronization disclosure only to public servers or the exact connected ZRpc that proved the password.
+        // The current Valheim password must still be configured when authorization is checked.
         private static bool CanDiscloseProtectedSyncState(ZRpc rpc)
         {
             string passwordHash;
@@ -1266,6 +1270,7 @@ namespace ValheimAutoModSync
             try { return rpc.IsConnected(); } catch { return false; }
         }
 
+        // Intent: Enforces the disclosure gate at every manifest/bundle entry point and returns only a generic auth-required error on denial.
         private static bool RequireProtectedSyncAuthorization(ZRpc rpc)
         {
             if (CanDiscloseProtectedSyncState(rpc)) return true;
@@ -1273,7 +1278,7 @@ namespace ValheimAutoModSync
             return false;
         }
 
-        // This is the only AMS response intentionally available before password authentication.
+        // Intent: Sends the only AMS acknowledgement allowed before password authentication.
         // It discloses product presence/version/protocol and that authentication is required, but no
         // signing identity, manifest dimensions, filenames, hashes, sizes, configuration, cache keys, or transfer capabilities.
         private static void SendAuthenticationRequiredAck(ZRpc rpc)
@@ -1285,6 +1290,7 @@ namespace ValheimAutoModSync
             rpc.Invoke(RpcAck, new object[] { ack });
         }
 
+        // Intent: Preserves 2.6.0 behavior on public servers and starts a presence-only Valheim password challenge on protected servers.
         private static bool EnsurePreflightAuthorizationOrChallenge(ZRpc rpc)
         {
             string expectedHash;
@@ -1441,8 +1447,8 @@ namespace ValheimAutoModSync
             }
         }
 
-        // All protected metadata/manifest emission is centralized here and guarded again at the entry point
-        // so a future caller cannot accidentally bypass the password boundary.
+        // Intent: Emits the full AMS capability acknowledgement and signed manifest only after the disclosure gate succeeds.
+        // All protected metadata/manifest emission is centralized here so a future caller cannot accidentally bypass the password boundary.
         private static void SendAuthorizedPreflight(ZRpc rpc)
         {
             if (!RequireProtectedSyncAuthorization(rpc)) return;
