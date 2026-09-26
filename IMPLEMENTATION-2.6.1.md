@@ -23,6 +23,24 @@ The release should be reviewable as:
 - Runtime/package behavior not required for the password boundary should remain equivalent to released 2.6.0.
 - Prefer implementing and qualifying 2.6.1 from the released 2.6.0 baseline so unrelated post-2.6.0 `main` work cannot accidentally enter the patch.
 
+## Implemented 2.6.1 design
+
+The candidate keeps **AMS4 / protocol 4** and negotiates a new `password-auth1` client capability plus the `AMS4_Auth` proof RPC.
+
+For a password-protected server:
+
+1. The client sends the minimal AMS hello while continuing to hold the original Valheim `ServerHandshake`.
+2. The server replies only with an `auth-required1` presence acknowledgement, then invokes Valheim's normal client password dialog without running the server-side `RPC_ServerHandshake`.
+3. On password submission, the client computes the same salted proof Valheim would place in `PeerInfo` and sends only that proof through `AMS4_Auth`; the plaintext password is not sent through AMS.
+4. The server compares that proof with Valheim's current server-password hash and authorizes only the exact live `ZRpc`.
+5. Only after authorization may full transfer capabilities, signing identity, manifest data, or bundle state be sent.
+6. After AMS synchronization, the held Valheim `ServerHandshake` is released so Jotunn/other compatibility validation runs in its normal post-sync position. The already-entered password is replayed once into the normal Valheim `PeerInfo` path to avoid a second password prompt.
+7. Disconnect cleanup revokes challenge/authorization state, so every reconnect must authenticate again.
+
+Every protected manifest/bundle entry point independently re-checks authorization. AMS-aware early `ServerHandshake` and `PeerInfo` attempts are also blocked before authentication as defense in depth.
+
+The first-contact fingerprint trust dialog makes **Yes** also confirm permission to receive the server-provided mods/configuration and explicitly states that AutoModSync is not responsible for verifying or enforcing third-party licensing/redistribution requirements.
+
 ## The only runtime change: authenticate before protected AMS access
 
 Password-protected Valheim servers must treat successful server-side Valheim password authentication as an access-control boundary for AutoModSync.
