@@ -15,8 +15,8 @@ using System.Reflection;
 [assembly: AssemblyDescription("Standalone Windows installer for Valheim AutoModSync client, dedicated-server, and host roles.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+[assembly: AssemblyVersion("2.6.1.0")]
+[assembly: AssemblyFileVersion("2.6.1.0")]
 
 internal static class AutoModSyncInstaller
 {
