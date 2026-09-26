@@ -222,6 +222,10 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Add a regression gate proving the same `ValheimAutoModSync.Client.dll`, `ValheimAutoModSync.Server.dll`, and `ValheimAutoModSync.Apply.exe` bytes are reused across all release channels for a version.
 - Consider deterministic compiler settings as an additional reproducibility improvement, but treat single-build promotion as the required 2.6.x release-pipeline invariant.
 
-## 2.6.1 planning
+## Post-2.6.0 patch planning
 
-The focused 2.6.1 documentation/safety/release-integrity patch is tracked in [IMPLEMENTATION-2.6.1.md](IMPLEMENTATION-2.6.1.md). The existing 2.6.0 release artifacts remain immutable; 2.6.1 will be a new version/tag and will not overwrite the attested 2.6.0 ZIP.
+The narrow 2.6.1 access-control patch is tracked in [IMPLEMENTATION-2.6.1.md](IMPLEMENTATION-2.6.1.md). **2.6.1 keeps released 2.6.0 behavior unchanged except that password-protected servers must not expose protected AutoModSync state or transfer synchronized content until Valheim accepts the correct password for that exact connection.**
+
+All previously discussed unrelated safety, trust-dialog, packaging, release-pipeline, Defender-process, verify-only, and acquisition work is deferred to [IMPLEMENTATION-2.6.2.md](IMPLEMENTATION-2.6.2.md) and later releases.
+
+The existing 2.6.0 release artifacts remain immutable; 2.6.1 will be a separate version/tag and will not overwrite the attested 2.6.0 ZIP.
