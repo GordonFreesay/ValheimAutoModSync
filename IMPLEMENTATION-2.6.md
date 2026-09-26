@@ -212,3 +212,12 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Phase 7 implementation: **complete in source; deterministic validation passed, live branded UI qualification pending** — the policy-free UI-state harness passes 6/6, the Windows branding/package harness passes, source-documentation validation passes, and existing Phase 1/3 client regression workflows remained green after the state-driven UI wiring. The maintainer has already passed the pre-renderer Phase 7 foundation dev-build and zero-delta reconnect smoke gates. The next gate is the development-only ten-state visual preview followed by a real changed-file/resume transfer to confirm runtime layout, telemetry cadence, restart/reconnect presentation, and embedded/sidecar executable icon behavior.
 - Release build validation: **not yet performed**
 - Public release: **not authorized**
+
+
+## 2.6.x follow-up — single-build store promotion
+
+- Replace per-store recompilation in `.github/workflows/publish-nexus.yml`, `.github/workflows/publish-curseforge.yml`, and `.github/workflows/publish-thunderstore.yml` with promotion of the exact store ZIPs produced by the canonical tag-triggered `Distribution Packages` workflow.
+- Build AutoModSync PE binaries once per release tag, then package those exact bytes for standalone/Nexus/CurseForge/Thunderstore without recompiling during publication.
+- Preserve SHA-256 manifests and GitHub/Sigstore attestations for the exact promoted artifacts; fail publication if the selected store artifact does not match the canonical distribution artifact digest for that release.
+- Add a regression gate proving the same `ValheimAutoModSync.Client.dll`, `ValheimAutoModSync.Server.dll`, and `ValheimAutoModSync.Apply.exe` bytes are reused across all release channels for a version.
+- Consider deterministic compiler settings as an additional reproducibility improvement, but treat single-build promotion as the required 2.6.x release-pipeline invariant.
