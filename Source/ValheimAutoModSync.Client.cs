@@ -834,9 +834,8 @@ namespace ValheimAutoModSync
         private static class SendPeerInfoPatch
         {
             [HarmonyPriority(Priority.First + 100)]
-            // 2.6.1: on passworded AMS servers, Valheim's password dialog still owns input, but the
-            // first SendPeerInfo is converted into AMS4_Auth so neither vanilla PeerInfo nor third-party
-            // compatibility validation can run before the server accepts the password.
+            // Intent: Converts the first passworded SendPeerInfo into AMS4_Auth, then replays normal PeerInfo only after synchronization.
+            // Valheim's password dialog still owns input; vanilla PeerInfo and third-party compatibility validation stay behind authentication.
             private static bool Prefix(ZNet __instance, ZRpc rpc, string password)
             {
                 if (__instance == null || __instance.IsServer() || _allowPeerInfo) return true;
@@ -954,9 +953,8 @@ namespace ValheimAutoModSync
         private static class ClientHandshakePasswordReplayPatch
         {
             [HarmonyPriority(Priority.First + 100)]
-            // The post-sync ServerHandshake is intentionally allowed to run so Jotunn/other compatibility
-            // prefixes execute after synchronization. The password itself was already accepted for this ZRpc,
-            // so suppress a second password dialog and feed the saved value to the following SendPeerInfo once.
+            // Intent: Suppresses a second password dialog during the post-sync handshake while still allowing compatibility prefixes to execute.
+            // The saved password is fed to the following SendPeerInfo exactly once for the already-authenticated ZRpc.
             private static void Prefix(ZNet __instance, ZRpc rpc, ref bool needPassword)
             {
                 if (__instance == null || __instance.IsServer() || rpc == null) return;
@@ -2177,6 +2175,7 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Removes all in-memory password/authentication replay state so it cannot survive a completed, failed, or disconnected connection.
         private static void ClearPasswordAuthenticationState()
         {
             _pendingPassword = "";
@@ -2186,6 +2185,7 @@ namespace ValheimAutoModSync
             _replayPasswordOnNextPeerInfo = false;
         }
 
+        // Intent: Invokes Valheim's original SendPeerInfo under a one-call bypass flag to avoid recursively intercepting AMS's own replay.
         private static void InvokeValheimSendPeerInfo(ZRpc rpc, string password)
         {
             if (rpc == null || ZNet.instance == null) return;
@@ -3126,7 +3126,7 @@ namespace ValheimAutoModSync
                              "This short code is derived from the server's full signing-key fingerprint for human comparison only. " +
                              "AutoModSync verifies and pins the complete identity internally.\r\n\r\n" +
                              "By choosing Yes, you also confirm that you have permission to receive any mods or configuration files provided by this server. " +
-                             "AutoModSync does not verify or enforce third-party mod licensing or redistribution requirements; you are confirming that permission yourself.\r\n\r\n" +
+                             "AutoModSync is not responsible for verifying or enforcing third-party mod licensing or redistribution requirements; by choosing Yes, you confirm that permission yourself.\r\n\r\n" +
                              "Choose Yes only if you intended to join this server. If this first contact was unexpected, compare the code with one published by the server owner.";
 
             Thread thread = new Thread(delegate()
