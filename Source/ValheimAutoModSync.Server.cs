@@ -18,8 +18,8 @@ using Steamworks;
 [assembly: AssemblyDescription("Server-side signed manifest and synchronized BepInEx plugin transfer component.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+[assembly: AssemblyVersion("2.6.1.0")]
+[assembly: AssemblyFileVersion("2.6.1.0")]
 
 namespace ValheimAutoModSync
 {
@@ -28,11 +28,12 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.server";
         public const string PluginName = "Valheim AutoModSync Server";
-        public const string PluginVersion = "2.6.0";
+        public const string PluginVersion = "2.6.1";
         public const int ProtocolVersion = 4;
 
         internal const string RpcHello = "AMS4_Hello";
         internal const string RpcAck = "AMS4_Ack";
+        internal const string RpcAuth = "AMS4_Auth";
         internal const string RpcManifestBegin = "AMS4_ManifestBegin";
         internal const string RpcManifestChunk = "AMS4_ManifestChunk";
         internal const string RpcManifestEnd = "AMS4_ManifestEnd";
@@ -84,6 +85,13 @@ namespace ValheimAutoModSync
         private static readonly Dictionary<ZRpc, string> ClientVersions = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, string> ClientCapabilities = new Dictionary<ZRpc, string>();
         private static readonly HashSet<ZRpc> ManifestSentPeers = new HashSet<ZRpc>();
+        // 2.6.1 password boundary: these sets are keyed by the exact live ZRpc object, never by endpoint/player identity.
+        // A later connection therefore cannot inherit authorization from an earlier connection.
+        private static readonly HashSet<ZRpc> AmsPreflightPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> PasswordChallengePeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> PasswordAuthorizedPeers = new HashSet<ZRpc>();
+        private static FieldInfo _serverPasswordField;
+        private static MethodInfo _serverPasswordSaltMethod;
         private static readonly Dictionary<ZRpc, BundleTransfer> BundleTransfers = new Dictionary<ZRpc, BundleTransfer>();
         private static readonly Dictionary<ZRpc, PendingBundleRequest> PendingBundleRequests = new Dictionary<ZRpc, PendingBundleRequest>();
         private static readonly Dictionary<ZRpc, long> SchedulerPeerIds = new Dictionary<ZRpc, long>();
@@ -252,8 +260,11 @@ namespace ValheimAutoModSync
                 CleanupOldBundleCache();
                 Logger.LogInfo("AutoModSync uses Valheim's existing ZRpc connection; no additional listening port is opened.");
                 Logger.LogInfo("AutoModSync server identity verification code: " + AutoModSyncIdentityDisplay.VerificationCode(_publicFingerprint) + ".");
-                new Harmony(PluginGuid).PatchAll(typeof(NetworkPatches));
-                Logger.LogInfo("AutoModSync early connection hooks installed.");
+                Harmony harmony = new Harmony(PluginGuid);
+                harmony.PatchAll(typeof(NetworkPatches));
+                harmony.PatchAll(typeof(ProtectedServerHandshakeGatePatch));
+                harmony.PatchAll(typeof(ProtectedPeerInfoGatePatch));
+                Logger.LogInfo("AutoModSync early connection/password-boundary hooks installed.");
                 try { UpgradeDevelopmentTransferDefaults(); }
                 catch (Exception migrateEx) { Logger.LogWarning("AutoModSync could not migrate development transfer defaults; continuing with existing values: " + migrateEx.Message); }
             }
@@ -407,6 +418,9 @@ namespace ValheimAutoModSync
             HashSet<ZRpc> candidates = new HashSet<ZRpc>();
             foreach (ZRpc rpc in PendingBundleRequests.Keys) candidates.Add(rpc);
             foreach (ZRpc rpc in BundleTransfers.Keys) candidates.Add(rpc);
+            foreach (ZRpc rpc in AmsPreflightPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in PasswordChallengePeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in PasswordAuthorizedPeers) candidates.Add(rpc);
 #if AMS_DEV_TESTS
             foreach (ZRpc rpc in DevelopmentSuppressedAmsPeers) candidates.Add(rpc);
             foreach (ZRpc rpc in DevelopmentFailClosedModes.Keys) candidates.Add(rpc);
@@ -454,6 +468,9 @@ namespace ValheimAutoModSync
                 ClientVersions.Remove(rpc);
                 ClientCapabilities.Remove(rpc);
                 ManifestSentPeers.Remove(rpc);
+                AmsPreflightPeers.Remove(rpc);
+                PasswordChallengePeers.Remove(rpc);
+                PasswordAuthorizedPeers.Remove(rpc);
 #if AMS_DEV_TESTS
                 DevelopmentLegacyServerPeers.Remove(rpc);
                 DevelopmentSuppressedAmsPeers.Remove(rpc);
@@ -1102,6 +1119,40 @@ namespace ValheimAutoModSync
             }
         }
 
+        // 2.6.1 defense-in-depth: once an AMS-aware passworded connection has entered the protected
+        // preflight, a modified client cannot invoke the normal ServerHandshake early to trigger
+        // third-party compatibility/version exchange before this exact connection is authenticated.
+        [HarmonyPatch(typeof(ZNet), "RPC_ServerHandshake")]
+        private static class ProtectedServerHandshakeGatePatch
+        {
+            [HarmonyPriority(Priority.First + 100)]
+            private static bool Prefix(ZNet __instance, ZRpc rpc)
+            {
+                if (__instance == null || !__instance.IsServer() || rpc == null || !AmsPreflightPeers.Contains(rpc)) return true;
+                if (!IsPasswordProtectedServer()) return true;
+                if (CanDiscloseProtectedSyncState(rpc)) return true;
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync blocked an early Valheim ServerHandshake until the password boundary is satisfied.");
+                return false;
+            }
+        }
+
+        // A client that has positively entered AMS preflight cannot bypass the 2.6.1 password
+        // boundary by sending vanilla PeerInfo instead of AMS4_Auth. Non-AMS clients are untouched.
+        [HarmonyPatch(typeof(ZNet), "RPC_PeerInfo")]
+        private static class ProtectedPeerInfoGatePatch
+        {
+            [HarmonyPriority(Priority.First + 100)]
+            private static bool Prefix(ZNet __instance, ZRpc rpc)
+            {
+                if (__instance == null || !__instance.IsServer() || rpc == null || !AmsPreflightPeers.Contains(rpc)) return true;
+                if (!IsPasswordProtectedServer()) return true;
+                if (CanDiscloseProtectedSyncState(rpc)) return true;
+                try { rpc.Invoke("Error", new object[] { 6 }); } catch { }
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync blocked pre-authentication PeerInfo on an AMS-aware passworded connection.");
+                return false;
+            }
+        }
+
         // Intent: Migrates only the exact earlier development-default tuples to the current 2.6 transfer baseline.
         // Evidence: a 313.4 MiB fresh-client run stayed pinned to the configured 8 MiB/s Steam floor, so the next development baseline tests 16/64/32.
         // Scope: administrator-customized values are preserved unless they exactly equal one of the known prior development defaults.
@@ -1134,6 +1185,7 @@ namespace ValheimAutoModSync
             {
                 rpc.Register<ZPackage>(RpcHello, new Action<ZRpc, ZPackage>(RPC_Hello));
                 rpc.Register<ZPackage>(RpcAck, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcAuth, new Action<ZRpc, ZPackage>(RPC_Auth));
                 rpc.Register<ZPackage>(RpcGetBundle, new Action<ZRpc, ZPackage>(RPC_GetBundle));
                 rpc.Register<ZPackage>(RpcGetBundleChunk, new Action<ZRpc, ZPackage>(RPC_GetBundleChunk));
                 rpc.Register<ZPackage>(RpcGetBundleBatch, new Action<ZRpc, ZPackage>(RPC_GetBundleBatch));
@@ -1158,8 +1210,190 @@ namespace ValheimAutoModSync
         // Intent: Safe placeholder for protocol messages that are response-only from the server's perspective.
         private static void RPC_NoOp(ZRpc rpc, ZPackage pkg) { }
 
+        // Intent: Reads Valheim's server-password state without exposing the hash or salt through AMS.
+        // Security: reflection failure is fail-closed for protected synchronization; it never falls back to manifest disclosure.
+        private static bool TryGetServerPasswordHash(out string passwordHash)
+        {
+            passwordHash = "";
+            try
+            {
+                if (_serverPasswordField == null) _serverPasswordField = AccessTools.Field(typeof(ZNet), "m_serverPassword");
+                if (_serverPasswordField == null) return false;
+                passwordHash = _serverPasswordField.GetValue(null) as string ?? "";
+                return true;
+            }
+            catch
+            {
+                passwordHash = "";
+                return false;
+            }
+        }
+
+        private static bool IsPasswordProtectedServer()
+        {
+            string passwordHash;
+            // Unknown password state is treated as protected so AMS cannot disclose synchronization state after a game update changes internals.
+            if (!TryGetServerPasswordHash(out passwordHash)) return true;
+            return !String.IsNullOrEmpty(passwordHash);
+        }
+
+        private static bool TryGetServerPasswordSalt(out string salt)
+        {
+            salt = "";
+            try
+            {
+                if (_serverPasswordSaltMethod == null)
+                    _serverPasswordSaltMethod = AccessTools.Method(typeof(ZNet), "ServerPasswordSalt", Type.EmptyTypes);
+                if (_serverPasswordSaltMethod == null) return false;
+                salt = _serverPasswordSaltMethod.Invoke(null, null) as string ?? "";
+                return !String.IsNullOrEmpty(salt);
+            }
+            catch
+            {
+                salt = "";
+                return false;
+            }
+        }
+
+        // Only public/no-password servers or the exact still-connected ZRpc that successfully proved
+        // the current Valheim password may observe fingerprints, manifests, bundle metadata, or bytes.
+        private static bool CanDiscloseProtectedSyncState(ZRpc rpc)
+        {
+            string passwordHash;
+            if (!TryGetServerPasswordHash(out passwordHash)) return false;
+            if (String.IsNullOrEmpty(passwordHash)) return true;
+            if (rpc == null || !PasswordAuthorizedPeers.Contains(rpc)) return false;
+            try { return rpc.IsConnected(); } catch { return false; }
+        }
+
+        private static bool RequireProtectedSyncAuthorization(ZRpc rpc)
+        {
+            if (CanDiscloseProtectedSyncState(rpc)) return true;
+            SendError(rpc, "AutoModSync authentication is required before synchronization data is available.");
+            return false;
+        }
+
+        // This is the only AMS response intentionally available before password authentication.
+        // It discloses product presence/version/protocol and that authentication is required, but no
+        // signing identity, manifest dimensions, filenames, hashes, sizes, configuration, cache keys, or transfer capabilities.
+        private static void SendAuthenticationRequiredAck(ZRpc rpc)
+        {
+            ZPackage ack = new ZPackage();
+            ack.Write(ProtocolVersion);
+            ack.Write(PluginVersion);
+            ack.Write("auth-required1");
+            rpc.Invoke(RpcAck, new object[] { ack });
+        }
+
+        private static bool EnsurePreflightAuthorizationOrChallenge(ZRpc rpc)
+        {
+            string expectedHash;
+            if (!TryGetServerPasswordHash(out expectedHash))
+            {
+                SendAuthenticationRequiredAck(rpc);
+                SendError(rpc, "AutoModSync cannot verify the server authentication state; protected synchronization is unavailable.");
+                return false;
+            }
+
+            if (String.IsNullOrEmpty(expectedHash)) return true;
+            if (CanDiscloseProtectedSyncState(rpc)) return true;
+
+            SendAuthenticationRequiredAck(rpc);
+
+            // 2.6.0 and earlier clients do not know how to prove the password without entering vanilla
+            // PeerInfo, which would cross the compatibility boundary too early. Fail closed instead.
+            if (!ClientSupportsCapability(rpc, "password-auth1"))
+            {
+                SendError(rpc, "This password-protected server requires AutoModSync 2.6.1 or newer.");
+                return false;
+            }
+
+            // Duplicate hello retries may occur before the first challenge is processed; never create stacked dialogs.
+            if (PasswordChallengePeers.Contains(rpc)) return false;
+
+            string salt;
+            if (!TryGetServerPasswordSalt(out salt))
+            {
+                SendError(rpc, "AutoModSync could not start the protected Valheim password challenge.");
+                return false;
+            }
+
+            PasswordChallengePeers.Add(rpc);
+            try
+            {
+                // Invoke the normal Valheim client password challenge directly. Deliberately do NOT run
+                // server RPC_ServerHandshake yet, because third-party prefixes there can advertise mod lists.
+                rpc.Invoke("ClientHandshake", new object[] { true, salt });
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync detected a password-protected server; protected synchronization state is withheld pending password authentication.");
+            }
+            catch
+            {
+                PasswordChallengePeers.Remove(rpc);
+                throw;
+            }
+            return false;
+        }
+
+        // Intent: Handles the client's password proof. The proof is Valheim's existing salted password hash,
+        // not the plaintext password. One exact live ZRpc is authorized only after it matches the server hash.
+        private static void RPC_Auth(ZRpc rpc, ZPackage pkg)
+        {
+            if (ZNet.instance == null || !ZNet.instance.IsServer() || rpc == null) return;
+            try
+            {
+                string expectedHash;
+                if (!TryGetServerPasswordHash(out expectedHash))
+                {
+                    SendError(rpc, "AutoModSync cannot verify the server authentication state; protected synchronization is unavailable.");
+                    return;
+                }
+
+                if (String.IsNullOrEmpty(expectedHash))
+                {
+                    PasswordChallengePeers.Remove(rpc);
+                    PasswordAuthorizedPeers.Add(rpc);
+                    SendAuthorizedPreflight(rpc);
+                    return;
+                }
+
+                if (!AmsPreflightPeers.Contains(rpc) || !PasswordChallengePeers.Contains(rpc))
+                {
+                    SendError(rpc, "AutoModSync authentication is required before synchronization data is available.");
+                    return;
+                }
+
+                string proof = pkg == null ? "" : (pkg.ReadString() ?? "");
+                if (proof.Length == 0 || proof.Length > 1024 || !String.Equals(proof, expectedHash, StringComparison.Ordinal))
+                {
+                    PasswordChallengePeers.Remove(rpc);
+                    PasswordAuthorizedPeers.Remove(rpc);
+                    try { rpc.Invoke("Error", new object[] { 6 }); } catch { }
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync rejected an incorrect Valheim password proof; no protected synchronization state was disclosed.");
+                    return;
+                }
+
+                bool connected;
+                try { connected = rpc.IsConnected(); } catch { connected = false; }
+                if (!connected) return;
+
+                PasswordChallengePeers.Remove(rpc);
+                PasswordAuthorizedPeers.Add(rpc);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync password authentication succeeded for this connection; protected synchronization may now begin.");
+                SendAuthorizedPreflight(rpc);
+            }
+            catch (Exception ex)
+            {
+                PasswordChallengePeers.Remove(rpc);
+                PasswordAuthorizedPeers.Remove(rpc);
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync password authentication failed closed: " + ex.Message);
+                SendError(rpc, "AutoModSync authentication failed; protected synchronization remains unavailable.");
+            }
+        }
+
         // Intent: Handles the client's AMS4_Hello preflight probe.
-        // Workflow: validates protocol, immediately sends the optional 2.5.0 acknowledgement, builds/uses the signed manifest, then streams its header and ordered text chunks before normal Valheim mod validation begins.
+        // 2.6.1 ordering: public servers retain 2.6.0 behavior; passworded servers stop after a presence-only
+        // acknowledgement/password challenge and cannot reach the signed manifest until this exact ZRpc authenticates.
         private static void RPC_Hello(ZRpc rpc, ZPackage pkg)
         {
             try
@@ -1171,7 +1405,6 @@ namespace ValheimAutoModSync
                     return;
                 }
 #if AMS_DEV_TESTS
-                // A one-shot marker selects the next peer, then every AMS4_Hello retry on that same connection stays silent.
                 if (DevelopmentSuppressedAmsPeers.Contains(rpc))
                 {
                     if (_instance != null) _instance.Logger.LogDebug("AutoModSync DEV TEST continuing to suppress AMS response for the selected peer retry.");
@@ -1188,11 +1421,8 @@ namespace ValheimAutoModSync
                 ClientVersions[rpc] = clientVersion ?? "";
                 ClientCapabilities[rpc] = clientCapabilities ?? "";
 #if AMS_DEV_TESTS
-                bool emulateLegacyServer = ArmDevelopmentLegacyServerPeer(rpc);
-                string failClosedMode = ArmDevelopmentFailClosedMode(rpc);
-#else
-                bool emulateLegacyServer = false;
-                string failClosedMode = "";
+                ArmDevelopmentLegacyServerPeer(rpc);
+                ArmDevelopmentFailClosedMode(rpc);
 #endif
                 if (protocol != ProtocolVersion)
                 {
@@ -1200,129 +1430,151 @@ namespace ValheimAutoModSync
                     return;
                 }
 
-#if AMS_DEV_TESTS
-                if (String.Equals(failClosedMode, "bad-ack", StringComparison.Ordinal))
-                {
-                    ZPackage badAck = new ZPackage();
-                    badAck.Write(ProtocolVersion + 1);
-                    badAck.Write("DEV-INVALID");
-                    badAck.Write("");
-                    rpc.Invoke(RpcAck, new object[] { badAck });
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected malformed/protocol-mismatched AMS4_Ack.");
-                    return;
-                }
-#endif
-
-                string ackCapabilities = emulateLegacyServer
-                    ? "bundle-window1;bundle-batch1;bundle-pipeline1"
-                    : "bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1;bundle-scheduler1";
-#if AMS_DEV_TESTS
-                if (String.Equals(failClosedMode, "bad-legacy-chunk", StringComparison.Ordinal))
-                    ackCapabilities = "";
-#endif
-
-                ZPackage ack = new ZPackage();
-                ack.Write(ProtocolVersion);
-#if AMS_DEV_TESTS
-                ack.Write(emulateLegacyServer ? "2.5.0" : PluginVersion);
-#else
-                ack.Write(PluginVersion);
-#endif
-                ack.Write(ackCapabilities);
-                rpc.Invoke(RpcAck, new object[] { ack });
-
-#if AMS_DEV_TESTS
-                if (String.Equals(failClosedMode, "ack-no-manifest", StringComparison.Ordinal))
-                {
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED sent a valid AMS4_Ack and intentionally withheld the manifest.");
-                    return;
-                }
-
-                if (String.Equals(failClosedMode, "bad-manifest-header", StringComparison.Ordinal))
-                {
-                    ZPackage badBegin = new ZPackage();
-                    badBegin.Write(ProtocolVersion + 1);
-                    badBegin.Write(0);
-                    badBegin.Write("0");
-                    badBegin.Write(_publicKeyXml);
-                    badBegin.Write("AAAA");
-                    badBegin.Write("bundle1");
-                    rpc.Invoke(RpcManifestBegin, new object[] { badBegin });
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an invalid manifest header.");
-                    return;
-                }
-#endif
-
-                EnsureManifest(false);
-                if (ManifestRequiresRootSync() && clientCapabilities.IndexOf("roots1", StringComparison.Ordinal) < 0)
-                {
-                    SendError(rpc, "This server requires AutoModSync root synchronization support (patchers/config). Update the AutoModSync client to 2.5.0 or newer.");
-                    return;
-                }
-                byte[] bytes = Encoding.UTF8.GetBytes(_manifestText);
-                int partChars = 24000;
-                int totalParts = Math.Max(1, (_manifestText.Length + partChars - 1) / partChars);
-                string manifestSignature = _manifestSignature;
-#if AMS_DEV_TESTS
-                if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
-                    totalParts = 2;
-                else if (String.Equals(failClosedMode, "bad-signature", StringComparison.Ordinal))
-                    manifestSignature = "AAAA";
-#endif
-
-                ZPackage begin = new ZPackage();
-                begin.Write(ProtocolVersion);
-                begin.Write(totalParts);
-                begin.Write(bytes.Length.ToString(CultureInfo.InvariantCulture));
-                begin.Write(_publicKeyXml);
-                begin.Write(manifestSignature);
-                begin.Write("bundle1");
-                rpc.Invoke(RpcManifestBegin, new object[] { begin });
-
-#if AMS_DEV_TESTS
-                if (String.Equals(failClosedMode, "server-error", StringComparison.Ordinal))
-                {
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injecting AMS4_Error after manifest recognition.");
-                    SendError(rpc, "DEV TEST server-reported AMS error after recognition.");
-                    return;
-                }
-
-                if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
-                {
-                    ZPackage partial = new ZPackage();
-                    partial.Write(0);
-                    partial.Write(_manifestText);
-                    rpc.Invoke(RpcManifestChunk, new object[] { partial });
-                    ZPackage incompleteEnd = new ZPackage();
-                    incompleteEnd.Write(2);
-                    rpc.Invoke(RpcManifestEnd, new object[] { incompleteEnd });
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an incomplete two-part manifest.");
-                    return;
-                }
-#endif
-
-                int part;
-                for (part = 0; part < totalParts; part++)
-                {
-                    int start = part * partChars;
-                    int len = Math.Min(partChars, _manifestText.Length - start);
-                    string text = len > 0 ? _manifestText.Substring(start, len) : "";
-                    ZPackage chunk = new ZPackage();
-                    chunk.Write(part);
-                    chunk.Write(text);
-                    rpc.Invoke(RpcManifestChunk, new object[] { chunk });
-                }
-
-                ZPackage end = new ZPackage();
-                end.Write(totalParts);
-                rpc.Invoke(RpcManifestEnd, new object[] { end });
-                ManifestSentPeers.Add(rpc);
+                AmsPreflightPeers.Add(rpc);
+                if (!EnsurePreflightAuthorizationOrChallenge(rpc)) return;
+                SendAuthorizedPreflight(rpc);
             }
             catch (Exception ex)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Manifest send failed: " + ex);
-                SendError(rpc, "Server failed to create the AutoModSync manifest.");
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync preflight failed: " + ex);
+                SendError(rpc, "Server failed during AutoModSync preflight.");
             }
+        }
+
+        // All protected metadata/manifest emission is centralized here and guarded again at the entry point
+        // so a future caller cannot accidentally bypass the password boundary.
+        private static void SendAuthorizedPreflight(ZRpc rpc)
+        {
+            if (!RequireProtectedSyncAuthorization(rpc)) return;
+
+            string clientCapabilities = "";
+            ClientCapabilities.TryGetValue(rpc, out clientCapabilities);
+            clientCapabilities = clientCapabilities ?? "";
+#if AMS_DEV_TESTS
+            bool emulateLegacyServer = DevelopmentLegacyServerPeers.Contains(rpc);
+            string failClosedMode = GetDevelopmentFailClosedMode(rpc);
+#else
+            bool emulateLegacyServer = false;
+            string failClosedMode = "";
+#endif
+
+#if AMS_DEV_TESTS
+            if (String.Equals(failClosedMode, "bad-ack", StringComparison.Ordinal))
+            {
+                ZPackage badAck = new ZPackage();
+                badAck.Write(ProtocolVersion + 1);
+                badAck.Write("DEV-INVALID");
+                badAck.Write("");
+                rpc.Invoke(RpcAck, new object[] { badAck });
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected malformed/protocol-mismatched AMS4_Ack.");
+                return;
+            }
+#endif
+
+            string ackCapabilities = emulateLegacyServer
+                ? "bundle-window1;bundle-batch1;bundle-pipeline1"
+                : "bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1;bundle-scheduler1";
+#if AMS_DEV_TESTS
+            if (String.Equals(failClosedMode, "bad-legacy-chunk", StringComparison.Ordinal))
+                ackCapabilities = "";
+#endif
+
+            ZPackage ack = new ZPackage();
+            ack.Write(ProtocolVersion);
+#if AMS_DEV_TESTS
+            ack.Write(emulateLegacyServer ? "2.5.0" : PluginVersion);
+#else
+            ack.Write(PluginVersion);
+#endif
+            ack.Write(ackCapabilities);
+            rpc.Invoke(RpcAck, new object[] { ack });
+
+#if AMS_DEV_TESTS
+            if (String.Equals(failClosedMode, "ack-no-manifest", StringComparison.Ordinal))
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED sent a valid AMS4_Ack and intentionally withheld the manifest.");
+                return;
+            }
+
+            if (String.Equals(failClosedMode, "bad-manifest-header", StringComparison.Ordinal))
+            {
+                ZPackage badBegin = new ZPackage();
+                badBegin.Write(ProtocolVersion + 1);
+                badBegin.Write(0);
+                badBegin.Write("0");
+                badBegin.Write(_publicKeyXml);
+                badBegin.Write("AAAA");
+                badBegin.Write("bundle1");
+                rpc.Invoke(RpcManifestBegin, new object[] { badBegin });
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an invalid manifest header.");
+                return;
+            }
+#endif
+
+            EnsureManifest(false);
+            if (ManifestRequiresRootSync() && clientCapabilities.IndexOf("roots1", StringComparison.Ordinal) < 0)
+            {
+                SendError(rpc, "This server requires AutoModSync root synchronization support (patchers/config). Update the AutoModSync client to 2.5.0 or newer.");
+                return;
+            }
+            byte[] bytes = Encoding.UTF8.GetBytes(_manifestText);
+            int partChars = 24000;
+            int totalParts = Math.Max(1, (_manifestText.Length + partChars - 1) / partChars);
+            string manifestSignature = _manifestSignature;
+#if AMS_DEV_TESTS
+            if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
+                totalParts = 2;
+            else if (String.Equals(failClosedMode, "bad-signature", StringComparison.Ordinal))
+                manifestSignature = "AAAA";
+#endif
+
+            ZPackage begin = new ZPackage();
+            begin.Write(ProtocolVersion);
+            begin.Write(totalParts);
+            begin.Write(bytes.Length.ToString(CultureInfo.InvariantCulture));
+            begin.Write(_publicKeyXml);
+            begin.Write(manifestSignature);
+            begin.Write("bundle1");
+            rpc.Invoke(RpcManifestBegin, new object[] { begin });
+
+#if AMS_DEV_TESTS
+            if (String.Equals(failClosedMode, "server-error", StringComparison.Ordinal))
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injecting AMS4_Error after manifest recognition.");
+                SendError(rpc, "DEV TEST server-reported AMS error after recognition.");
+                return;
+            }
+
+            if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
+            {
+                ZPackage partial = new ZPackage();
+                partial.Write(0);
+                partial.Write(_manifestText);
+                rpc.Invoke(RpcManifestChunk, new object[] { partial });
+                ZPackage incompleteEnd = new ZPackage();
+                incompleteEnd.Write(2);
+                rpc.Invoke(RpcManifestEnd, new object[] { incompleteEnd });
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an incomplete two-part manifest.");
+                return;
+            }
+#endif
+
+            int part;
+            for (part = 0; part < totalParts; part++)
+            {
+                int partStart = part * partChars;
+                int len = Math.Min(partChars, _manifestText.Length - partStart);
+                string text = len > 0 ? _manifestText.Substring(partStart, len) : "";
+                ZPackage chunk = new ZPackage();
+                chunk.Write(part);
+                chunk.Write(text);
+                rpc.Invoke(RpcManifestChunk, new object[] { chunk });
+            }
+
+            ZPackage end = new ZPackage();
+            end.Write(totalParts);
+            rpc.Invoke(RpcManifestEnd, new object[] { end });
+            ManifestSentPeers.Add(rpc);
         }
 
         // Intent: Builds a compressed package containing exactly the current signed manifest records requested by this client.
@@ -1332,6 +1584,7 @@ namespace ValheimAutoModSync
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                if (!RequireProtectedSyncAuthorization(rpc)) return;
                 int count = pkg.ReadInt();
                 if (count < 1 || count > 4096) throw new InvalidDataException("Invalid AutoModSync bundle request size.");
 
@@ -2160,6 +2413,7 @@ namespace ValheimAutoModSync
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                if (!RequireProtectedSyncAuthorization(rpc)) return;
                 int index = pkg.ReadInt();
                 int requestedCount = 1;
                 try { requestedCount = pkg.ReadInt(); } catch { requestedCount = 1; }
@@ -2194,6 +2448,7 @@ namespace ValheimAutoModSync
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                if (!RequireProtectedSyncAuthorization(rpc)) return;
                 int index = pkg.ReadInt();
                 int requestedCount = 1;
                 try { requestedCount = pkg.ReadInt(); } catch { requestedCount = 1; }
