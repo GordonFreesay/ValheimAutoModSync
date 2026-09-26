@@ -6,7 +6,7 @@ AutoModSync keeps a trusted Valheim server's synchronized BepInEx mod files matc
 
 Connect normally. AutoModSync compares the server's signed manifest with the client's installed files, transfers only missing or changed synchronized files, verifies them, stages updates, restarts Valheim when required, and reconnects.
 
-2.6.x synchronizes normal `BepInEx/plugins` content plus required `BepInEx/patchers` files and explicitly allowlisted `BepInEx/config` files. Dedicated servers can also place client-required files under `BepInEx/AutoModSync/ClientPayload/plugins/**` so those files are distributed without being loaded by the server itself. Arbitrary game-root/core/managed-assembly paths are not synchronization targets.
+2.6.1 synchronizes normal `BepInEx/plugins` content plus required `BepInEx/patchers` files and explicitly allowlisted `BepInEx/config` files. Dedicated servers can also place client-required files under `BepInEx/AutoModSync/ClientPayload/plugins/**` so those files are distributed without being loaded by the server itself. Arbitrary game-root/core/managed-assembly paths are not synchronization targets.
 
 **No additional synchronization port is required.**
 
