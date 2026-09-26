@@ -133,20 +133,33 @@ For 2.6.1:
 - Release-readiness must require the correct version-specific release-notes file and distribution filenames.
 - Preserve the existing rule that development-only `AMS_DEV_TESTS` code cannot enter release binaries.
 
-### 6. Exact-candidate Windows security check
+### 6. Final exact-candidate Microsoft Defender gate
 
-Because 2.6.0's Apply helper is currently receiving generic Defender ML classifications, 2.6.1 must test the **exact canonical candidate bytes**, not a locally rebuilt approximation.
+Because 2.6.0's Apply helper received generic Defender ML classifications, 2.6.1 must test the **exact canonical candidate bytes**, not a locally rebuilt approximation. This is the final release gate after the candidate is frozen, tagged, built, hashed, and attested, but before public publication.
 
-Before publication:
+Microsoft's software-developer submission channel is an analysis/false-positive process, not a pre-certification, permanent allowlist, or release-signing service. Therefore the release gate is conditional on the exact candidate's Defender result rather than pretending every version can receive formal Microsoft "approval."
 
-- Download the exact canonical workflow-built 2.6.1 standalone ZIP.
-- Verify its SHA-256 and GitHub/Sigstore attestation.
-- Test a fresh download/scan with current Microsoft Defender definitions without a local allow-rule masking the result.
-- If Defender classifies the exact candidate as malware, hold public release long enough to submit the exact ZIP and exact Apply helper to Microsoft for false-positive review/reclassification.
-- Record the detection name, Defender definition version, candidate hashes, and Microsoft submission IDs in the release qualification notes.
-- Do not tell users to disable antivirus as a normal installation step.
+Required final sequence:
 
-A clean Defender result is desirable distribution evidence, not a substitute for code review, provenance, or Authenticode.
+1. Freeze the exact 2.6.1 release candidate. No source/runtime/package changes after this point without restarting the gate.
+2. Tag `v2.6.1` and let the canonical `Distribution Packages` workflow produce the exact standalone and store artifacts.
+3. Download the exact canonical standalone ZIP and extract the exact canonical `ValheimAutoModSync.Apply.exe`.
+4. Verify the ZIP/checksum manifest with SHA-256 and GitHub/Sigstore attestation.
+5. Update Microsoft Defender Security Intelligence to the latest available definitions and make sure no local allow/exclusion is masking the test.
+6. Fresh-download or otherwise present the exact canonical bytes to Defender and record:
+   - Defender definition version
+   - ZIP SHA-256
+   - Apply-helper SHA-256
+   - any detection name/classification
+   - date/time of the test
+7. **If either exact artifact is detected or blocked:** submit the exact affected ZIP and/or Apply helper through Microsoft's **Software developer** file-submission path, record every Submission ID, and hold public release until Microsoft returns a final determination or corrective update sufficient for a fresh current-definition retest.
+8. After Microsoft closes a detected-file submission as clean/false positive, update Defender definitions again and repeat a fresh exact-byte test with no local allow-rule. Release only after the exact candidate no longer reproduces the Defender malware block, or after an explicitly documented maintainer decision to ship despite an unresolved Microsoft classification.
+9. **If the exact canonical candidate is not detected:** record the clean current-definition result and proceed. A proactive Microsoft submission may be made for additional analysis, but it is not treated as certification and is not required to delay release when there is no detection to dispute.
+10. Do not tell users to disable Defender, add a permanent exclusion, or blindly allow the file as a normal installation step.
+
+If an unresolved Defender classification remains and the maintainer deliberately chooses to publish anyway, the release page, website, and store listings must carry a conspicuous current-status notice identifying the exact affected version and explaining that the file is under Microsoft review. Do **not** use a permanent boilerplate warning on every clean release; the notice is only for a release that is actually shipping with a known unresolved classification.
+
+A clean Defender result or Microsoft false-positive correction is distribution evidence, not a substitute for code review, provenance, or Authenticode.
 
 ## Release packaging gates
 
@@ -163,7 +176,7 @@ Create or extend tests so 2.6.1 cannot ship unless all of the following are true
 | Canonical promotion | Store workflows consume canonical Distribution Packages artifacts and perform no compilation/repackaging |
 | Version consistency | `VERSION`, assembly metadata, package metadata, docs, and release notes all resolve to 2.6.1 |
 | Provenance | Canonical packages and checksum manifest have valid GitHub/Sigstore attestations |
-| Defender candidate check | Exact canonical candidate tested with current definitions; result recorded |
+| Defender/Microsoft final gate | Exact canonical candidate tested with current definitions; any reproduced detection submitted through the Software developer channel and resolved/retested before normal publication |
 
 ## Recommended implementation order
 
@@ -176,8 +189,8 @@ Create or extend tests so 2.6.1 cannot ship unless all of the following are true
 7. **Full CI + targeted live tests** — rerun existing safety/transfer/apply gates plus the new 2.6.1 gates.
 8. **Release freeze** — no runtime changes after the candidate used for final qualification.
 9. **Tag `v2.6.1`** — canonical Distribution Packages workflow builds the exact release bytes.
-10. **Verify/download/test exact tagged artifacts** — checksum, attestation, package contents, binary identity, Defender candidate check.
-11. **Publish GitHub release** from the exact canonical artifact bytes.
+10. **Verify/download/test exact tagged artifacts** — checksum, attestation, package contents, binary identity, and the final Microsoft Defender gate. If Defender reproduces a detection, submit the exact affected artifact(s) to Microsoft as a Software developer and wait for final determination/corrective definitions before normal publication.
+11. **Publish GitHub release** from the exact canonical artifact bytes only after the final Defender/Microsoft gate is satisfied or an unresolved-classification exception is explicitly documented.
 12. **Promote the exact canonical Nexus/CurseForge/Thunderstore artifacts**; do not rebuild.
 13. **Update website/store descriptions** to 2.6.1 and retain the third-party redistribution warning.
 14. Keep 2.6.0 available as historical provenance unless there is a separate reason to withdraw it; do not mutate its artifact.
