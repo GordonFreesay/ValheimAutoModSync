@@ -221,3 +221,7 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Preserve SHA-256 manifests and GitHub/Sigstore attestations for the exact promoted artifacts; fail publication if the selected store artifact does not match the canonical distribution artifact digest for that release.
 - Add a regression gate proving the same `ValheimAutoModSync.Client.dll`, `ValheimAutoModSync.Server.dll`, and `ValheimAutoModSync.Apply.exe` bytes are reused across all release channels for a version.
 - Consider deterministic compiler settings as an additional reproducibility improvement, but treat single-build promotion as the required 2.6.x release-pipeline invariant.
+
+## 2.6.1 planning
+
+The focused 2.6.1 documentation/safety/release-integrity patch is tracked in [IMPLEMENTATION-2.6.1.md](IMPLEMENTATION-2.6.1.md). The existing 2.6.0 release artifacts remain immutable; 2.6.1 will be a new version/tag and will not overwrite the attested 2.6.0 ZIP.
