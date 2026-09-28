@@ -235,12 +235,14 @@ switch ($Action) {
 
         $clientText = (@(Read-SharedLines $clientLog) -join [Environment]::NewLine)
         if ($clientText -match 'AutoModSync queued one-shot in-game reconnect' -and
+            $clientText -match 'AutoModSync reconnect created an outgoing Valheim connection; reconnect token cleared' -and
+            $clientText -match 'AutoModSync server accepted the one-time password challenge response; signed synchronization discovery may now begin' -and
             $clientText -match 'AutoModSync: client mods already match the trusted server' -and
-            $clientText -match 'AutoModSync released the original Valheim ServerHandshake') {
-            Write-Host '  PASS restarted client performed one-shot reconnect and completed zero-delta trusted preflight.'
+            $clientText -match 'AutoModSync released [0-9]+ quarantined preflight RPC\(s\) in original client-side order after synchronization') {
+            Write-Host '  PASS restarted client reconnected, reauthenticated, completed zero-delta trusted preflight, and released quarantined RPCs.'
         }
         else {
-            Write-Host '  FAIL current client log does not contain the expected post-restart reconnect/zero-delta evidence.'
+            Write-Host '  FAIL current client log does not contain the expected 2.6.1 reconnect/reauth/zero-delta/preflight-release evidence.'
             $ok = $false
         }
 
@@ -329,12 +331,14 @@ switch ($Action) {
         }
 
         $clientText = (@(Read-SharedLines $clientLog) -join [Environment]::NewLine)
-        if ($clientText -match 'AutoModSync: client mods already match the trusted server' -and
-            $clientText -match 'AutoModSync released the original Valheim ServerHandshake') {
-            Write-Host '  PASS cleanup restart/reconnect returned to a zero-delta trusted join.'
+        if ($clientText -match 'AutoModSync reconnect created an outgoing Valheim connection; reconnect token cleared' -and
+            $clientText -match 'AutoModSync server accepted the one-time password challenge response; signed synchronization discovery may now begin' -and
+            $clientText -match 'AutoModSync: client mods already match the trusted server' -and
+            $clientText -match 'AutoModSync released [0-9]+ quarantined preflight RPC\(s\) in original client-side order after synchronization') {
+            Write-Host '  PASS cleanup restart/reconnect returned through the 2.6.1 authenticated zero-delta preflight path.'
         }
         else {
-            Write-Host '  FAIL post-cleanup zero-delta reconnect evidence is missing.'
+            Write-Host '  FAIL post-cleanup 2.6.1 reconnect/reauth/zero-delta/preflight-release evidence is missing.'
             $ok = $false
         }
 
