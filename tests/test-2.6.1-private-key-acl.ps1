@@ -29,14 +29,26 @@ $dev = Read-Text $devBuild
 
 Write-Host '[1/5] Checking private-key hardening contract in production source...'
 foreach ($needle in @(
-    'SetAccessRuleProtection(true, false)',
-    'WellKnownSidType.LocalSystemSid',
-    'WellKnownSidType.BuiltinAdministratorsSid',
-    'WindowsIdentity.GetCurrent',
-    'FileSystemRights.FullControl',
+    'OpenProcessToken(GetCurrentProcess(), TokenQuery',
+    'GetTokenInformation(token, TokenUser',
+    'ConvertSidToStringSidW',
+    'ConvertStringSecurityDescriptorToSecurityDescriptorW',
+    'SetNamedSecurityInfoW',
+    'ProtectedDaclSecurityInformation',
+    'GetNamedSecurityInfoW',
+    'GetSecurityDescriptorControl',
+    'GetAce(dacl, i, out ace)',
+    'FileAllAccess',
     'VerifyPrivateKeyFile(path)'
 )) {
     Require $helper $needle 'Private-key ACL helper'
+}
+if ($helper.IndexOf('WindowsIdentity',[StringComparison]::Ordinal) -ge 0) {
+    throw 'Private-key ACL helper must not depend on WindowsIdentity; Valheim Mono does not implement the required SID/token APIs.'
+}
+if ($helper.IndexOf('File.SetAccessControl',[StringComparison]::Ordinal) -ge 0 -or
+    $helper.IndexOf('File.GetAccessControl',[StringComparison]::Ordinal) -ge 0) {
+    throw 'Private-key ACL helper must use the native Windows ACL path validated for Valheim Mono.'
 }
 Require $server 'AutoModSyncPrivateKeySecurity.HardenPrivateKeyFile(path);' 'Server runtime ACL hardening'
 Require $installer 'AutoModSyncPrivateKeySecurity.HardenPrivateKeyFile(privatePath);' 'Installer identity ACL hardening'
