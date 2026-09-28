@@ -60,6 +60,8 @@ try {
     Assert-Contains $source 'Waiting for Valheim to close normally' 'Normal-exit updater UI'
     Assert-Contains $source 'AutoModSyncApplyEngine.Run(_amsRoot)' 'Installer transaction engine'
     Assert-Contains $source 'psi.Verb = "runas";' 'Interactive installer elevation'
+    Assert-Contains $source 'SERVER OPERATOR RESPONSIBILITY: AutoModSync does not grant redistribution rights for third-party mods.' 'Server operator redistribution notice'
+    Assert-Contains $source 'You are responsible for ensuring every synchronized third-party file may be provided to connecting clients.' 'Server operator redistribution notice'
     Assert-Contains $manifest 'requestedExecutionLevel level="asInvoker"' 'Installer manifest'
     Assert-NotContains $manifest 'requireAdministrator' 'Installer manifest'
     Assert-NotContains $source '.Kill(' 'Installer process safety'
