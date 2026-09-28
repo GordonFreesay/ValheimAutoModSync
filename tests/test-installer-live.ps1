@@ -39,13 +39,16 @@ switch ($Action) {
 
     'SeedOwnership' {
         $clientDll = Join-Path $pluginRoot 'ValheimAutoModSync.Client.dll'
-        $applyExe = Join-Path $ams 'ValheimAutoModSync.Apply.exe'
+        $installerUpdater = Join-Path $pluginRoot 'ValheimAutoModSyncInstaller.exe'
+        $legacyApply = Join-Path $ams 'ValheimAutoModSync.Apply.exe'
         $bepDll = Join-Path $bep 'core\BepInEx.dll'
-        foreach ($required in @($clientDll,$applyExe,$bepDll)) {
+        foreach ($required in @($clientDll,$installerUpdater,$bepDll)) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
                 throw ('Client install is incomplete; missing ' + $required)
             }
         }
+
+        if (Test-Path -LiteralPath $legacyApply -PathType Leaf) { throw 'Legacy ValheimAutoModSync.Apply.exe must not be installed by 2.6.1.' }
 
         New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
         New-Item -ItemType Directory -Path $ledgerDir -Force | Out-Null
@@ -80,7 +83,8 @@ switch ($Action) {
     'InspectClientUninstall' {
         $fail = $false
         if (Test-Path -LiteralPath (Join-Path $pluginRoot 'ValheimAutoModSync.Client.dll')) { Write-Host 'FAIL client plugin still exists.'; $fail = $true } else { Write-Host 'PASS client plugin removed.' }
-        if (Test-Path -LiteralPath (Join-Path $ams 'ValheimAutoModSync.Apply.exe')) { Write-Host 'FAIL apply helper still exists.'; $fail = $true } else { Write-Host 'PASS apply helper removed.' }
+        if (Test-Path -LiteralPath (Join-Path $pluginRoot 'ValheimAutoModSyncInstaller.exe')) { Write-Host 'FAIL installer/updater still exists.'; $fail = $true } else { Write-Host 'PASS installer/updater removed.' }
+        if (Test-Path -LiteralPath (Join-Path $ams 'ValheimAutoModSync.Apply.exe')) { Write-Host 'FAIL legacy apply helper still exists.'; $fail = $true } else { Write-Host 'PASS no legacy apply helper remains.' }
         if (Test-Path -LiteralPath $owned) { Write-Host 'FAIL exact AMS-owned fixture still exists.'; $fail = $true } else { Write-Host 'PASS exact AMS-owned fixture retired.' }
         if (-not (Test-Path -LiteralPath $modified)) { Write-Host 'FAIL locally modified fixture was deleted.'; $fail = $true } else { Write-Host 'PASS locally modified fixture preserved.' }
         if (-not (Test-Path -LiteralPath $unrelated)) { Write-Host 'FAIL unrelated local plugin was deleted.'; $fail = $true } else { Write-Host 'PASS unrelated local plugin preserved.' }
@@ -105,11 +109,12 @@ switch ($Action) {
     'SeedServerPreservation' {
         $serverDll = Join-Path $pluginRoot 'ValheimAutoModSync.Server.dll'
         $releaseClient = Join-Path $ams 'release\ValheimAutoModSync.Client.dll'
+        $releaseInstaller = Join-Path $ams 'release\ValheimAutoModSyncInstaller.exe'
         $serverConfig = Join-Path $bep 'config\com.gordonfreesay.valheimautomodsync.server.cfg'
         $privateKey = Join-Path $bep 'config\ValheimAutoModSync.private.xml'
         $publicKey = Join-Path $bep 'config\ValheimAutoModSync.public.xml'
         $bepDll = Join-Path $bep 'core\BepInEx.dll'
-        foreach ($required in @($serverDll,$releaseClient,$serverConfig,$privateKey,$publicKey,$bepDll)) {
+        foreach ($required in @($serverDll,$releaseClient,$releaseInstaller,$serverConfig,$privateKey,$publicKey,$bepDll)) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
                 throw ('Server install is incomplete; missing ' + $required)
             }
@@ -136,11 +141,12 @@ switch ($Action) {
     'SeedServerIdentityRemoval' {
         $serverDll = Join-Path $pluginRoot 'ValheimAutoModSync.Server.dll'
         $releaseClient = Join-Path $ams 'release\ValheimAutoModSync.Client.dll'
+        $releaseInstaller = Join-Path $ams 'release\ValheimAutoModSyncInstaller.exe'
         $serverConfig = Join-Path $bep 'config\com.gordonfreesay.valheimautomodsync.server.cfg'
         $privateKey = Join-Path $bep 'config\ValheimAutoModSync.private.xml'
         $publicKey = Join-Path $bep 'config\ValheimAutoModSync.public.xml'
         $bepDll = Join-Path $bep 'core\BepInEx.dll'
-        foreach ($required in @($serverDll,$releaseClient,$serverConfig,$privateKey,$publicKey,$bepDll)) {
+        foreach ($required in @($serverDll,$releaseClient,$releaseInstaller,$serverConfig,$privateKey,$publicKey,$bepDll)) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
                 throw ('Server install is incomplete; missing ' + $required)
             }
@@ -160,6 +166,7 @@ switch ($Action) {
     'InspectServerUninstall' {
         $serverDll = Join-Path $pluginRoot 'ValheimAutoModSync.Server.dll'
         $releaseClient = Join-Path $ams 'release\ValheimAutoModSync.Client.dll'
+        $releaseInstaller = Join-Path $ams 'release\ValheimAutoModSyncInstaller.exe'
         $serverConfig = Join-Path $bep 'config\com.gordonfreesay.valheimautomodsync.server.cfg'
         $privateKey = Join-Path $bep 'config\ValheimAutoModSync.private.xml'
         $publicKey = Join-Path $bep 'config\ValheimAutoModSync.public.xml'
@@ -176,6 +183,7 @@ switch ($Action) {
         $fail = $false
         if (Test-Path -LiteralPath $serverDll) { Write-Host 'FAIL server plugin still exists.'; $fail = $true } else { Write-Host 'PASS server plugin removed.' }
         if (Test-Path -LiteralPath $releaseClient) { Write-Host 'FAIL server release client payload still exists.'; $fail = $true } else { Write-Host 'PASS server release client payload removed.' }
+        if (Test-Path -LiteralPath $releaseInstaller) { Write-Host 'FAIL server release installer/updater payload still exists.'; $fail = $true } else { Write-Host 'PASS server release installer/updater payload removed.' }
         if (-not (Test-Path -LiteralPath $payload)) { Write-Host 'FAIL operator-managed ClientPayload was removed.'; $fail = $true } else { Write-Host 'PASS operator-managed ClientPayload preserved.' }
         if (-not (Test-Path -LiteralPath (Join-Path $bep 'core\BepInEx.dll'))) { Write-Host 'FAIL shared BepInEx was removed.'; $fail = $true } else { Write-Host 'PASS shared BepInEx preserved.' }
 
@@ -203,6 +211,7 @@ switch ($Action) {
     'InspectServerIdentityRemoval' {
         $serverDll = Join-Path $pluginRoot 'ValheimAutoModSync.Server.dll'
         $releaseClient = Join-Path $ams 'release\ValheimAutoModSync.Client.dll'
+        $releaseInstaller = Join-Path $ams 'release\ValheimAutoModSyncInstaller.exe'
         $serverConfig = Join-Path $bep 'config\com.gordonfreesay.valheimautomodsync.server.cfg'
         $privateKey = Join-Path $bep 'config\ValheimAutoModSync.private.xml'
         $publicKey = Join-Path $bep 'config\ValheimAutoModSync.public.xml'
@@ -212,6 +221,7 @@ switch ($Action) {
         $fail = $false
         if (Test-Path -LiteralPath $serverDll) { Write-Host 'FAIL server plugin still exists.'; $fail = $true } else { Write-Host 'PASS server plugin removed.' }
         if (Test-Path -LiteralPath $releaseClient) { Write-Host 'FAIL server release client payload still exists.'; $fail = $true } else { Write-Host 'PASS server release client payload removed.' }
+        if (Test-Path -LiteralPath $releaseInstaller) { Write-Host 'FAIL server release installer/updater payload still exists.'; $fail = $true } else { Write-Host 'PASS server release installer/updater payload removed.' }
         if (Test-Path -LiteralPath $serverConfig) { Write-Host 'FAIL server config still exists.'; $fail = $true } else { Write-Host 'PASS server config removed by explicit opt-in.' }
         if (Test-Path -LiteralPath $privateKey) { Write-Host 'FAIL server private signing identity still exists.'; $fail = $true } else { Write-Host 'PASS server private signing identity removed by explicit opt-in.' }
         if (Test-Path -LiteralPath $publicKey) { Write-Host 'FAIL server public signing identity still exists.'; $fail = $true } else { Write-Host 'PASS server public signing identity removed by explicit opt-in.' }
