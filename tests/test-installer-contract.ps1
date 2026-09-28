@@ -9,6 +9,7 @@ $engine = Join-Path $root 'Source\AutoModSync.ApplyEngine.cs'
 $identity = Join-Path $root 'Source\AutoModSync.IdentityDisplay.cs'
 $pathSafety = Join-Path $root 'Source\AutoModSync.PathSafety.cs'
 $ownership = Join-Path $root 'Source\AutoModSync.OwnershipState.cs'
+$privateKeySecurity = Join-Path $root 'Source\AutoModSync.PrivateKeySecurity.cs'
 $manifest = Join-Path $root 'Source\AutoModSyncInstaller.manifest'
 $logo = Join-Path $root 'Thunderstore\icon.png'
 $temp = Join-Path $env:TEMP ('AMS26-Installer-' + $PID)
@@ -93,7 +94,7 @@ try {
     if (-not (Test-Path -LiteralPath $csc -PathType Leaf)) { throw '.NET Framework C# compiler was not found.' }
 
     $exe = Join-Path $temp 'ValheimAutoModSyncInstaller.exe'
-    & $csc /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /resource:"$logo,ValheimAutoModSync.Branding.Logo.png" /win32manifest:$manifest /out:$exe $source $engine $identity $pathSafety $ownership
+    & $csc /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /resource:"$logo,ValheimAutoModSync.Branding.Logo.png" /win32manifest:$manifest /out:$exe $source $engine $identity $privateKeySecurity $pathSafety $ownership
     if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed with exit code $LASTEXITCODE." }
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or (Get-Item -LiteralPath $exe).Length -lt 32768) {
         throw 'Compiled installer artifact is missing or unexpectedly small.'
