@@ -173,15 +173,16 @@ verified bundle
   -> durable pending.txt
   -> reconnect.txt
   -> optional launch-context.txt
-  -> ValheimAutoModSync.Apply.exe
-  -> old Valheim exits
+  -> visible ValheimAutoModSyncInstaller.exe --apply-pending
+  -> old Valheim exits normally (never force-killed)
+  -> installer/updater confirms process exit
   -> recover prior journal if present
   -> snapshot old destinations + transaction manifest
   -> durable PREPARED
   -> apply + verify every live destination (staging retained)
   -> durable COMMITTED
   -> remove staging/pending/transaction backups
-  -> helper relaunches Valheim
+  -> installer/updater relaunches Valheim
   -> client consumes reconnect.txt
   -> FejdStartup reconnect
   -> 2.6 preflight runs again
@@ -213,8 +214,8 @@ Trusted Authenticode is currently optional/unavailable, so 2.6 adds a separate p
 A source review of the five C# files shows the following intentional privileged surfaces:
 
 - **No HTTP/WebClient/HttpClient downloader exists in the C# runtime.** Plugin bytes are transferred only over Valheim's existing `ZRpc` connection. The separate build/install scripts may obtain the pinned BepInEx package and verify its fixed SHA-256.
-- **Process launch:** only the client starts `ValheimAutoModSync.Apply.exe`, and the helper starts Steam/Valheim for the requested restart. The installer itself does not launch downloaded code or fetch executables.
-- **Registry access:** BuildTool and the apply helper read Steam install locations; they do not write registry values.
+- **Process launch:** the client starts only the signed/attested `ValheimAutoModSyncInstaller.exe` in visible updater mode. It waits for Valheim to close normally, performs the verified transaction, and relaunches through the saved context/Steam fallback. AMS never force-kills Valheim and the installer does not fetch executable payloads at runtime.
+- **Registry access:** BuildTool and the installer/updater may read Steam install locations for discovery/relaunch; they do not write registry values.
 - **Native Windows imports:** the client imports only `MessageBox`, `GetConsoleWindow`, and `ShowWindow` for first-contact trust UI and console presentation.
 - **Filesystem mutation:** the client/helper write AutoModSync state/staging files and synchronized files only beneath validated BepInEx plugin, patcher, or explicitly allowlisted config roots. Core/game-root/managed-assembly destinations are not manifest targets. The server writes its signing identity/cache files.
 - **Cryptography:** server RSA signs manifests; client RSA verifies those signatures; SHA-256 identifies server keys, bundles, and synchronized files.
