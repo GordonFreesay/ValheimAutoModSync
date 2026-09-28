@@ -82,7 +82,9 @@ try {
     Assert-Contains $devBuild 'AutoModSync.ApplyEngine.cs' 'Development installer compilation'
     Assert-Contains $modsiteBuild 'ValheimAutoModSyncInstaller.exe' 'Nexus/CurseForge package'
     Assert-NotContains $releaseBuild 'ValheimAutoModSync.Apply.exe' 'Release build'
-    Assert-NotContains $devBuild 'ValheimAutoModSync.Apply.exe' 'Development build'
+    Assert-NotContains $devBuild '/out:"%OUT%\ValheimAutoModSync.Apply.exe"' 'Development build'
+    Assert-NotContains $devBuild 'ValheimAutoModSync.Apply.cs' 'Development build'
+    Assert-Contains $devBuild 'Legacy ValheimAutoModSync.Apply.exe unexpectedly exists in DevBuild.' 'Development stale-output guard'
     Assert-NotContains $modsiteBuild 'ValheimAutoModSync.Apply.exe' 'Nexus/CurseForge package'
     Write-Host '  PASS'
 
