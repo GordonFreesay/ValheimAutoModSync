@@ -141,14 +141,16 @@ A current AMS peer cannot invoke `ServerHandshake` early to bypass this ordering
 
 This is generic by design. AMS does not special-case Warfare, ServerSync, Jotunn, Epic Loot, or another individual mod.
 
-## First-contact trust and licensing boundary
+## First-contact trust and redistribution-responsibility boundary
 
-The native first-contact trust prompt states that:
+The native first-contact trust prompt is a **client security decision**, not a licensing certification. It states that:
 
 - the server is asking permission to install/update executable BepInEx mod files;
 - synchronized mods are executable code and should be accepted only from a trusted server operator;
-- choosing **Yes** confirms permission to receive the server-provided mods/configuration; and
-- AutoModSync does not verify or enforce third-party licensing or redistribution requirements.
+- choosing **Yes** authorizes that trusted server to provide synchronized executable files/configuration to this PC; and
+- third-party content is provided by the server operator, while AutoModSync does not determine or verify third-party licensing or redistribution rights.
+
+The joining player is **not** asked to represent that they personally verified redistribution permission for the server's mod set. The server operator selects and distributes those files and is responsible for ensuring that every synchronized third-party file may be redistributed under its applicable license/permissions.
 
 ## Required regression matrix before release
 
