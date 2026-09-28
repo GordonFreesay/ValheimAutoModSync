@@ -56,13 +56,15 @@ This is generic rather than Warfare/ServerSync-specific.
 
 ## Filesystem and apply safety
 
-2.6.1 retains the 2.6.0 hardening already present in the delivery path: signed manifests, fixed synchronization roots, canonical path validation, traversal/reserved-name defenses, reparse-point rejection, bounded archive/resource handling, SHA-256 verified staging, fingerprint-scoped ownership/deletion, and the journaled transactional Apply helper with backup/rollback and pre/post-write digest verification.
+2.6.1 retains the 2.6.0 hardening already present in the delivery path: signed manifests, fixed synchronization roots, canonical path validation, traversal/reserved-name defenses, reparse-point rejection, bounded archive/resource handling, SHA-256 verified staging, fingerprint-scoped ownership/deletion, and the installer-linked journaled transaction engine with backup/rollback and pre/post-write digest verification.
 
 ## First-contact trust
 
 The first server-fingerprint trust dialog now makes the executable-code boundary explicit: BepInEx mods are executable code and can act with the permissions of the user's Valheim process/account. Users should accept files only from a server operator they trust.
 
-Choosing **Yes** also confirms permission to receive the server-provided mods/configuration. AutoModSync is not responsible for verifying or enforcing third-party mod licensing or redistribution requirements.
+Choosing **Yes** authorizes that server to provide synchronized executable mod files and configuration to the user's PC. The joining player is **not** asked to certify that the server has redistribution rights for its third-party mod set.
+
+Third-party content is provided by the server operator. AutoModSync does not determine or verify third-party licensing or redistribution rights; the server operator is responsible for ensuring each synchronized third-party file may be redistributed.
 
 ## Compatibility
 
