@@ -3190,21 +3190,42 @@ namespace ValheimAutoModSync
                 // 2.4.5+: no packed game-root bootstrap is distributed or synchronized.
 
                 string releaseClientPlugin = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "ValheimAutoModSync.Client.dll");
-                if (!IsPackageManagedAutoModSync() && File.Exists(releaseClientPlugin))
+                string releaseInstallerUpdater = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "ValheimAutoModSyncInstaller.exe");
+                if (!IsPackageManagedAutoModSync())
                 {
-                    // The standalone release payload is outside BepInEx/plugins but still under the fixed BepInEx root.
-                    // Reparse validation prevents a local junction/symlink from turning that special source into an arbitrary read.
-                    AutoModSyncPathSafety.EnsureNoReparsePoints(Paths.BepInExRootPath, releaseClientPlugin, true);
-                    records.RemoveAll(delegate(FileRecord x) { return x.Kind == 'P' && String.Equals(x.RelativePath, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase); });
-                    FileInfo cfi = new FileInfo(releaseClientPlugin);
-                    FileRecord cr = new FileRecord();
-                    cr.Kind = 'P';
-                    cr.RelativePath = "ValheimAutoModSync.Client.dll";
-                    cr.FullPath = releaseClientPlugin;
-                    cr.SourceLabel = "BepInEx/AutoModSync/release";
-                    cr.Size = cfi.Length;
-                    cr.Sha256 = Sha256File(releaseClientPlugin);
-                    records.Add(cr);
+                    if (File.Exists(releaseClientPlugin))
+                    {
+                        // The standalone release payload is outside BepInEx/plugins but still under the fixed BepInEx root.
+                        // Reparse validation prevents a local junction/symlink from turning that special source into an arbitrary read.
+                        AutoModSyncPathSafety.EnsureNoReparsePoints(Paths.BepInExRootPath, releaseClientPlugin, true);
+                        records.RemoveAll(delegate(FileRecord x) { return x.Kind == 'P' && String.Equals(x.RelativePath, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase); });
+                        FileInfo cfi = new FileInfo(releaseClientPlugin);
+                        FileRecord cr = new FileRecord();
+                        cr.Kind = 'P';
+                        cr.RelativePath = "ValheimAutoModSync.Client.dll";
+                        cr.FullPath = releaseClientPlugin;
+                        cr.SourceLabel = "BepInEx/AutoModSync/release";
+                        cr.Size = cfi.Length;
+                        cr.Sha256 = Sha256File(releaseClientPlugin);
+                        records.Add(cr);
+                    }
+
+                    if (File.Exists(releaseInstallerUpdater))
+                    {
+                        // Migration contract: 2.6.0 clients receive the signed installer/updater as an ordinary verified plugin-root payload
+                        // before the 2.6.1 client DLL relies on it, avoiding a dead-end upgrade that would require legacy Apply.exe.
+                        AutoModSyncPathSafety.EnsureNoReparsePoints(Paths.BepInExRootPath, releaseInstallerUpdater, true);
+                        records.RemoveAll(delegate(FileRecord x) { return x.Kind == 'P' && String.Equals(x.RelativePath, "ValheimAutoModSyncInstaller.exe", StringComparison.OrdinalIgnoreCase); });
+                        FileInfo ifi = new FileInfo(releaseInstallerUpdater);
+                        FileRecord ir = new FileRecord();
+                        ir.Kind = 'P';
+                        ir.RelativePath = "ValheimAutoModSyncInstaller.exe";
+                        ir.FullPath = releaseInstallerUpdater;
+                        ir.SourceLabel = "BepInEx/AutoModSync/release";
+                        ir.Size = ifi.Length;
+                        ir.Sha256 = Sha256File(releaseInstallerUpdater);
+                        records.Add(ir);
+                    }
                 }
 
                 records.Sort(delegate(FileRecord a, FileRecord b)
@@ -3382,7 +3403,7 @@ namespace ValheimAutoModSync
 
                 if (String.Equals(pluginRoot, actualDir, StringComparison.OrdinalIgnoreCase)) return false;
 
-                return File.Exists(Path.Combine(actualDir, "ValheimAutoModSync.Apply.exe"));
+                return File.Exists(Path.Combine(actualDir, "ValheimAutoModSyncInstaller.exe"));
             }
             catch
             {
