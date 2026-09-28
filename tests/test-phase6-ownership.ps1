@@ -27,8 +27,9 @@ if (-not $csc) { throw '.NET Framework C# compiler was not found.' }
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $crlf = [Environment]::NewLine
 $sandbox = Join-Path $env:TEMP ('AMS26-Phase6-Ownership-' + $PID)
-$runnerSource = Join-Path $sandbox 'AutoModSyncApplyEngineHarness.cs'
-$runner = Join-Path $sandbox 'AutoModSyncApplyEngineHarness.exe'
+$runnerRoot = Join-Path $env:TEMP ('AMS26-Phase6-Runner-' + $PID)
+$runnerSource = Join-Path $runnerRoot 'AutoModSyncApplyEngineHarness.cs'
+$runner = Join-Path $runnerRoot 'AutoModSyncApplyEngineHarness.exe'
 $pathSmokeSource = Join-Path $sandbox 'PathSafetySmoke.cs'
 $pathSmokeExe = Join-Path $sandbox 'PathSafetySmoke.exe'
 $gameRoot = Join-Path $sandbox 'Game'
@@ -42,6 +43,7 @@ $ownershipRoot = Join-Path $amsRoot 'ownership'
 $logPath = Join-Path $amsRoot 'apply.log'
 
 New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
+New-Item -ItemType Directory -Path $runnerRoot -Force | Out-Null
 
 $runnerCode = @'
 using System;
@@ -55,7 +57,7 @@ internal static class AutoModSyncApplyEngineHarness
 }
 '@
 [IO.File]::WriteAllText($runnerSource, $runnerCode, $utf8NoBom)
-& $csc /nologo /optimize+ /langversion:5 /target:winexe /define:AMS_DEV_TESTS /out:$runner $runnerSource $engineSource $pathSource $ownershipSource
+& $csc /nologo /optimize+ /langversion:5 /target:exe /define:AMS_DEV_TESTS /out:$runner $runnerSource $engineSource $pathSource $ownershipSource
 if ($LASTEXITCODE -ne 0) {
     Write-Host "FAIL: Phase 6 installer transaction-engine harness compilation failed. Sandbox retained: $sandbox"
     exit $LASTEXITCODE
@@ -347,13 +349,20 @@ try {
     Write-Host 'PASS: all Phase 6 ownership/installer transaction-engine checks passed.'
     Write-Host 'No real Valheim installation, trust store, or server files were modified.'
 
-    if (-not $KeepSandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force }
-    else { Write-Host "Sandbox retained: $sandbox" }
+    if (-not $KeepSandbox) {
+        Remove-Item -LiteralPath $sandbox -Recurse -Force
+        Remove-Item -LiteralPath $runnerRoot -Recurse -Force
+    }
+    else {
+        Write-Host "Sandbox retained: $sandbox"
+        Write-Host "Disposable runner retained: $runnerRoot"
+    }
     exit 0
 }
 catch {
     Write-Host ''
     Write-Host ('FAIL: ' + $_.Exception.Message)
     Write-Host "Sandbox retained for inspection: $sandbox"
+    Write-Host "Disposable runner retained for inspection: $runnerRoot"
     exit 1
 }
