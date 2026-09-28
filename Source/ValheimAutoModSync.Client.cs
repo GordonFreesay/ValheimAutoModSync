@@ -1377,6 +1377,19 @@ namespace ValheimAutoModSync
                 if (!seen.Add(destinationKey))
                     throw new InvalidDataException("Server manifest contained a duplicate destination: " + rel);
 
+                // 2.6.1 migration-only core payload: a 2.6.0 standalone client does not know this filename and will
+                // stage it with the new Client.dll. Once the 2.6.1 client is running, the installer/updater is local AMS
+                // core and is never replaced by the server it is about to connect to. This avoids a running updater ever
+                // needing to overwrite itself and keeps server-provided content limited to the documented mod/config roots.
+                if (kind == 'P' && String.Equals(rel, "ValheimAutoModSyncInstaller.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    string installedUpdater = SafeTargetPath(kind, rel);
+                    if (!File.Exists(installedUpdater))
+                        throw new FileNotFoundException("AutoModSync 2.6.1 requires its signed installer/updater. Repair or reinstall AutoModSync before joining.", installedUpdater);
+                    if (_instance != null) _instance.Logger.LogDebug("Ignoring migration-only server installer/updater payload; the locally installed 2.6.1 core updater remains authoritative.");
+                    continue;
+                }
+
                 if (kind == 'P' && IsPackageManagedAutoModSync() && IsAutoModSyncOwnedRelativePath(rel))
                 {
                     if (_instance != null) _instance.Logger.LogDebug("Ignoring server-advertised package-managed AutoModSync file: " + rel);
