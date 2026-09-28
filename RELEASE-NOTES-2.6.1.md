@@ -31,7 +31,9 @@ Current 2.6.1 peers negotiate **`preflight-quarantine1`**:
 - core server denial/password controls are not delayed;
 - if files need updating, stale queued compatibility traffic is discarded with the old connection;
 - after a verified no-change preflight, `AMS4_Ready` releases the queues in their original invocation order;
-- non-AMS/legacy flows retain bounded fail-open/handshake fallback behavior.
+- non-AMS/legacy flows retain bounded fail-open/handshake fallback behavior;
+- genuine client disconnects bypass the quarantine immediately; and
+- recognized preflights with no active/queued transfer cannot retain auth/quarantine state indefinitely (30-minute hard lifetime).
 
 This is generic rather than Warfare/ServerSync-specific.
 
@@ -50,6 +52,10 @@ Choosing **Yes** also confirms permission to receive the server-provided mods/co
 Public/no-password servers continue using AMS4/protocol 4.
 
 AutoModSync 2.6.0 and earlier clients cannot use the new password-authentication mechanism on password-protected 2.6.1 servers and fail closed rather than receiving protected synchronization data.
+
+## Security reporting
+
+The repository now includes a `SECURITY.md` policy defining the AMS threat boundary, what should be reported as a vulnerability, and the preferred private-disclosure path.
 
 ## Release qualification
 
