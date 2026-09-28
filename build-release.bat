@@ -212,7 +212,7 @@ echo SHA-256 manifest:
 echo   "%DIST%\SHA256SUMS.txt"
 echo GitHub/Sigstore provenance is generated only by official GitHub Actions workflows.
 echo This local build is NOT GitHub-attested.
-echo This build contains no packed AutoModSync version.dll and no standalone ValheimAutoModSync.Apply.exe.
+echo This build contains no packed AutoModSync version.dll and no standalone AutoModSync apply helper.
 rmdir /s /q "%WORK%" >nul 2>&1
 if not defined AMS_NO_PAUSE pause
 exit /b 0
