@@ -14,6 +14,7 @@ $releaseBuildPath = Join-Path $root 'build-release.bat'
 $devBuildPath = Join-Path $root 'build-dev.bat'
 $modsitePath = Join-Path $root 'build-modsite-package.ps1'
 $modsiteReadmePath = Join-Path $root 'ModSites\README.md'
+$distributionPath = Join-Path $root 'DISTRIBUTION.md'
 $thunderstorePath = Join-Path $root 'build-thunderstore.ps1'
 $installBatPath = Join-Path $root 'install.bat'
 $signingPath = Join-Path $root 'SIGNING.md'
@@ -45,6 +46,7 @@ $releaseBuild = Text $releaseBuildPath
 $devBuild = Text $devBuildPath
 $modsite = Text $modsitePath
 $modsiteReadme = Text $modsiteReadmePath
+$distribution = Text $distributionPath
 $thunderstore = Text $thunderstorePath
 $installBat = Text $installBatPath
 $signing = Text $signingPath
@@ -110,7 +112,8 @@ Write-Host '  PASS'
 
 Write-Host '[5/8] Nexus/CurseForge package has one AMS executable updater and no helper...'
 Require $modsite '[ValidateSet("Nexus","CurseForge")]' 'mod-site target policy'
-Require $modsite 'Copy-Item $InstallerExe' 'mod-site updater package'
+Require $modsite 'Copy-Item $InstallerExe (Join-Path $PluginDir "ValheimAutoModSyncInstaller.exe")' 'mod-site updater package'
+Require $distribution 'ValheimAutoModSyncInstaller.exe` is now a required runtime component and is included in the store ZIP' '2.6.1 store layout documentation'
 Forbid $modsite '$ApplyExe' 'mod-site package'
 Forbid $modsite '$ApplyIco' 'mod-site package'
 Write-Host '  PASS'
