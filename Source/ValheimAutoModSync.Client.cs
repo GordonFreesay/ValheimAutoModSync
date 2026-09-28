@@ -109,6 +109,8 @@ namespace ValheimAutoModSync
         private static int _staleTrustPromptThreadId;
         private static DateTime _staleTrustPromptDismissUntilUtc = DateTime.MinValue;
         private static DateTime _staleTrustPromptNextDismissUtc = DateTime.MinValue;
+        private static DateTime _trustPromptNextForegroundUtc = DateTime.MinValue;
+        private static bool _trustPromptForegroundEstablished;
         private static readonly Dictionary<int, string> ManifestParts = new Dictionary<int, string>();
         private static readonly List<ManifestEntry> NeededFiles = new List<ManifestEntry>();
         private static FileStream _bundleStream;
@@ -381,6 +383,13 @@ namespace ValheimAutoModSync
                 }
             }
 #endif
+
+            if (_trustPromptPending && !_trustPromptForegroundEstablished &&
+                (_trustPromptNextForegroundUtc == DateTime.MinValue || DateTime.UtcNow >= _trustPromptNextForegroundUtc))
+            {
+                _trustPromptForegroundEstablished = PromoteNativeTrustPrompt();
+                _trustPromptNextForegroundUtc = DateTime.UtcNow.AddMilliseconds(100.0);
+            }
 
             if (_trustPromptPending && _trustPromptDecision != 0)
             {
@@ -3334,6 +3343,8 @@ namespace ValheimAutoModSync
             _trustPromptDecision = 0;
             int generation = ++_trustPromptGeneration;
             _trustPromptPending = true;
+            _trustPromptForegroundEstablished = false;
+            _trustPromptNextForegroundUtc = DateTime.MinValue;
             _uiState.SetServerFingerprint(fingerprint);
             ShowSyncOverlay(AutoModSyncUiPhase.Trust, "Trust this server?",
                 "A Windows confirmation dialog is open. The short security code is for optional out-of-band comparison; the full identity is pinned internally.");
@@ -3384,7 +3395,9 @@ namespace ValheimAutoModSync
                     const uint MB_DEFBUTTON2 = 0x00000100u;
                     const uint MB_SETFOREGROUND = 0x00010000u;
                     const uint MB_TOPMOST = 0x00040000u;
-                    int answer = MessageBox(IntPtr.Zero, message, TrustPromptCaption,
+                    IntPtr owner = IntPtr.Zero;
+                    try { owner = Process.GetCurrentProcess().MainWindowHandle; } catch { owner = IntPtr.Zero; }
+                    int answer = MessageBox(owner, message, TrustPromptCaption,
                         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST);
                     decision = answer == 6 ? 1 : 2;
                 }
@@ -3419,6 +3432,32 @@ namespace ValheimAutoModSync
             thread.IsBackground = true;
             try { thread.SetApartmentState(ApartmentState.STA); } catch { }
             thread.Start();
+        }
+
+        // Intent: Brings the native trust dialog above Valheim once Windows has created it, including fullscreen/borderless cases where MB_TOPMOST alone may not win z-order immediately.
+        // UX safety: only the uniquely captioned AutoModSync trust prompt is promoted; no unrelated application window is moved or activated.
+        private static bool PromoteNativeTrustPrompt()
+        {
+            try
+            {
+                IntPtr hwnd = FindWindow(null, TrustPromptCaption);
+                if (hwnd == IntPtr.Zero) return false;
+
+                const uint SWP_NOSIZE = 0x0001u;
+                const uint SWP_NOMOVE = 0x0002u;
+                const uint SWP_SHOWWINDOW = 0x0040u;
+                IntPtr HWND_TOPMOST = new IntPtr(-1);
+
+                ShowWindow(hwnd, 5);
+                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW);
+                BringWindowToTop(hwnd);
+                SetForegroundWindow(hwnd);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         // Intent: Best-effort dismissal when a protected connection dies while the native trust dialog is still open.
@@ -3513,6 +3552,8 @@ namespace ValheimAutoModSync
             _trustPromptDecision = 0;
             _trustPromptGeneration++;
             _trustPromptNativeThreadId = 0;
+            _trustPromptForegroundEstablished = false;
+            _trustPromptNextForegroundUtc = DateTime.MinValue;
 #if AMS_DEV_TESTS
             _devTrustDisconnectGeneration = 0;
             _devTrustDisconnectUtc = DateTime.MinValue;
@@ -4620,8 +4661,20 @@ namespace ValheimAutoModSync
         private static extern IntPtr GetConsoleWindow();
 
         [DllImport("user32.dll")]
-        // Intent: Native Windows API import used to hide an already-open BepInEx console window.
+        // Intent: Native Windows API import used to hide an already-open BepInEx console window and restore the AutoModSync trust dialog.
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        // Intent: Promotes the AutoModSync trust dialog into the topmost z-order without resizing or moving it.
+        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+
+        [DllImport("user32.dll")]
+        // Intent: Requests foreground keyboard/mouse focus for the AutoModSync trust dialog after it has been created.
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        // Intent: Moves the AutoModSync trust dialog to the top of its current z-order as an additional fullscreen-window compatibility measure.
+        private static extern bool BringWindowToTop(IntPtr hWnd);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         // Intent: Native trust prompt shown from a background thread so Unity networking continues while the user decides.
