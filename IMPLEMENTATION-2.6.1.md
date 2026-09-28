@@ -68,6 +68,8 @@ Security/trust requirements:
 
 For the one-time 2.6.0 -> 2.6.1 migration, a standalone 2.6.1 server's signed release payload contains both the 2.6.1 client DLL and the signed installer/updater. A 2.6.0 client can therefore stage both using its existing 2.6.0 apply path; after restart, the 2.6.1 client uses only the installer/updater and never falls back to legacy `Apply.exe`.
 
+Once the 2.6.1 client is running, `ValheimAutoModSyncInstaller.exe` becomes **local AMS core**, not server-owned mod content. The 2.6.1 client ignores later server attempts to replace that executable and refuses the join with a repair/reinstall message if the local updater is missing. This intentionally avoids self-updating a running executable, temporary executable copies, reboot rename tricks, shell scripts, or other behavior that would reduce scanner/user trust.
+
 Nexus Mods and CurseForge are the intended mod-site package targets for this release. Thunderstore publication is not part of 2.6.1 release qualification unless its redistribution/policy fit is confirmed separately.
 
 ## Password-protected server boundary
