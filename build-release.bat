@@ -51,7 +51,7 @@ if not exist "%SERVERDIR%" mkdir "%SERVERDIR%" >nul 2>&1
 if not exist "%TOOLSDIR%" mkdir "%TOOLSDIR%" >nul 2>&1
 
 set "BUILDTOOL=%WORK%\AutoModSync.BuildTool.exe"
-"%CSC%" /nologo /target:exe /optimize+ /langversion:5 /out:"%BUILDTOOL%" "%SOURCE%\AutoModSync.BuildTool.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs"
+"%CSC%" /nologo /target:exe /optimize+ /langversion:5 /out:"%BUILDTOOL%" "%SOURCE%\AutoModSync.BuildTool.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PrivateKeySecurity.cs"
 if errorlevel 1 goto :Fail
 copy /y "%BUILDTOOL%" "%TOOLSDIR%\AutoModSync.BuildTool.exe" >nul
 if errorlevel 1 goto :Fail
@@ -128,9 +128,9 @@ set "INSTALLEREXE=%WORK%\ValheimAutoModSyncInstaller.exe"
 echo Compiling AutoModSync components...
 "%CSC%" @"%REFS%" /target:library /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /out:"%CLIENTDLL%" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.SyncUiState.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ClientResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
+"%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PrivateKeySecurity.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /win32icon:"%INSTALLERICO%" /out:"%INSTALLEREXE%" "%SOURCE%\ValheimAutoModSync.Installer.cs" "%SOURCE%\AutoModSync.ApplyEngine.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
+"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /win32icon:"%INSTALLERICO%" /out:"%INSTALLEREXE%" "%SOURCE%\ValheimAutoModSync.Installer.cs" "%SOURCE%\AutoModSync.ApplyEngine.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PrivateKeySecurity.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
 
 rem Sign AutoModSync-authored PE files before they are copied or packaged.
