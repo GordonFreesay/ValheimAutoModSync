@@ -44,6 +44,32 @@ BepInEx plugins are executable code. AutoModSync can verify **who supplied bytes
 - journaled PREPARED/COMMITTED apply with backup, rollback/recovery, pre-write and post-write digest verification;
 - fail-closed behavior after a server is positively recognized as AMS.
 
+## Single installer/updater executable
+
+2.6.1 removes the standalone `ValheimAutoModSync.Apply.exe` component entirely.
+
+The runtime/distribution contract is now:
+
+- `ValheimAutoModSync.Client.dll`;
+- `ValheimAutoModSync.Server.dll`; and
+- one signed/attested `ValheimAutoModSyncInstaller.exe`, which owns install/repair/uninstall **and** the post-exit transactional apply/recovery path.
+
+The client never replaces loaded BepInEx DLLs in-process. After verified staging and durable pending state are written, it launches the installer with the private `--apply-pending` mode, requests a normal Valheim disconnect/quit, and exits. The updater presents a visible ordinary Windows UI and waits passively for that exact Valheim process to exit.
+
+Security/trust requirements:
+
+- no AutoModSync production source calls `Process.Kill` or `.Kill()` on another process;
+- there is no timeout that force-terminates Valheim;
+- runtime updater mode runs as the invoking user (`asInvoker`) and does not prompt for elevation;
+- explicit interactive install/repair/uninstall requests normal Windows UAC through `runas` only when needed;
+- updater execution is visible, not a hidden/background helper process;
+- the existing PREPARED/COMMITTED journal, durable backups, rollback/recovery, path/reparse checks, pre/post-write digests, and ownership transition remain the apply authority;
+- no packer, obfuscator, self-decrypting payload, custom preloader, or custom bootstrap loader is introduced.
+
+For the one-time 2.6.0 -> 2.6.1 migration, a standalone 2.6.1 server's signed release payload contains both the 2.6.1 client DLL and the signed installer/updater. A 2.6.0 client can therefore stage both using its existing 2.6.0 apply path; after restart, the 2.6.1 client uses only the installer/updater and never falls back to legacy `Apply.exe`.
+
+Nexus Mods and CurseForge are the intended mod-site package targets for this release. Thunderstore publication is not part of 2.6.1 release qualification unless its redistribution/policy fit is confirmed separately.
+
 ## Password-protected server boundary
 
 A password-protected server must not disclose protected AMS state or synchronized bytes until the exact live connection proves the correct Valheim password.
@@ -141,7 +167,10 @@ The native first-contact trust prompt states that:
 - queue overflow is bounded/fail-closed for recognized AMS sessions;
 - user/client cancellation during preflight disconnects immediately instead of being queued;
 - an inactive recognized preflight cannot retain auth/quarantine state beyond the configured hard lifetime;
-- existing 2.6.0 transfer/cache/resume/scheduler/path/apply/ownership regressions remain green.
+- existing 2.6.0 transfer/cache/resume/scheduler/path/apply/ownership regressions remain green;
+- final release/store archives contain no `ValheimAutoModSync.Apply.exe`;
+- the exact signed/attested installer/updater performs a live apply/restart/reconnect successfully without elevation or forced process termination;
+- a real 2.6.0 -> 2.6.1 upgrade receives the installer/updater before the 2.6.1 client needs it.
 
 ## Explicitly deferred
 
