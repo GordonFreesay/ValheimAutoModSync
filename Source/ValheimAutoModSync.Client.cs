@@ -780,7 +780,7 @@ namespace ValheimAutoModSync
             {
                 if (_allowPreflightInvoke) return true;
                 if (!_preflightGateActive || __instance == null || __instance != _pendingRpc) return true;
-                if (IsAutoModSyncRpcMethod(method)) return true;
+                if (IsAutoModSyncRpcMethod(method) || IsClientConnectionControlRpcMethod(method)) return true;
 
                 if (HeldPreflightInvocations.Count >= MaxHeldPreflightInvocations)
                 {
@@ -807,6 +807,12 @@ namespace ValheimAutoModSync
         private static bool IsAutoModSyncRpcMethod(string method)
         {
             return !String.IsNullOrEmpty(method) && method.StartsWith("AMS4_", StringComparison.Ordinal);
+        }
+
+        // Intent: Never traps a genuine local disconnect behind synchronization preflight; cancellation/timeout must be able to close the exact socket immediately.
+        private static bool IsClientConnectionControlRpcMethod(string method)
+        {
+            return String.Equals(method, "Disconnect", StringComparison.Ordinal);
         }
 
         [HarmonyPatch(typeof(FejdStartup), "ShowCharacterSelection")]
