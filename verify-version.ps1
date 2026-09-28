@@ -47,7 +47,6 @@ Assert-RegexValue "Source\ValheimAutoModSync.Server.cs" 'PluginVersion\s*=\s*"([
 foreach ($source in @(
     "Source\ValheimAutoModSync.Client.cs",
     "Source\ValheimAutoModSync.Server.cs",
-    "Source\ValheimAutoModSync.Apply.cs",
     "Source\ValheimAutoModSync.Installer.cs",
     "Source\AutoModSync.BuildTool.cs"
 )) {
