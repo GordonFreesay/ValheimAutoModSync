@@ -741,7 +741,8 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
         private static class OnNewConnectionPatch
         {
-            // Intent: On the client side, registers AutoModSync RPC handlers and arms the preflight gate before Valheim's OnNewConnection body can send ServerHandshake.
+            [HarmonyPriority(Priority.First + 200)]
+            // Intent: On the client side, registers AutoModSync RPC handlers and arms the preflight gate before Valheim's OnNewConnection body or ordinary third-party prefixes can send compatibility traffic.
             // This early hook is what prevents Jotunn/other validators from rejecting a client before required files can be synchronized.
             private static void Prefix(ZNet __instance, ZNetPeer peer)
             {
@@ -2322,7 +2323,7 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Completes preflight and resumes the untouched normal connection flow.
-        // If the early gate held ServerHandshake it replays that RPC once; if running in the legacy SendPeerInfo path it delegates to ContinuePeerInfo instead.
+        // Current peers coordinate server readiness first, then every quarantined client-side RPC is replayed in original order; the legacy SendPeerInfo path remains as fallback.
         private static void ResumeNormalHandshake()
         {
             if (_preflightGateActive)
@@ -3225,6 +3226,7 @@ namespace ValheimAutoModSync
                              "Security code: " + code + "\r\n\r\n" +
                              "This short code is derived from the server's full signing-key fingerprint for human comparison only. " +
                              "AutoModSync verifies and pins the complete identity internally.\r\n\r\n" +
+                             "BepInEx mods are executable code and can act with the permissions of your Valheim process/user account. Only trust servers whose operator you trust to provide code.\r\n\r\n" +
                              "By choosing Yes, you also confirm that you have permission to receive any mods or configuration files provided by this server. " +
                              "AutoModSync is not responsible for verifying or enforcing third-party mod licensing or redistribution requirements; by choosing Yes, you confirm that permission yourself.\r\n\r\n" +
                              "Choose Yes only if you intended to join this server. If this first contact was unexpected, compare the code with one published by the server owner.";
