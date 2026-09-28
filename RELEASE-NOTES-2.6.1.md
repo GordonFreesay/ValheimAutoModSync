@@ -2,6 +2,23 @@
 
 AutoModSync 2.6.1 is the **security and connection-boundary hardening release for the 2.6 line**. It keeps **AMS4 / protocol 4** and the 2.6.0 transfer/cache/resume/apply/ownership model.
 
+## One installer/updater, no Apply.exe
+
+2.6.1 removes the standalone `ValheimAutoModSync.Apply.exe` helper.
+
+`ValheimAutoModSyncInstaller.exe` now also owns the existing crash-safe post-exit apply/recovery transaction:
+
+- the updater is visible rather than hidden;
+- it waits for Valheim to close normally and **never force-terminates the game**;
+- normal sync updates run as the current user without a UAC prompt;
+- explicit install/repair/uninstall still uses normal Windows elevation when required;
+- PREPARED/COMMITTED journaling, verified backups, rollback/recovery, path/reparse validation, hashes, and ownership rules are preserved;
+- no packer, obfuscator, self-decrypting payload, or custom loader was added.
+
+Standalone servers also provide the signed installer/updater in the 2.6.1 migration payload so an existing 2.6.0 client can receive it before the new client DLL depends on it.
+
+The intended 2.6.1 mod-site packages are Nexus Mods and CurseForge. Thunderstore publication is deferred unless its policy fit is confirmed separately.
+
 ## Password-protected servers
 
 Password-protected servers now withhold protected AutoModSync synchronization state until the **exact live connection** proves the correct Valheim password.
