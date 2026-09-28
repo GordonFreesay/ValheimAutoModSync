@@ -90,8 +90,19 @@ if not exist "%BRANDING_SCRIPT%" (
   exit /b 1
 )
 
-if exist "%OUT%" rmdir /s /q "%OUT%"
+if exist "%OUT%" (
+  rmdir /s /q "%OUT%"
+  if exist "%OUT%" (
+    echo ERROR: Could not completely remove the previous DevBuild directory.
+    echo A stale or locked development artifact may still be in use. Close any AMS helper/updater process and retry.
+    exit /b 1
+  )
+)
 mkdir "%OUT%"
+if errorlevel 1 (
+  echo ERROR: Could not create a clean DevBuild directory.
+  exit /b 1
+)
 set "INSTALLERICO=%OUT%\ValheimAutoModSyncInstaller.ico"
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%BRANDING_SCRIPT%" -SourcePng "%BRANDING_PNG%" -OutputIco "%INSTALLERICO%"
 if errorlevel 1 exit /b 1
@@ -129,6 +140,25 @@ rem The single installer/updater carries the same AMS_DEV_TESTS transaction inte
 if errorlevel 1 exit /b 1
 
 del /q "%REFS%" >nul 2>&1
+
+if exist "%OUT%\ValheimAutoModSync.Apply.exe" (
+  echo ERROR: Legacy ValheimAutoModSync.Apply.exe unexpectedly exists in DevBuild.
+  echo 2.6.1 development output must use only ValheimAutoModSyncInstaller.exe for apply/update work.
+  exit /b 1
+)
+
+if not exist "%OUT%\ValheimAutoModSync.Client.dll" (
+  echo ERROR: Expected client DLL is missing from DevBuild.
+  exit /b 1
+)
+if not exist "%OUT%\ValheimAutoModSync.Server.dll" (
+  echo ERROR: Expected server DLL is missing from DevBuild.
+  exit /b 1
+)
+if not exist "%OUT%\ValheimAutoModSyncInstaller.exe" (
+  echo ERROR: Expected installer/updater is missing from DevBuild.
+  exit /b 1
+)
 
 if exist "%ROOT%verify-no-pii.ps1" (
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -ArtifactPaths "%OUT%\ValheimAutoModSync.Client.dll;%OUT%\ValheimAutoModSync.Server.dll;%OUT%\ValheimAutoModSyncInstaller.exe"
