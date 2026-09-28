@@ -192,8 +192,8 @@ namespace ValheimAutoModSync
             public ISteamMatchmakingRulesResponse Response;
         }
 
-        // Intent: BepInEx client entry point; initializes only on the playable Valheim process, hands any interrupted apply back to the out-of-process transaction helper, restores reconnect state, and installs synchronization hooks.
-        // Recovery safety: the running game never mutates live synchronized DLL/config destinations itself. A pending/journaled transaction causes an immediate helper-owned recovery restart before AMS can join a server.
+        // Intent: BepInEx client entry point; initializes only on the playable Valheim process, retires the obsolete 2.6.0 helper, hands interrupted apply state to the installer/updater, restores reconnect state, and installs synchronization hooks.
+        // Recovery safety: the running game never mutates live synchronized DLL/config destinations itself. A pending/journaled transaction causes an immediate installer/updater-owned recovery restart before AMS can join a server.
         private void Awake()
         {
             _instance = this;
@@ -207,6 +207,7 @@ namespace ValheimAutoModSync
                 _showServerBadges = Config.Bind("Discovery", "ShowServerBadges", true,
                     "Show a small AMS logo beside Steam-backed servers that passively advertise AutoModSync in Valheim's Join Game browser.");
                 HideBepInExConsoleAndDisableFutureConsole();
+                RetireLegacyApplyHelper();
                 if (HasPendingApplyRecovery())
                 {
                     ScheduleRecoveredStagingRestart();
@@ -230,6 +231,37 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 Logger.LogError("AutoModSync client startup failed: " + ex);
+            }
+        }
+
+        // Intent: Removes the obsolete 2.6.0 Apply helper/icon after a successful migration so 2.6.1 retains only the signed installer/updater executable.
+        // Migration safety: failure to delete a still-locked legacy file is non-fatal and is retried on the next client launch; the legacy helper is never executed by 2.6.1.
+        private static void RetireLegacyApplyHelper()
+        {
+            string amsRoot;
+            try { amsRoot = GetAutoModSyncRoot(); }
+            catch { return; }
+
+            string[] legacyNames = new string[]
+            {
+                "ValheimAutoModSync.Apply.exe",
+                "ValheimAutoModSync.Apply.ico"
+            };
+
+            int i;
+            for (i = 0; i < legacyNames.Length; i++)
+            {
+                string path = Path.Combine(amsRoot, legacyNames[i]);
+                if (!File.Exists(path)) continue;
+                try
+                {
+                    File.Delete(path);
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync retired obsolete 2.6.0 component: " + legacyNames[i]);
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync could not yet retire obsolete " + legacyNames[i] + "; it is never used by 2.6.1 and cleanup will retry next launch. " + ex.Message);
+                }
             }
         }
 
