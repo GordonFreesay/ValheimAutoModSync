@@ -34,7 +34,7 @@ They run on GitHub-hosted Windows runners and:
 5. create GitHub/Sigstore build-provenance attestations for the generated package bytes;
 6. upload the packages and checksum manifests as GitHub Actions artifacts.
 
-The manual Nexus, CurseForge, and Thunderstore publication workflows also attest the **exact package bytes produced by that publishing run** before upload to the store. This matters because independently rebuilt ZIP files are not assumed to be byte-identical.
+The manual Nexus and CurseForge publication workflows also attest the **exact package bytes produced by that publishing run** before upload to the store. This matters because independently rebuilt ZIP files are not assumed to be byte-identical.
 
 For a downloaded artifact, verify provenance with:
 
@@ -42,7 +42,7 @@ For a downloaded artifact, verify provenance with:
 gh attestation verify .\ValheimAutoModSync-2.6.0.zip -R GordonFreesay/ValheimAutoModSync
 ```
 
-The same command works for the Nexus, CurseForge, and Thunderstore ZIP filenames. The canonical `SHA256SUMS.txt` is also attested.
+The same command works for the Nexus and CurseForge ZIP filenames. The canonical `SHA256SUMS.txt` is also attested.
 
 A successful attestation verification proves that the exact downloaded digest was attested by a GitHub Actions workflow for this repository. It does not prove that Windows trusts the binary as an Authenticode publisher.
 
@@ -72,7 +72,6 @@ Only AutoModSync-authored PE files should be signed:
 
 - `ValheimAutoModSync.Client.dll`
 - `ValheimAutoModSync.Server.dll`
-- `ValheimAutoModSync.Apply.exe`
 - `AutoModSync.BuildTool.exe`
 - `ValheimAutoModSyncInstaller.exe`
 
