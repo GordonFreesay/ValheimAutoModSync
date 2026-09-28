@@ -785,9 +785,12 @@ namespace ValheimAutoModSync
                 if (HeldPreflightInvocations.Count >= MaxHeldPreflightInvocations)
                 {
                     if (_serverAcknowledged || _serverRecognized)
+                    {
                         AbortAutoModSyncJoin("AutoModSync preflight RPC quarantine exceeded its bounded queue; the protected join was aborted.");
-                    else
-                        FailOpen("AutoModSync preflight RPC quarantine exceeded its bounded queue before an AMS server was recognized.");
+                        return false;
+                    }
+
+                    FailOpen("AutoModSync preflight RPC quarantine exceeded its bounded queue before an AMS server was recognized.");
                     return true;
                 }
 
@@ -2011,6 +2014,7 @@ namespace ValheimAutoModSync
                 if (_instance != null) _instance.Logger.LogInfo("Mods synchronized. Closing this Valheim instance cleanly before applying updates and relaunching.");
                 try
                 {
+                    _allowPreflightInvoke = true;
                     if (ZNet.instance != null)
                     {
                         MethodInfo disconnect = AccessTools.Method(typeof(ZNet), "Disconnect");
@@ -2018,6 +2022,7 @@ namespace ValheimAutoModSync
                     }
                 }
                 catch { }
+                finally { _allowPreflightInvoke = false; }
                 _quitAfterUtc = DateTime.UtcNow.AddMilliseconds(900.0);
             }
             catch (Exception ex)
@@ -2471,7 +2476,13 @@ namespace ValheimAutoModSync
             if (_instance != null) _instance.Logger.LogError((reason ?? "AutoModSync synchronization failed.") + " The recognized AutoModSync join was aborted.");
 
             if (rpc == null) return;
-            try { rpc.Invoke("Disconnect", new object[0]); } catch { }
+            try
+            {
+                _allowPreflightInvoke = true;
+                rpc.Invoke("Disconnect", new object[0]);
+            }
+            catch { }
+            finally { _allowPreflightInvoke = false; }
             try
             {
                 if (rpc.GetSocket() != null) rpc.GetSocket().Close();
