@@ -1055,6 +1055,36 @@ namespace ValheimAutoModSync
                 }
                 return false;
             }
+
+            // Intent: Neutralizes only connection-status side effects produced by stale third-party
+            // SendPeerInfo prefixes during the intercepted AMS password-auth submission.
+            // The actual socket remains under AMS preflight control; later real AMS/Valheim errors
+            // still win normally and compatibility runs again after synchronized readiness.
+            private static void Postfix(ZNet __instance, ZRpc rpc)
+            {
+                if (__instance == null || __instance.IsServer() || rpc == null) return;
+                if (!_serverRequiresPasswordAuth || !_waitingForServer || rpc != _pendingRpc || !_serverAcknowledged) return;
+
+                try
+                {
+                    FieldInfo statusField = AccessTools.Field(typeof(ZNet), "m_connectionStatus");
+                    if (statusField == null || !statusField.FieldType.IsEnum) return;
+
+                    object connecting = Enum.Parse(statusField.FieldType, "Connecting");
+                    object current = statusField.GetValue(null);
+                    if (current == null || !current.Equals(connecting))
+                    {
+                        statusField.SetValue(null, connecting);
+                        if (_instance != null)
+                            _instance.Logger.LogInfo("AutoModSync restored Valheim connection status after stale preflight compatibility side effects.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null)
+                        _instance.Logger.LogDebug("AutoModSync could not normalize preflight connection status: " + ex.Message);
+                }
+            }
         }
 
         [HarmonyPatch(typeof(ZNet), "RPC_ClientHandshake")]
