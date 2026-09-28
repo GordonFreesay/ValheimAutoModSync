@@ -2,11 +2,14 @@
 
 ## 2.6.1
 
-- Password-protected servers now expose only AutoModSync presence/version/protocol until the correct Valheim password is proven for that exact connection.
-- Signing identity, manifest contents/metadata, synchronized mod/config paths, hashes, sizes, bundle identifiers/content, and transfer capabilities remain behind the password boundary.
-- The normal Valheim password dialog is retained; AMS sends Valheim's salted proof rather than the plaintext password.
-- First-contact trust now also confirms permission to receive server-provided mods/configuration and states that AutoModSync is not responsible for verifying or enforcing third-party licensing/redistribution requirements.
-- Public/no-password servers retain the 2.6.0 AMS4/protocol-4 behavior.
+- Defines 2.6.1 as the security/connection-boundary hardening release for the 2.6 line.
+- Password-protected servers expose only AMS presence/version/protocol, authentication-required state, and an opaque one-time random challenge before authentication; signing identity, manifest/content metadata, synchronized paths/hashes/sizes/configuration, bundle/cache state, transfer capabilities, and synchronized bytes remain withheld.
+- Replaces reusable password-verifier transmission with negotiated `password-auth2`: the client keeps Valheim's salted verifier local and sends only a random-nonce HMAC-SHA256 challenge response; challenge state is exact-connection scoped, one-use, time-bounded, and revoked on disconnect.
+- Adds generic `preflight-quarantine1` / `AMS4_Ready` coordination so stale third-party compatibility/version RPCs cannot reject an out-of-date client before AMS can update it. Changed-sync connections discard stale queued RPCs; verified current peers release them in original order.
+- Keeps server denial/password control RPCs outside the server quarantine and preserves legacy/non-AMS fail-open/handshake fallback behavior.
+- First-contact trust now explicitly warns that synchronized BepInEx mods are executable code, confirms permission to receive server-provided mods/configuration, and states that AutoModSync does not verify/enforce third-party licensing or redistribution rights.
+- Retains 2.6.0 signed-manifest, fixed-root path/reparse/resource, SHA-256 staging, fingerprint-scoped ownership, and transactional Apply-helper hardening.
+- Public/no-password servers remain AMS4/protocol-4 compatible; older clients fail closed on password-protected 2.6.1 servers rather than receiving protected AMS state.
 
 
 ## 2.6.0
