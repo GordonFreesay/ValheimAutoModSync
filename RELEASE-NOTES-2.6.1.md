@@ -15,7 +15,7 @@ AutoModSync 2.6.1 is the **security and connection-boundary hardening release fo
 - PREPARED/COMMITTED journaling, verified backups, rollback/recovery, path/reparse validation, hashes, and ownership rules are preserved;
 - no packer, obfuscator, self-decrypting payload, or custom loader was added.
 
-Standalone servers also provide the signed installer/updater in the 2.6.1 migration payload so an existing 2.6.0 client can receive it before the new client DLL depends on it.
+Standalone servers also provide the signed installer/updater in the 2.6.1 migration payload so an existing 2.6.0 client can receive it before the new client DLL depends on it. After that migration, the 2.6.1 client treats the updater as local AutoModSync core and does not let a game server replace the running updater. A missing updater requires an AutoModSync repair/reinstall instead of invoking a self-update workaround.
 
 The intended 2.6.1 mod-site packages are Nexus Mods and CurseForge. Thunderstore publication is deferred unless its policy fit is confirmed separately.
 
