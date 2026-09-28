@@ -283,6 +283,31 @@ namespace ValheimAutoModSync
         // Compatibility: non-AutoModSync servers are released after a short discovery window; acknowledged AutoModSync servers get a longer manifest-start window.
         private void Update()
         {
+            // Intent: Preserves a visible local cancel path while Valheim owns password entry.
+            // AMS is intentionally hidden during this period; Escape closes the dialog and aborts
+            // the exact protected connection without releasing any quarantined compatibility RPCs.
+            if (_serverRequiresPasswordAuth && _waitingForServer && _pendingRpc != null)
+            {
+                bool passwordDialogOpen = false;
+                try { passwordDialogOpen = ZNet.instance != null && ZNet.instance.InPasswordDialog(); }
+                catch { passwordDialogOpen = false; }
+
+                if (passwordDialogOpen && Input.GetKeyDown(KeyCode.Escape))
+                {
+                    try
+                    {
+                        FieldInfo dialogField = AccessTools.Field(typeof(ZNet), "m_passwordDialog");
+                        object dialogObject = dialogField == null || ZNet.instance == null ? null : dialogField.GetValue(ZNet.instance);
+                        Component dialogComponent = dialogObject as Component;
+                        if (dialogComponent != null) dialogComponent.gameObject.SetActive(false);
+                    }
+                    catch { }
+
+                    AbortAutoModSyncJoin("Server password entry was cancelled.");
+                    return;
+                }
+            }
+
 #if AMS_DEV_TESTS
             if (_devUiPreviewActive) UpdateDevelopmentUiPreview();
             TryRunDevelopmentServerBrowserProbe();
@@ -812,7 +837,19 @@ namespace ValheimAutoModSync
             {
                 if (_allowPreflightInvoke) return true;
                 if (!_preflightGateActive || __instance == null || __instance != _pendingRpc) return true;
-                if (IsAutoModSyncRpcMethod(method) || IsClientConnectionControlRpcMethod(method)) return true;
+                if (IsAutoModSyncRpcMethod(method)) return true;
+
+                // Before AMS recognition, preserve ordinary/non-AMS disconnect behavior. Once this
+                // exact connection is positively AMS-aware, stale compatibility prefixes can emit
+                // Disconnect from the same SendPeerInfo invocation AMS intercepted for password auth.
+                // Such a disconnect is neither authoritative nor safe to replay after synchronization.
+                if (String.Equals(method, "Disconnect", StringComparison.Ordinal))
+                {
+                    if (!_serverAcknowledged && !_serverRecognized) return true;
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync suppressed a stale preflight Disconnect emitted after AMS recognition.");
+                    return false;
+                }
 
                 if (HeldPreflightInvocations.Count >= MaxHeldPreflightInvocations)
                 {
@@ -839,12 +876,6 @@ namespace ValheimAutoModSync
         private static bool IsAutoModSyncRpcMethod(string method)
         {
             return !String.IsNullOrEmpty(method) && method.StartsWith("AMS4_", StringComparison.Ordinal);
-        }
-
-        // Intent: Never traps a genuine local disconnect behind synchronization preflight; cancellation/timeout must be able to close the exact socket immediately.
-        private static bool IsClientConnectionControlRpcMethod(string method)
-        {
-            return String.Equals(method, "Disconnect", StringComparison.Ordinal);
         }
 
         [HarmonyPatch(typeof(FejdStartup), "ShowCharacterSelection")]
@@ -1108,8 +1139,10 @@ namespace ValheimAutoModSync
                     _serverSupportsBundleScheduler = false;
                     _serverSupportsPreflightQuarantine = false;
                     _helloSentUtc = DateTime.MinValue;
-                    ShowSyncOverlay(AutoModSyncUiPhase.Checking, "Server password required.",
-                        "This server has AutoModSync, but its fingerprint, mod list, hashes, sizes, configuration, and files remain hidden until the server accepts the password.");
+
+                    // Valheim owns password entry. Keep the AMS panel hidden until the player submits
+                    // so it cannot cover or interfere with the native password field.
+                    HideSyncOverlay();
                     if (_instance != null)
                         _instance.Logger.LogInfo("AutoModSync server detected; protected synchronization state is gated behind a one-time password challenge.");
                     return;
