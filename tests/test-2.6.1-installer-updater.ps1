@@ -101,6 +101,9 @@ Require $server 'ir.RelativePath = "ValheimAutoModSyncInstaller.exe"' 'server re
 Require $client 'there is deliberately no fallback to legacy ValheimAutoModSync.Apply.exe' 'client migration policy'
 Require $client 'RetireLegacyApplyHelper();' 'legacy helper retirement'
 Require $client 'File.Delete(path);' 'legacy helper retirement'
+Require $client 'Ignoring migration-only server installer/updater payload' 'local updater authority'
+Require $client 'Repair or reinstall AutoModSync before joining.' 'missing updater fail-closed'
+Require $client 'rather than ever scheduling the running updater for stale deletion' 'local updater ownership boundary'
 Write-Host '  PASS'
 
 Write-Host '[5/7] Nexus/CurseForge package has one AMS executable updater and no helper...'
