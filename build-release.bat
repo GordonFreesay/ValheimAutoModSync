@@ -91,6 +91,8 @@ set "UNITY_IMGUI=%BEPSOURCE%\unstripped_corlib\UnityEngine.IMGUIModule.dll"
 if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%VALHEIMMANAGED%\UnityEngine.IMGUIModule.dll"
 set "UNITY_TEXT=%BEPSOURCE%\unstripped_corlib\UnityEngine.TextRenderingModule.dll"
 if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%VALHEIMMANAGED%\UnityEngine.TextRenderingModule.dll"
+set "UNITY_INPUT=%BEPSOURCE%\unstripped_corlib\UnityEngine.InputLegacyModule.dll"
+if not exist "%UNITY_INPUT%" set "UNITY_INPUT=%VALHEIMMANAGED%\UnityEngine.InputLegacyModule.dll"
 if not exist "%BRANDING_PNG%" (
   echo ERROR: AutoModSync branding PNG was not found at "%BRANDING_PNG%".
   goto :Fail
@@ -115,6 +117,7 @@ set "REFS=%WORK%\refs.rsp"
 >>"%REFS%" echo /reference:"%UNITY_CORE%"
 >>"%REFS%" echo /reference:"%UNITY_IMGUI%"
 >>"%REFS%" echo /reference:"%UNITY_TEXT%"
+>>"%REFS%" echo /reference:"%UNITY_INPUT%"
 >>"%REFS%" echo /reference:"%SPLATFORM_DLL%"
 >>"%REFS%" echo /reference:"%STEAMWORKS_DLL%"
 >>"%REFS%" echo /reference:"%NETSTANDARD_DLL%"
