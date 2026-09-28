@@ -29,8 +29,9 @@ $sourceRoot = Join-Path $repoRoot 'Source'
 $engineSource = Join-Path $sourceRoot 'AutoModSync.ApplyEngine.cs'
 $pathSource = Join-Path $sourceRoot 'AutoModSync.PathSafety.cs'
 $ownershipSource = Join-Path $sourceRoot 'AutoModSync.OwnershipState.cs'
-$runnerSource = Join-Path $root 'AutoModSyncApplyEngineHarness.cs'
-$runner = Join-Path $root 'AutoModSyncApplyEngineHarness.exe'
+$runnerRoot = Join-Path $env:TEMP ('AMS26-Phase2-Runner-' + $PID)
+$runnerSource = Join-Path $runnerRoot 'AutoModSyncApplyEngineHarness.cs'
+$runner = Join-Path $runnerRoot 'AutoModSyncApplyEngineHarness.exe'
 
 $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if (-not (Test-Path -LiteralPath $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe" }
@@ -60,9 +61,7 @@ function Assert-Contains([string]$Path, [string]$Needle, [string]$Message) {
 
 function Reset-Sandbox {
     if (Test-Path -LiteralPath $root) {
-        Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -ne $runner -and $_.FullName -ne $runnerSource } |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $root -Recurse -Force
     }
 
     @(
@@ -171,7 +170,9 @@ function Restore-Manifest([byte[]]$Bytes) {
 }
 
 if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+if (Test-Path -LiteralPath $runnerRoot) { Remove-Item -LiteralPath $runnerRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $root -Force | Out-Null
+New-Item -ItemType Directory -Path $runnerRoot -Force | Out-Null
 
 $harnessCode = @'
 using System;
@@ -350,14 +351,17 @@ try {
 
     if (-not $KeepSandbox) {
         Remove-Item -LiteralPath $root -Recurse -Force
+        Remove-Item -LiteralPath $runnerRoot -Recurse -Force
     }
     else {
         Write-Host "Sandbox retained: $root"
+        Write-Host "Disposable runner retained: $runnerRoot"
     }
 }
 catch {
     Write-Host ''
     Write-Host ('FAIL: ' + $_.Exception.Message)
     Write-Host "Sandbox retained for inspection: $root"
+    Write-Host "Disposable runner retained for inspection: $runnerRoot"
     exit 1
 }
