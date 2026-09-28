@@ -58,6 +58,20 @@ This is generic rather than Warfare/ServerSync-specific.
 
 2.6.1 retains the 2.6.0 hardening already present in the delivery path: signed manifests, fixed synchronization roots, canonical path validation, traversal/reserved-name defenses, reparse-point rejection, bounded archive/resource handling, SHA-256 verified staging, fingerprint-scoped ownership/deletion, and the installer-linked journaled transaction engine with backup/rollback and pre/post-write digest verification.
 
+## Server private-key hardening
+
+The persistent server signing key is now explicitly ACL-hardened on Windows instead of relying only on inherited filesystem permissions.
+
+- the private key remains excluded from all client synchronization;
+- ACL inheritance is disabled on the private-key file;
+- only the actual key-owning/runtime Windows identity, LocalSystem, and local Administrators receive Full Control;
+- broad principals such as Users/Everyone are removed;
+- existing identities are re-hardened by the server process on startup;
+- AutoModSync will not use a key if the restrictive ACL cannot be established and verified;
+- a newly generated identity is removed if hardening fails, so AMS does not leave a fresh insecure credential behind.
+
+The public key/fingerprint remains public and is not subject to this restriction.
+
 ## First-contact trust
 
 The first server-fingerprint trust dialog now makes the executable-code boundary explicit: BepInEx mods are executable code and can act with the permissions of the user's Valheim process/account. Users should accept files only from a server operator they trust.
