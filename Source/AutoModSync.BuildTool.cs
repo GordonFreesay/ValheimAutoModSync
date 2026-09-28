@@ -182,7 +182,7 @@ internal static class BuildTool
     }
 
     // Intent: Creates or preserves the server RSA signing identity used to authenticate AutoModSync manifests.
-    // Workflow: reuses an existing private key when present, otherwise generates a 2048-bit keypair, writes the public key, and prints its SHA-256 fingerprint.
+    // Security: a newly generated private key receives an explicit protected Windows ACL immediately; existing identity ACLs are preserved here and re-hardened by the actual server runtime account on load.
     private static int EnsureIdentity(string privatePath, string publicPath)
     {
         privatePath = Path.GetFullPath(privatePath);
@@ -190,6 +190,7 @@ internal static class BuildTool
         string parent = Path.GetDirectoryName(privatePath);
         if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
         string publicXml;
+        bool generatedNow = false;
         using (RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048))
         {
             rsa.PersistKeyInCsp = false;
@@ -205,7 +206,17 @@ internal static class BuildTool
                 string privateXml = rsa.ToXmlString(true);
                 publicXml = rsa.ToXmlString(false);
                 File.WriteAllText(privatePath, privateXml + Environment.NewLine, new UTF8Encoding(false));
-                Console.WriteLine("Generated AutoModSync server identity: " + privatePath);
+                generatedNow = true;
+                try
+                {
+                    ValheimAutoModSync.AutoModSyncPrivateKeySecurity.HardenPrivateKeyFile(privatePath);
+                }
+                catch
+                {
+                    try { if (File.Exists(privatePath)) File.Delete(privatePath); } catch { }
+                    throw;
+                }
+                Console.WriteLine("Generated ACL-protected AutoModSync server identity: " + privatePath);
             }
         }
         File.WriteAllText(publicPath, publicXml + Environment.NewLine, new UTF8Encoding(false));
