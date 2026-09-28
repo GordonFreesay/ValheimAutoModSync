@@ -234,7 +234,7 @@ namespace ValheimAutoModSync
             _instance = this;
             _enabled = Config.Bind("General", "Enabled", true, "Enable the AutoModSync server role on this Valheim instance.");
             _excludePatterns = Config.Bind("General", "ExcludePatterns",
-                "ValheimAutoModSync.Server.dll;ValheimAutoModSync.Client.dll;ValheimAutoModSync.Apply.exe;manifest.json;icon.png;README.md;CHANGELOG.md;LICENSE;THIRD-PARTY-NOTICES.md;*.pdb;*.mdb;*.log;*.tmp;*.bak;*.md",
+                "ValheimAutoModSync.Server.dll;ValheimAutoModSync.Client.dll;ValheimAutoModSyncInstaller.exe;ValheimAutoModSync.Apply.exe;manifest.json;icon.png;README.md;CHANGELOG.md;LICENSE;THIRD-PARTY-NOTICES.md;*.pdb;*.mdb;*.log;*.tmp;*.bak;*.md",
                 "Semicolon-separated wildcard patterns that will not be sent to clients from any synchronized root. Match is checked against both the relative path and file name.");
             _serverOnlyPatterns = Config.Bind("Compatibility", "ServerOnlyPatterns", "",
                 "Semicolon-separated plugin/patcher wildcard patterns that exist on the server but must never be copied to clients.");
@@ -1130,11 +1130,12 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Loads or creates the persistent RSA server identity used to sign manifests.
-        // Workflow: generates a 2048-bit keypair only when absent, writes the public key, and derives the fingerprint clients pin on first trust.
+        // Security: the private key is ACL-hardened to the actual server runtime identity + SYSTEM + Administrators before AMS reads or uses it; failure is fail-closed.
         private static void LoadIdentity()
         {
             string path = Path.Combine(Paths.ConfigPath, "ValheimAutoModSync.private.xml");
             string publicPath = Path.Combine(Paths.ConfigPath, "ValheimAutoModSync.public.xml");
+            bool generatedNow = false;
 
             if (!File.Exists(path))
             {
@@ -1148,10 +1149,28 @@ namespace ValheimAutoModSync
                     string generatedPublicXml = generated.ToXmlString(false);
                     File.WriteAllText(path, privateXml + Environment.NewLine, new UTF8Encoding(false));
                     File.WriteAllText(publicPath, generatedPublicXml + Environment.NewLine, new UTF8Encoding(false));
+                    generatedNow = true;
                 }
-
-                if (_instance != null) _instance.Logger.LogInfo("Generated a new AutoModSync server signing identity at " + path + ". Back up this private identity to preserve the server fingerprint.");
             }
+
+            try
+            {
+                AutoModSyncPrivateKeySecurity.HardenPrivateKeyFile(path);
+            }
+            catch
+            {
+                if (generatedNow)
+                {
+                    try { if (File.Exists(path)) File.Delete(path); } catch { }
+                    try { if (File.Exists(publicPath)) File.Delete(publicPath); } catch { }
+                }
+                throw;
+            }
+
+            if (generatedNow && _instance != null)
+                _instance.Logger.LogInfo("Generated a new ACL-protected AutoModSync server signing identity at " + path + ". Back up this private identity securely to preserve the server fingerprint.");
+            else if (_instance != null)
+                _instance.Logger.LogDebug("AutoModSync verified restrictive ACL protection on the server private signing identity.");
 
             string xml = File.ReadAllText(path).Trim();
             RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048);
@@ -3416,6 +3435,7 @@ namespace ValheimAutoModSync
         {
             if (String.Equals(name, "ValheimAutoModSync.Server.dll", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "ValheimAutoModSyncInstaller.exe", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "ValheimAutoModSync.Apply.exe", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "manifest.json", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "icon.png", StringComparison.OrdinalIgnoreCase)) return true;
