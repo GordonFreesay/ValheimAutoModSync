@@ -129,9 +129,11 @@ Assert-Contains $server '(now - started).TotalMinutes >= MaxInactivePreflightMin
 Write-Host '[9/10] PASS server quarantines early compatibility/version RPCs, bounds inactive preflight state, and releases only after AMS readiness/legacy fallback.'
 
 Assert-Contains $client 'BepInEx mods are executable code and can act with the permissions of your Valheim process/user account.' 'Executable-code trust warning'
-Assert-Contains $client 'By choosing Yes, you also confirm that you have permission to receive any mods or configuration files provided by this server.' 'First-contact consent'
-Assert-Contains $client 'AutoModSync is not responsible for verifying or enforcing third-party mod licensing or redistribution requirements' 'First-contact consent'
-Write-Host '[10/10] PASS first-contact trust explicitly covers executable-code risk, receive permission, and licensing responsibility.'
+Assert-Contains $client 'Choosing Yes authorizes this server to provide synchronized executable mod files and configuration to this PC.' 'First-contact security consent'
+Assert-Contains $client 'Third-party content is provided by the server operator. AutoModSync does not determine or verify third-party licensing or redistribution rights.' 'First-contact responsibility boundary'
+Assert-NotContains $client 'you have permission to receive any mods or configuration files provided by this server' 'Client must not certify server redistribution rights'
+Assert-NotContains $client 'by choosing Yes, you confirm that permission yourself' 'Client must not certify server redistribution rights'
+Write-Host '[10/10] PASS first-contact trust covers executable-code/security consent without making the joining player certify third-party redistribution rights.'
 
 Write-Host ''
 Write-Host 'PASS: AutoModSync 2.6.1 security/password/preflight-isolation contract is present.'
