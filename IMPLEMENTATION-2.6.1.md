@@ -1,163 +1,156 @@
-# AutoModSync 2.6.1 patch-release plan
+# AutoModSync 2.6.1 security-hardening plan
 
-This document is the authoritative planning baseline for Valheim AutoModSync **2.6.1**.
+This document is the authoritative scope for Valheim AutoModSync **2.6.1**.
 
 ## Release purpose
 
-**2.6.1 is a single-purpose access-control patch over the released 2.6.0 behavior.**
+**2.6.0 is the feature release. 2.6.1 is the security and connection-boundary hardening release for the 2.6 line.**
 
-Except for the password-protected-server boundary described below, 2.6.1 must behave like 2.6.0. Do not use this release to bundle unrelated safety fixes, UI changes, packaging changes, release-pipeline changes, transfer changes, licensing features, or cleanup work.
+2.6.1 should not add unrelated product features, transfer tuning, new synchronization roots, provider acquisition flows, or broad UI work. It may include security changes and compatibility fixes that are necessary to make the security/preflight model reliable.
 
-The release should be reviewable as:
+Baseline public release: **2.6.0**. Protocol remains **AMS4 / protocol 4**; new behavior is negotiated with capabilities/RPCs.
 
-> **2.6.0 + password-authenticated AutoModSync access on password-protected servers + unavoidable version/release metadata.**
+## Security model
 
-## Baseline and invariants
+AutoModSync assumes that the server operator and protocol implementation are fully knowable to an attacker. Security must not depend on hiding or obfuscating the AMS binaries.
 
-- Baseline public release: **2.6.0**.
-- 2.6.0 release tag commit: `0da61e625220766aca6c47bd990e063d000d3bea`.
-- Planned release: **2.6.1**.
-- Network protocol remains **AMS4 / protocol 4** unless implementation proves a wire change is absolutely required; protocol churn is not a goal of this patch.
-- The existing `v2.6.0` tag, release ZIP, checksum, and attestation remain immutable historical artifacts.
-- 2.6.1 receives its own version, tag, exact build artifacts, hashes, attestations, release notes, and publication.
-- Runtime/package behavior not required for the password boundary should remain equivalent to released 2.6.0.
-- Prefer implementing and qualifying 2.6.1 from the released 2.6.0 baseline so unrelated post-2.6.0 `main` work cannot accidentally enter the patch.
+The important boundaries are:
 
-## Implemented 2.6.1 design
+- cryptographic server identity and signed manifest integrity;
+- explicit first-contact user trust;
+- password/authentication state scoped to the exact live connection;
+- no protected server synchronization disclosure before required authentication;
+- fixed client filesystem roots and canonical path validation;
+- no reparse-point traversal;
+- bounded network/archive/resource handling;
+- hash-verified staging and transactional apply;
+- conservative, server-fingerprint-scoped ownership/deletion;
+- compatibility handshakes must not run against stale client mods before AMS has had the opportunity to update them.
 
-The candidate keeps **AMS4 / protocol 4** and negotiates a new `password-auth1` client capability plus the `AMS4_Auth` proof RPC.
+BepInEx plugins are executable code. AutoModSync can verify **who supplied bytes and whether they were altered**; it cannot make intentionally malicious plugin code safe. The trust prompt therefore warns users that synchronized BepInEx mods execute with the permissions of their Valheim process/user account.
 
-For a password-protected server:
+## Existing 2.6 defenses retained
 
-1. The client sends the minimal AMS hello while continuing to hold the original Valheim `ServerHandshake`.
-2. The server replies only with an `auth-required1` presence acknowledgement, then invokes Valheim's normal client password dialog without running the server-side `RPC_ServerHandshake`.
-3. On password submission, the client computes the same salted proof Valheim would place in `PeerInfo` and sends only that proof through `AMS4_Auth`; the plaintext password is not sent through AMS.
-4. The server compares that proof with Valheim's current server-password hash and authorizes only the exact live `ZRpc`.
-5. Only after authorization may full transfer capabilities, signing identity, manifest data, or bundle state be sent.
-6. After AMS synchronization, the held Valheim `ServerHandshake` is released so Jotunn/other compatibility validation runs in its normal post-sync position. The already-entered password is replayed once into the normal Valheim `PeerInfo` path to avoid a second password prompt.
-7. Disconnect cleanup revokes challenge/authorization state, so every reconnect must authenticate again.
+2.6.1 keeps the 2.6.0 delivery hardening:
 
-Every protected manifest/bundle entry point independently re-checks authorization. AMS-aware early `ServerHandshake` and `PeerInfo` attempts are also blocked before authentication as defense in depth.
+- signed manifests and pinned server identity;
+- client-independent file/count/expanded/archive ceilings;
+- canonical fixed-root P/R/C destinations;
+- traversal, rooted-path, reserved-name, trailing-dot/space, and reparse-point rejection;
+- streaming extraction of only signed expected entries;
+- SHA-256 verification before staging/apply;
+- protected config exclusions including AMS identity files and `BepInEx.cfg`;
+- fingerprint-scoped ownership with digest-checked stale deletion;
+- journaled PREPARED/COMMITTED apply with backup, rollback/recovery, pre-write and post-write digest verification;
+- fail-closed behavior after a server is positively recognized as AMS.
 
-The first-contact fingerprint trust dialog makes **Yes** also confirm permission to receive the server-provided mods/configuration and explicitly states that AutoModSync is not responsible for verifying or enforcing third-party licensing/redistribution requirements.
+## Password-protected server boundary
 
-## The only runtime change: authenticate before protected AMS access
+A password-protected server must not disclose protected AMS state or synchronized bytes until the exact live connection proves the correct Valheim password.
 
-Password-protected Valheim servers must treat successful server-side Valheim password authentication as an access-control boundary for AutoModSync.
+Pre-authentication AMS may reveal only:
 
-A peer that can reach the server socket but has **not** supplied the correct server password must not be able to download synchronized mods or obtain protected synchronization information.
+- AutoModSync presence;
+- product version / protocol;
+- that authentication is required; and
+- an opaque one-time random authentication challenge.
 
-### Required behavior
+It must not reveal signing identity/fingerprint, manifest dimensions/content, filenames/paths, hashes, sizes, synchronized configuration, bundle/cache state, transfer capabilities, or synchronized bytes.
 
-On a password-protected server, before the **server** has accepted the Valheim password for that exact live connection, AutoModSync must not disclose or serve:
+Every protected manifest/bundle entry point re-checks authorization server-side.
 
-- the server signing identity/fingerprint or trust material;
-- the signed synchronization manifest;
-- synchronized paths or filenames;
-- file hashes or file sizes;
-- bundle identifiers or bundle contents;
-- synchronized configuration contents;
-- cache/build metadata that reveals synchronized content; or
-- any other protected synchronization state.
+### Non-replayable password proof
 
-Most importantly, **no synchronized mod/configuration bytes may be downloadable before successful password authentication**.
+2.6.1 negotiates **`password-auth2`**.
 
-Enforcement must be server-side. A modified client that sends `AMS4_Hello`, manifest requests, bundle requests, resume requests, or any other AMS RPC before authentication must not bypass the boundary.
+For a passworded server:
 
-If a pre-authentication AMS response is needed for compatibility, it must be minimal and reveal no protected synchronization state. An `AMS present / authentication required` capability response is acceptable if necessary.
+1. Server creates a cryptographically random 32-byte nonce for the exact `ZRpc` and sends it in an `auth-required2` presence-only ACK.
+2. Valheim's normal password dialog remains the user-input UI.
+3. Client locally derives Valheim's normal salted password verifier.
+4. AMS sends **HMAC-SHA256(verifier, domain || nonce)** rather than sending the reusable verifier itself.
+5. Server computes the expected HMAC from its existing salted verifier and the stored nonce.
+6. Challenge state is consumed before comparison, expires after 15 minutes, and is bound to the exact live `ZRpc`.
+7. Disconnect removes challenge/authorization state.
 
-The passive Steam server-browser `automodsync` / `automodsync_protocol` presence advertisement may remain public because it exposes only product capability/version information.
+This prevents an observed AMS authentication response from being replayed as the reusable Valheim password verifier.
 
-Authorization must be bound to the exact live connection/`ZRpc` generation:
+The plaintext password is retained only temporarily in the client process when necessary to replay Valheim's normal post-sync `PeerInfo` without a second prompt; it is cleared on completion/failure/disconnect/restart. A restart/reconnect requires normal authentication again.
 
-- successful authentication authorizes only that connection;
-- disconnect immediately revokes the authorization;
-- a later connection cannot inherit authorization from an earlier peer;
-- restart/reconnect must pass through Valheim's normal password authentication again before AMS disclosure or transfer resumes.
+## Preflight compatibility isolation
 
-No-password/public servers retain the released 2.6.0 AMS behavior.
+Holding only Valheim's `ServerHandshake` is insufficient. Libraries such as ServerSync can send custom version RPCs directly from `ZNet.OnNewConnection`, before the vanilla handshake. A stale client mod can therefore reject/disconnect before AMS downloads its replacement.
 
-### Required ordering
+2.6.1 negotiates **`preflight-quarantine1`** and adds `AMS4_Ready`.
 
-For password-protected servers, the target ordering is:
+### Client side
 
-```text
-transport established
-  -> normal Valheim password challenge
-  -> server accepts the correct password for this exact connection
-  -> AutoModSync discovery/trust/manifest/compare/transfer
-  -> normal third-party mod compatibility validation
-  -> normal join
-```
+At highest-priority connection prefix, AMS arms a bounded quarantine before ordinary third-party connection prefixes execute.
 
-The implementation must preserve the reason AMS moved ahead of the normal Valheim `ServerHandshake` in 2.5: Jotunn/Epic Loot/other compatibility checks must not reject a client before required synchronization has had a chance to complete.
+While AMS preflight owns the exact connection:
 
-Therefore the implementation must identify the earliest reliable point where the server has accepted the password **while still holding back the compatibility stage that must occur after AMS synchronization**.
+- AMS4 traffic is allowed.
+- Other outbound RPCs, including third-party version/compatibility RPCs and Valheim `ServerHandshake`, are queued in original invocation order.
+- Queue length is bounded; overflow fails closed for a recognized AMS session.
+- If the endpoint is not AMS, the existing short discovery timeout fails open and replays the queued calls unchanged.
+- If files must change, the old process never releases the stale queue; restart/reconnect loads the new mod set.
+- If no files need changing, the current client sends `AMS4_Ready`, then replays its queued calls in original order.
 
-### Required regressions
+### Server side
 
-2.6.1 cannot release until live/deterministic tests demonstrate:
+Before ordinary third-party `OnNewConnection` prefixes can send version traffic, AMS arms a per-`ZRpc` outbound quarantine.
 
-- **No password submitted:** zero protected AMS metadata and zero synchronized bytes are disclosed.
-- **Wrong password:** zero protected AMS metadata and zero synchronized bytes are disclosed.
-- **Correct password:** AMS becomes available only after the server accepts the password, and normal synchronization can proceed.
-- **Malicious/early AMS RPC:** deliberately sending AMS requests before authentication reveals no protected state and transfers no bytes.
-- **Connection isolation:** authentication of connection A cannot authorize connection B.
-- **Disconnect revocation:** closing an authenticated connection immediately removes its AMS authorization.
-- **Reconnect:** a restarted/reconnected client must authenticate normally again before AMS can resume.
-- **No-password server:** released 2.6.0 fail-open discovery/synchronization behavior remains unchanged.
-- **Compatibility:** existing AMS4/Jotunn-style handshake-order behavior remains valid; the patch must not reintroduce the pre-2.5 compatibility problem.
-- **2.6.0 regression:** existing 2.6.0 transfer/cache/resume/scheduler/apply/ownership behavior remains otherwise unchanged.
+- AMS4 messages are allowed through.
+- Core server denial/password controls (`Error`, `Disconnect`, `ClientHandshake`) are never delayed.
+- Other early server RPCs are queued and bounded.
+- For current peers, `AMS4_Ready` releases the queue only after the password/disclosure gate is satisfied.
+- For legacy/non-AMS flows, normal `ServerHandshake` (or a bounded non-AMS timeout) releases the queue.
+- Disconnect discards queued stale traffic.
 
-## Release implementation rule
+A current AMS peer cannot invoke `ServerHandshake` early to bypass this ordering; current peers must reach AMS readiness first.
 
-Do not opportunistically fix unrelated issues while implementing this boundary.
+This is generic by design. AMS does not special-case Warfare, ServerSync, Jotunn, Epic Loot, or another individual mod.
 
-Allowed changes are limited to:
+## First-contact trust and licensing boundary
 
-1. the minimum client/server connection-state changes required to place AMS behind successful password authentication on password-protected servers;
-2. focused tests/harness changes proving the boundary;
-3. comments/docs directly explaining the boundary;
-4. the normal version bump to 2.6.1 and version-specific release notes/metadata required to build and publish a distinct release.
+The native first-contact trust prompt states that:
 
-If implementation uncovers an unrelated bug, record it for 2.6.2+ rather than expanding 2.6.1 unless it makes the password boundary impossible to implement safely.
+- the server is asking permission to install/update executable BepInEx mod files;
+- synchronized mods are executable code and should be accepted only from a trusted server operator;
+- choosing **Yes** confirms permission to receive the server-provided mods/configuration; and
+- AutoModSync does not verify or enforce third-party licensing or redistribution requirements.
 
-## Explicitly deferred to 2.6.2 and beyond
+## Required regression matrix before release
 
-The following previously discussed work is **not part of 2.6.1**:
+2.6.1 cannot be tagged/published until tests cover:
 
-- removing the Apply helper's forced Valheim termination fallback;
-- fixing stale first-contact trust dialogs after connection timeout/failure;
-- adding redistribution-policy files to every release package;
-- changing store publication to promote canonical Distribution Packages artifacts instead of recompiling;
-- broader patch-release/readiness refactoring;
-- deterministic/reproducible compiler work;
-- expanded Defender/Microsoft release-gate changes beyond the release process already used for 2.6.0;
-- verify-only / do-not-transfer required mods;
-- provider handoff/acquisition UX for Nexus, Thunderstore, CurseForge, or other authorized sources;
+- no password submitted: zero protected AMS metadata/bytes;
+- wrong password: zero protected AMS metadata/bytes;
+- correct password: protected discovery begins only after accepted authentication;
+- captured/replayed old auth response does not authenticate a new challenge/connection;
+- early/malicious AMS bundle RPC cannot bypass auth;
+- connection A authorization cannot authorize connection B;
+- disconnect/reconnect revokes auth and requires normal authentication again;
+- no-password server still follows normal AMS discovery/sync;
+- non-AMS server still receives its original RPC/handshake flow after the short fail-open window;
+- stale client Warfare/ServerSync vs newer server Warfare can reach AMS, update, restart, reconnect, then pass compatibility;
+- current matching ServerSync/Jotunn-style peers still pass compatibility after AMS readiness;
+- changed-sync path never replays stale pre-update compatibility RPCs;
+- queue overflow is bounded/fail-closed for recognized AMS sessions;
+- existing 2.6.0 transfer/cache/resume/scheduler/path/apply/ownership regressions remain green.
+
+## Explicitly deferred
+
+Unless a new issue is itself a security boundary or necessary compatibility fix for that boundary, defer it to 2.6.2+:
+
+- provider handoff/acquisition UX;
+- verify-only required mods;
 - broad UI redesign;
-- new transfer algorithms, throughput tuning, synchronization roots, or protocol features.
+- new transfer algorithms/tuning;
+- new synchronization roots;
+- packaging/store workflow redesign;
+- unrelated cleanup/refactors.
 
-Those items are tracked separately for **2.6.2+** so this access-control correction can be released independently.
+## Release rule
 
-## Recommended implementation/release order
-
-1. Start from the exact released 2.6.0 baseline or otherwise prove the candidate contains no unrelated post-2.6.0 runtime/package changes.
-2. Reproduce the current behavior on a password-protected test server.
-3. Identify the exact Valheim server-side password-acceptance point and the compatibility handshake ordering around it.
-4. Implement the minimum per-connection authorization gate.
-5. Add the password-boundary regression matrix.
-6. Rerun the relevant existing 2.6.0 regression/live gates to prove no unrelated behavior changed.
-7. Bump only required version/release metadata to 2.6.1.
-8. Freeze the candidate.
-9. Tag **`v2.6.1`** and build/verify the exact release artifacts using the existing release process.
-10. Publish 2.6.1 as its own release.
-11. Resume deferred work under 2.6.2+.
-
-## Release-note headline
-
-The 2.6.1 release notes should be intentionally narrow:
-
-> **AutoModSync 2.6.1 closes a password-protected-server access-control gap.** On servers that require a Valheim password, AutoModSync will not expose synchronization details or allow synchronized mods/configuration files to be downloaded until the server has accepted the correct password for that connection. Other AutoModSync behavior remains aligned with 2.6.0.
-
-Password protection still does **not** itself grant a server operator redistribution rights for third-party mods; that separate licensing responsibility remains unchanged.
+Do not merge, tag, or publish v2.6.1 based only on static source gates. The password path and preflight quarantine both alter live connection ordering and require real Valheim/BepInEx validation first.
