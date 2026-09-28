@@ -128,6 +128,7 @@ internal static class AutoModSyncInstaller
 
         internal int ExitCode { get; private set; }
 
+        // Intent: Builds the visible same-user updater window and binds it to the exact Valheim PID and fixed AutoModSync state root supplied by Client.dll.
         internal ApplyProgressForm(int waitPid, string amsRoot)
         {
             Text = "Valheim AutoModSync Updater";
