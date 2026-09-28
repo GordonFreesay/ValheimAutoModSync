@@ -1,5 +1,7 @@
 # AutoModSync 2.6 implementation ledger
 
+> **2.6.1 architecture note:** the 2.6.0 standalone `ValheimAutoModSync.Apply.exe` helper described in historical phase notes was removed in 2.6.1. The same transaction engine now lives inside the single signed/attested `ValheimAutoModSyncInstaller.exe`, which waits visibly for a normal Valheim exit and never force-terminates it.
+
 This document is the repository-authoritative change ledger for AutoModSync 2.6 development.
 
 ## Development baseline
@@ -180,10 +182,10 @@ This document is the repository-authoritative change ledger for AutoModSync 2.6 
 | `Source/ValheimAutoModSync.Client.cs` browser badge | Uses the confirmed `ServerElement/name` row structure and `m_filteredList` index mapping to query only visible dedicated rows for the public Steam `automodsync` rule. Queries are capped at four outstanding requests, positive/negative results are cached, abandoned queries time out, and the existing embedded AMS logo is inserted as a non-interactive 18px child of the server-name field. The advertised server name is never rewritten. `Discovery.ShowServerBadges` can disable the presentation. |
 | `Source/ValheimAutoModSync.Client.cs` | Maps the existing trusted synchronization decisions into `AutoModSyncUiState` and renders a gray/charcoal/orange branded IMGUI panel for trust, compare, queue, download, verification, apply/restart, reconnect, completion, and failure. The client embeds the canonical AMS logo and degrades to text branding if that resource cannot be decoded. Development builds also contain a one-shot presentation-only preview that cycles all major states without opening a connection or changing files. |
 | `build-branding-assets.ps1` | Generates a multi-size PNG-backed Windows ICO from the canonical tracked AMS package logo so executable branding has one reproducible source asset. |
-| `build-dev.bat` | Embeds the AMS PNG resource into the development client, references Unity ImageConversion for runtime PNG decoding, generates the helper ICO, embeds it into `ValheimAutoModSync.Apply.exe`, and retains the standalone ICO beside the development helper. |
-| `build-release.bat` | Applies the same embedded client-logo and helper-icon path to release compilation, embeds the icon into the standalone installer, and packages physical ICO files beside the user-facing executables. Release builds still omit all `AMS_DEV_TESTS` preview hooks. |
-| `deploy-dev.ps1` | Deploys and SHA-256 verifies the generated helper ICO beside the exact development Apply helper location in addition to the runtime binaries. |
-| `build-thunderstore.ps1` / `build-modsite-package.ps1` / `install.bat` | Keep `ValheimAutoModSync.Apply.ico` beside `ValheimAutoModSync.Apply.exe` for package-manager, Nexus/CurseForge, and standalone installation paths. |
+| `build-dev.bat` | Builds the development Client/Server DLLs plus the single branded installer/updater executable; transaction fault hooks are linked into that installer under `AMS_DEV_TESTS`. |
+| `build-release.bat` | Builds/signs the Client/Server DLLs and the single branded installer/updater executable. It does not compile or package a standalone Apply helper. Release builds omit all `AMS_DEV_TESTS` hooks. |
+| `deploy-dev.ps1` | Deploys and SHA-256 verifies Client/Server plus the installer/updater beside the active client DLL and into the standalone server migration payload. |
+| `build-modsite-package.ps1` / `install.bat` | Nexus/CurseForge and standalone paths use the same `ValheimAutoModSyncInstaller.exe`; `install.bat` is only a transparent compatibility launcher. Thunderstore publication is deferred pending policy fit. |
 | `tests/test-phase7-ui-state.ps1` | Deterministically validates the production presentation model: reset, comparison counters, transfer rate/ETA/progress, resume accounting, queue/verification bounds, and cross-session reset. |
 | `tests/test-phase7-identity-display.ps1` | Compiles the production identity-display helper and verifies deterministic 64-bit code formatting, invalid-input behavior, full technical formatting, and absence of legacy full/partial fingerprint presentation from normal client UI. |
 | `tests/test-phase7-server-browser-presence.ps1` | Arms the one-shot live browser-structure probe and verifies the dedicated server logged successful publication of the passive Steam AMS rule marker before badge rendering is implemented. |
