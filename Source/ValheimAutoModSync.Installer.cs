@@ -650,8 +650,19 @@ internal static class AutoModSyncInstaller
 
                 AppendLog("");
                 AppendLog("INSTALL COMPLETE");
+                bool installedServerRole = _serverRole.Checked || _hostRole.Checked;
+                if (installedServerRole)
+                {
+                    AppendLog("SERVER OPERATOR RESPONSIBILITY: AutoModSync does not grant redistribution rights for third-party mods. Confirm that every synchronized third-party file may be provided to connecting clients.");
+                }
+
                 ExitCode = 0;
-                MessageBox.Show(this, "Valheim AutoModSync " + ProductVersion + " installed successfully.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                string completionMessage = "Valheim AutoModSync " + ProductVersion + " installed successfully.";
+                if (installedServerRole)
+                {
+                    completionMessage += "\r\n\r\nServer operator responsibility: AutoModSync does not grant redistribution rights for third-party mods. You are responsible for ensuring every synchronized third-party file may be provided to connecting clients.";
+                }
+                MessageBox.Show(this, completionMessage, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
