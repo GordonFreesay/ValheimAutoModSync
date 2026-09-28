@@ -30,7 +30,7 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 - Automatic reconnect to the server that triggered synchronization.
 - Existing extra client plugins are not automatically deleted.
 - One installer supports Client, Dedicated Server, and Host & Play roles.
-- One shared semantic version is used across the standalone, Nexus Mods, CurseForge, and Thunderstore/r2modman packages.
+- One shared semantic version is used across the packages published for a release. The 2.6.1 publication targets are GitHub, Nexus Mods, and CurseForge; Thunderstore/r2modman publication is deferred pending separate policy fit.
 
 ## Installation
 
@@ -54,7 +54,7 @@ Launch Valheim or the dedicated server normally after installation.
 
 ## Distribution channels
 
-AutoModSync uses one shared version across every channel. The current software version is **2.6.0** whether it is installed from the standalone GitHub release, Nexus Mods, CurseForge, or Thunderstore/r2modman.
+AutoModSync uses one shared version across the channels published for a given release. The current public 2.6.0 packages remain available through their existing channels; the 2.6.1 release-candidate publication targets are GitHub, Nexus Mods, and CurseForge, with Thunderstore/r2modman deferred pending separate policy fit.
 
 Store-specific archive names identify packaging targets only; they do not create separate AutoModSync versions or separate GitHub releases. See `DISTRIBUTION.md` for the build/publishing workflows and required store credentials.
 
@@ -88,7 +88,7 @@ The generated server private signing identity (`BepInEx/config/ValheimAutoModSyn
 High-level layout of the checked-in source tree:
 
 ```text
-Source/                         AutoModSync C# client/server/apply/installer and shared safety/state code
+Source/                         AutoModSync C# client/server/installer-updater and shared safety/state code
 Server/                         Example dedicated-server configuration
 Thunderstore/                   Thunderstore/r2modman metadata, README, changelog, notices, icon, and tcli config
 ModSites/                       Nexus Mods / CurseForge package documentation
@@ -125,7 +125,7 @@ There are intentionally no nested `README.txt` files; the Markdown documents abo
 
 Local builds can run `build-release.bat` on a Windows PC with Valheim installed. The builder uses the Windows .NET Framework C# compiler to build the managed AutoModSync components and produces the runtime files used by the release package. These generated payloads are ignored by Git; a source checkout is not itself an install package.
 
-The root `VERSION` file is the authoritative distribution version. `verify-version.ps1` checks the client/server plugin versions and all AutoModSync assembly/installer versions before a release build. `build-all-releases.bat` builds the standalone, Nexus, CurseForge, and Thunderstore packages from the same compiled binaries.
+The root `VERSION` file is the authoritative distribution version. `verify-version.ps1` checks the client/server plugin versions and all AutoModSync assembly/installer versions before a release build. The repository can still build a Thunderstore compatibility artifact, but 2.6.1 publication is scoped to standalone GitHub, Nexus, and CurseForge unless Thunderstore policy fit is separately confirmed.
 
 The repository also contains `.github/workflows/release-build.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, generates SHA-256 checksums, and creates GitHub/Sigstore build-provenance attestations for official GitHub-built artifacts. The Windows PE files remain Authenticode-unsigned unless trusted signing credentials are configured. Optional SignPath submission remains dormant unless such credentials become available.
 
