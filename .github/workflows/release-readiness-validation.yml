@@ -13,6 +13,7 @@ on:
       - "SIGNING.md"
       - "VERIFYING-RELEASES.md"
       - "RELEASE-NOTES-2.6.0.md"
+      - "RELEASE-NOTES-2.6.1.md"
       - "TESTING-2.6.md"
       - "Thunderstore/**"
       - "ModSites/**"
