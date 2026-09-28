@@ -43,8 +43,9 @@ foreach ($needle in @(
 )) {
     Require $helper $needle 'Private-key ACL helper'
 }
-if ($helper.IndexOf('WindowsIdentity',[StringComparison]::Ordinal) -ge 0) {
-    throw 'Private-key ACL helper must not depend on WindowsIdentity; Valheim Mono does not implement the required SID/token APIs.'
+if ($helper.IndexOf('WindowsIdentity.GetCurrent',[StringComparison]::Ordinal) -ge 0 -or
+    $helper.IndexOf('using System.Security.Principal;',[StringComparison]::Ordinal) -ge 0) {
+    throw 'Private-key ACL helper must not depend on managed WindowsIdentity APIs; Valheim Mono does not implement the required SID/token path.'
 }
 if ($helper.IndexOf('File.SetAccessControl',[StringComparison]::Ordinal) -ge 0 -or
     $helper.IndexOf('File.GetAccessControl',[StringComparison]::Ordinal) -ge 0) {
