@@ -97,6 +97,7 @@ namespace ValheimAutoModSync
         private static readonly Dictionary<ZRpc, List<HeldRpcInvocation>> HeldPreflightInvocations = new Dictionary<ZRpc, List<HeldRpcInvocation>>();
         private static readonly Dictionary<ZRpc, DateTime> PreflightQuarantineStartedUtc = new Dictionary<ZRpc, DateTime>();
         private const int MaxHeldPreflightInvocations = 2048;
+        private const int MaxInactivePreflightMinutes = 30;
         private static bool _allowPreflightInvoke;
         private static FieldInfo _serverPasswordField;
         private static MethodInfo _serverPasswordSaltMethod;
@@ -489,6 +490,29 @@ namespace ValheimAutoModSync
             int qt;
             for (qt = 0; qt < quarantineTimeouts.Count; qt++)
                 ReleaseServerPreflightQuarantine(quarantineTimeouts[qt], "non-AMS discovery timeout");
+
+            // A recognized peer cannot hold authentication/trust/quarantine state forever without progressing.
+            // Active or queued bundle transfers use their existing transfer/scheduler timeouts and are not capped here.
+            List<ZRpc> expiredPreflights = new List<ZRpc>();
+            foreach (ZRpc rpc in AmsPreflightPeers)
+            {
+                if (remove.Contains(rpc) || PreflightReadyPeers.Contains(rpc)) continue;
+                if (BundleTransfers.ContainsKey(rpc) || PendingBundleRequests.ContainsKey(rpc)) continue;
+                DateTime started;
+                if (PreflightQuarantineStartedUtc.TryGetValue(rpc, out started)
+                    && started != DateTime.MinValue
+                    && (now - started).TotalMinutes >= MaxInactivePreflightMinutes)
+                    expiredPreflights.Add(rpc);
+            }
+            int ep;
+            for (ep = 0; ep < expiredPreflights.Count; ep++)
+            {
+                ZRpc rpc = expiredPreflights[ep];
+                SendError(rpc, "AutoModSync preflight expired before synchronization progressed. Reconnect to try again.");
+                DiscardServerPreflightQuarantine(rpc);
+                try { if (rpc.GetSocket() != null) rpc.GetSocket().Close(); } catch { }
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync closed an inactive preflight that exceeded the bounded preflight lifetime.");
+            }
 
             int i;
             for (i = 0; i < idle.Count; i++)
