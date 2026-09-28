@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2.6.1
+- Removed standalone `ValheimAutoModSync.Apply.exe`; the signed/attested `ValheimAutoModSyncInstaller.exe` now performs the same transactional post-exit apply/recovery work.
+- Runtime updates are visible, wait for Valheim to exit normally, never force-kill the game, and do not request elevation; install/repair/uninstall uses normal UAC only when required.
 
 - Defines 2.6.1 as the security/connection-boundary hardening release for the 2.6 line.
 - Password-protected servers expose only AMS presence/version/protocol, authentication-required state, and an opaque one-time random challenge before authentication; signing identity, manifest/content metadata, synchronized paths/hashes/sizes/configuration, bundle/cache state, transfer capabilities, and synchronized bytes remain withheld.
