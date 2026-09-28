@@ -174,12 +174,14 @@ internal static class AutoModSyncInstaller
             FormClosed += new FormClosedEventHandler(DisposeProcess);
         }
 
+        // Intent: Starts polling only after the updater window is visibly presented to the user.
         private void ShownStart(object sender, EventArgs e)
         {
             _waitTimer.Start();
             WaitTick(sender, e);
         }
 
+        // Intent: Waits passively for the exact Valheim process to exit on its own; it never terminates or signals that process.
         private void WaitTick(object sender, EventArgs e)
         {
             if (_applyStarted) return;
@@ -191,6 +193,7 @@ internal static class AutoModSyncInstaller
             BeginApply();
         }
 
+        // Intent: Begins transactional file replacement only after the original Valheim process is confirmed closed.
         private void BeginApply()
         {
             if (_applyStarted) return;
@@ -226,12 +229,14 @@ internal static class AutoModSyncInstaller
             worker.Start();
         }
 
+        // Intent: Prevents user closure only during the short live-write transaction so PREPARED/COMMITTED recovery invariants are not needlessly interrupted.
         private void ClosingGuard(object sender, FormClosingEventArgs e)
         {
             if (_applyStarted && !_finished)
                 e.Cancel = true;
         }
 
+        // Intent: Releases the read-only process handle and timer when the visible updater window closes.
         private void DisposeProcess(object sender, FormClosedEventArgs e)
         {
             _waitTimer.Stop();
