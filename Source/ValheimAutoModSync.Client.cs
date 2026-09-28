@@ -1442,6 +1442,12 @@ namespace ValheimAutoModSync
             for (oi = 0; oi < owned.Count; oi++)
             {
                 AutoModSyncOwnershipEntry prior = owned[oi];
+
+                // Installer/updater is 2.6.1 local core, not server-owned synchronized content. Relinquish any
+                // development/prerelease ledger entry rather than ever scheduling the running updater for stale deletion.
+                if (prior.Kind == 'P' && String.Equals(prior.RelativePath, "ValheimAutoModSyncInstaller.exe", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 string key = prior.Kind + ":" + prior.RelativePath;
                 if (manifestByKey.ContainsKey(key)) continue;
 
