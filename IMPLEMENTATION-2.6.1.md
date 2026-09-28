@@ -92,6 +92,7 @@ While AMS preflight owns the exact connection:
 - AMS4 traffic is allowed.
 - Other outbound RPCs, including third-party version/compatibility RPCs and Valheim `ServerHandshake`, are queued in original invocation order.
 - Queue length is bounded; overflow fails closed for a recognized AMS session.
+- A genuine client `Disconnect` is never trapped behind the quarantine, so cancellation/timeouts can close the connection immediately.
 - If the endpoint is not AMS, the existing short discovery timeout fails open and replays the queued calls unchanged.
 - If files must change, the old process never releases the stale queue; restart/reconnect loads the new mod set.
 - If no files need changing, the current client sends `AMS4_Ready`, then replays its queued calls in original order.
@@ -106,6 +107,7 @@ Before ordinary third-party `OnNewConnection` prefixes can send version traffic,
 - For current peers, `AMS4_Ready` releases the queue only after the password/disclosure gate is satisfied.
 - For legacy/non-AMS flows, normal `ServerHandshake` (or a bounded non-AMS timeout) releases the queue.
 - Disconnect discards queued stale traffic.
+- A recognized preflight that does not progress and has no active/queued bundle transfer is closed after a bounded 30-minute lifetime instead of retaining authentication/quarantine state indefinitely.
 
 A current AMS peer cannot invoke `ServerHandshake` early to bypass this ordering; current peers must reach AMS readiness first.
 
@@ -137,6 +139,8 @@ The native first-contact trust prompt states that:
 - current matching ServerSync/Jotunn-style peers still pass compatibility after AMS readiness;
 - changed-sync path never replays stale pre-update compatibility RPCs;
 - queue overflow is bounded/fail-closed for recognized AMS sessions;
+- user/client cancellation during preflight disconnects immediately instead of being queued;
+- an inactive recognized preflight cannot retain auth/quarantine state beyond the configured hard lifetime;
 - existing 2.6.0 transfer/cache/resume/scheduler/path/apply/ownership regressions remain green.
 
 ## Explicitly deferred
