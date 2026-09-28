@@ -1450,7 +1450,7 @@ namespace ValheimAutoModSync
 
                 if (String.Equals(pluginRoot, actualDir, StringComparison.OrdinalIgnoreCase)) return false;
 
-                return File.Exists(Path.Combine(actualDir, "ValheimAutoModSync.Apply.exe"));
+                return File.Exists(Path.Combine(actualDir, "ValheimAutoModSyncInstaller.exe"));
             }
             catch
             {
@@ -1473,6 +1473,7 @@ namespace ValheimAutoModSync
 
             return String.Equals(name, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)
                 || String.Equals(name, "ValheimAutoModSync.Server.dll", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(name, "ValheimAutoModSyncInstaller.exe", StringComparison.OrdinalIgnoreCase)
                 || String.Equals(name, "ValheimAutoModSync.Apply.exe", StringComparison.OrdinalIgnoreCase);
         }
 
@@ -1962,8 +1963,8 @@ namespace ValheimAutoModSync
             AbortAutoModSyncJoin(message);
         }
 
-        // Intent: Persists the verified pending-file list and reconnect token, launches the external apply helper, disconnects cleanly, then schedules Valheim to quit.
-        // Reason: loaded plugin DLLs cannot be safely replaced in-process, so file replacement occurs after this process exits.
+        // Intent: Persists the verified pending-file list and reconnect token, launches the visible signed installer/updater, disconnects cleanly, then schedules Valheim to quit.
+        // Reason: loaded plugin DLLs cannot be safely replaced in-process; the updater waits for a normal Valheim exit and never force-terminates the game.
         private static void BeginApplyAndRestart()
         {
             if (_restartRequested) return;
@@ -2003,15 +2004,15 @@ namespace ValheimAutoModSync
 
                 PersistPackageManagedLaunchContext(amsRoot);
 
-                string helper = FindApplyHelper(amsRoot);
-                if (!File.Exists(helper)) throw new FileNotFoundException("AutoModSync apply helper is missing.", helper);
+                string updater = FindInstallerUpdater(amsRoot);
+                if (!File.Exists(updater)) throw new FileNotFoundException("AutoModSync installer/updater is missing.", updater);
 
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = helper;
-                psi.Arguments = Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
+                psi.FileName = updater;
+                psi.Arguments = "--apply-pending " + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
                 psi.UseShellExecute = false;
-                psi.CreateNoWindow = true;
-                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                psi.CreateNoWindow = false;
+                psi.WindowStyle = ProcessWindowStyle.Normal;
                 Process.Start(psi);
 
                 ShowSyncOverlay(AutoModSyncUiPhase.Restarting,
@@ -2038,7 +2039,7 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Publishes the verified pending-file list atomically and durably before launching the helper.
+        // Intent: Publishes the verified pending-file list atomically and durably before launching the updater.
         // Safety: a temporary file is flushed with write-through semantics, then renamed on the same volume; an existing pending request is treated as recovery state instead of being overwritten.
         // Intent: Writes the versioned Phase 6 apply plan durably; write entries name verified staging files and delete entries carry the last-owned digest.
         private static void WritePendingFileDurable(string pendingPath, IList<string> entries)
@@ -2076,7 +2077,7 @@ namespace ValheimAutoModSync
             return "W|" + entry.Kind + "|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(rel));
         }
 
-        // Intent: Encodes deletion authority from the exact last-owned digest; the apply helper rechecks these bytes after Valheim exits before deleting anything.
+        // Intent: Encodes deletion authority from the exact last-owned digest; the installer/updater rechecks these bytes after Valheim exits before deleting anything.
         private static string MakePendingDeleteEntry(AutoModSyncOwnershipEntry entry)
         {
             if (entry == null || !IsSupportedManifestKind(entry.Kind) || entry.Size < 0 || !IsSha256Hex(entry.Sha256))
@@ -2154,21 +2155,29 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Locates the apply helper beside a package-managed plugin when present, otherwise uses the normal BepInEx/AutoModSync helper path.
-        private static string FindApplyHelper(string amsRoot)
+        // Intent: Locates the single signed installer/updater beside the active AutoModSync client plugin.
+        // Migration: there is deliberately no fallback to legacy ValheimAutoModSync.Apply.exe.
+        private static string FindInstallerUpdater(string amsRoot)
         {
             try
             {
                 string pluginDir = Path.GetDirectoryName(typeof(ClientPlugin).Assembly.Location);
                 if (!String.IsNullOrEmpty(pluginDir))
                 {
-                    string packaged = Path.Combine(pluginDir, "ValheimAutoModSync.Apply.exe");
+                    string packaged = Path.Combine(pluginDir, "ValheimAutoModSyncInstaller.exe");
                     if (File.Exists(packaged)) return packaged;
+                }
+
+                string pluginRoot = Paths.PluginPath;
+                if (!String.IsNullOrEmpty(pluginRoot))
+                {
+                    string standalone = Path.Combine(pluginRoot, "ValheimAutoModSyncInstaller.exe");
+                    if (File.Exists(standalone)) return standalone;
                 }
             }
             catch { }
 
-            return Path.Combine(amsRoot, "ValheimAutoModSync.Apply.exe");
+            return "";
         }
 
         // Intent: Arms the 2.5.0 pre-handshake gate for one outgoing ZRpc before vanilla ServerHandshake is emitted.
@@ -4638,25 +4647,25 @@ namespace ValheimAutoModSync
             return File.Exists(pending) || Directory.Exists(transaction);
         }
 
-        // Intent: Immediately hands interrupted transaction recovery back to the external helper, then exits this mixed/uncertain process without joining any server.
+        // Intent: Immediately hands interrupted transaction recovery back to the installer/updater, then exits this mixed/uncertain process without joining any server.
         // Workflow: the helper waits for this PID to exit, resolves PREPARED as rollback/retry or COMMITTED as cleanup, preserves reconnect state when safe, and owns the next relaunch.
         private static void ScheduleRecoveredStagingRestart()
         {
             string amsRoot = GetAutoModSyncRoot();
-            string helper = FindApplyHelper(amsRoot);
-            if (!File.Exists(helper)) throw new FileNotFoundException("AutoModSync apply helper is missing during staged-file recovery.", helper);
+            string updater = FindInstallerUpdater(amsRoot);
+            if (!File.Exists(updater)) throw new FileNotFoundException("AutoModSync installer/updater is missing during staged-file recovery.", updater);
 
             ProcessStartInfo psi = new ProcessStartInfo();
-            psi.FileName = helper;
-            psi.Arguments = Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
+            psi.FileName = updater;
+            psi.Arguments = "--apply-pending " + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
             psi.UseShellExecute = false;
-            psi.CreateNoWindow = true;
-            psi.WindowStyle = ProcessWindowStyle.Hidden;
+            psi.CreateNoWindow = false;
+            psi.WindowStyle = ProcessWindowStyle.Normal;
             Process.Start(psi);
 
             _restartRequested = true;
             _quitAfterUtc = DateTime.UtcNow.AddMilliseconds(900.0);
-            if (_instance != null) _instance.Logger.LogWarning("AutoModSync detected unfinished transactional apply state; handing recovery to the external helper and restarting before any server join.");
+            if (_instance != null) _instance.Logger.LogWarning("AutoModSync detected unfinished transactional apply state; handing recovery to the installer/updater and restarting before any server join.");
         }
 
     }
