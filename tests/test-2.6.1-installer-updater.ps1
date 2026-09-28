@@ -57,7 +57,6 @@ if (Test-Path -LiteralPath $legacyApplySource) {
 }
 foreach ($item in @(
     @($releaseBuild,'release build'),
-    @($devBuild,'development build'),
     @($modsite,'Nexus/CurseForge package'),
     @($thunderstore,'package-manager compatibility builder'),
     @($signing,'signing documentation')
@@ -65,6 +64,10 @@ foreach ($item in @(
     Forbid $item[0] 'ValheimAutoModSync.Apply.exe' $item[1]
     Forbid $item[0] 'ValheimAutoModSync.Apply.cs' $item[1]
 }
+Forbid $devBuild '/out:"%OUT%\ValheimAutoModSync.Apply.exe"' 'development build'
+Forbid $devBuild 'ValheimAutoModSync.Apply.cs' 'development build'
+Require $devBuild 'Legacy ValheimAutoModSync.Apply.exe unexpectedly exists in DevBuild.' 'development stale-output guard'
+Require $devBuild 'Could not completely remove the previous DevBuild directory.' 'development clean-output guard'
 Write-Host '  PASS'
 
 Write-Host '[2/8] Single installer/updater carries transactional engine...'
