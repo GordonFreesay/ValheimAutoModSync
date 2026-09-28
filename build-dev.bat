@@ -72,6 +72,8 @@ set "UNITY_IMGUI=%BEPROOT%\unstripped_corlib\UnityEngine.IMGUIModule.dll"
 if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%MANAGED%\UnityEngine.IMGUIModule.dll"
 set "UNITY_TEXT=%BEPROOT%\unstripped_corlib\UnityEngine.TextRenderingModule.dll"
 if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%MANAGED%\UnityEngine.TextRenderingModule.dll"
+set "UNITY_INPUT=%BEPROOT%\unstripped_corlib\UnityEngine.InputLegacyModule.dll"
+if not exist "%UNITY_INPUT%" set "UNITY_INPUT=%MANAGED%\UnityEngine.InputLegacyModule.dll"
 
 if not exist "%GAME_DLL%" (
   echo ERROR: Valheim managed references were not found under "%MANAGED%".
@@ -117,6 +119,7 @@ set "REFS=%OUT%\refs.rsp"
 >>"%REFS%" echo /reference:"%UNITY_CORE%"
 >>"%REFS%" echo /reference:"%UNITY_IMGUI%"
 >>"%REFS%" echo /reference:"%UNITY_TEXT%"
+>>"%REFS%" echo /reference:"%UNITY_INPUT%"
 >>"%REFS%" echo /reference:"%SPLATFORM_DLL%"
 >>"%REFS%" echo /reference:"%STEAMWORKS_DLL%"
 >>"%REFS%" echo /reference:"%NETSTANDARD_DLL%"
