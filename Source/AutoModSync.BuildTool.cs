@@ -218,18 +218,18 @@ internal static class BuildTool
     }
 
     // Intent: Legacy one-file bootstrap packer retained for historical tooling compatibility; current transparent releases do not use the packed version.dll design.
-    // Workflow: embeds only pinned bootstrap/runtime inputs plus AutoModSync files, records offsets/sizes/hashes in a manifest, and appends an AMS package footer.
-    private static int Pack(string templatePath, string outputPath, string bootstrapRoot, string clientDll, string helperExe)
+    // Workflow: embeds only pinned bootstrap/runtime inputs plus the AutoModSync client and installer/updater, records offsets/sizes/hashes in a manifest, and appends an AMS package footer.
+    private static int Pack(string templatePath, string outputPath, string bootstrapRoot, string clientDll, string installerExe)
     {
         templatePath = Path.GetFullPath(templatePath);
         outputPath = Path.GetFullPath(outputPath);
         bootstrapRoot = Path.GetFullPath(bootstrapRoot);
         clientDll = Path.GetFullPath(clientDll);
-        helperExe = Path.GetFullPath(helperExe);
+        installerExe = Path.GetFullPath(installerExe);
 
         if (!File.Exists(templatePath)) throw new FileNotFoundException("version.dll template missing", templatePath);
         if (!File.Exists(clientDll)) throw new FileNotFoundException("client plugin missing", clientDll);
-        if (!File.Exists(helperExe)) throw new FileNotFoundException("apply helper missing", helperExe);
+        if (!File.Exists(installerExe)) throw new FileNotFoundException("installer/updater missing", installerExe);
 
         List<Entry> entries = new List<Entry>();
         // bootstrapRoot must be the verified pinned stock BepInExPack extraction,
@@ -241,7 +241,7 @@ internal static class BuildTool
         // Do not embed BepInEx/patchers. AutoModSync needs no client patcher, and copying
         // a live server patchers directory could accidentally distribute unrelated code.
         AddFile(entries, 'A', clientDll, "BepInEx/plugins/ValheimAutoModSync.Client.dll", true);
-        AddFile(entries, 'A', helperExe, "BepInEx/AutoModSync/ValheimAutoModSync.Apply.exe", true);
+        AddFile(entries, 'A', installerExe, "BepInEx/plugins/ValheimAutoModSyncInstaller.exe", true);
 
         string outDir = Path.GetDirectoryName(outputPath);
         if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
