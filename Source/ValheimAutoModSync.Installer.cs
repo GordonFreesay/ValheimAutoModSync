@@ -1126,19 +1126,39 @@ internal static class AutoModSyncInstaller
             else AppendLog("WARNING: unknown version.dll preserved.");
         }
 
-        // Intent: Creates the server RSA identity only when absent; otherwise reuses the existing private identity and rewrites only its corresponding public-key file.
+        // Intent: Creates the server RSA identity only when absent; a newly created private key is ACL-hardened immediately, while existing identities are left for the actual server runtime account to re-harden on startup.
+        // Compatibility: this avoids an elevated repair/install session accidentally replacing a deliberate service-account ACL before the dedicated server process can assert its real runtime identity.
         private void EnsureIdentity(string privatePath, string publicPath)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(privatePath));
             string publicXml;
+            bool generatedNow = false;
             using (RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048))
             {
                 rsa.PersistKeyInCsp = false;
-                if (File.Exists(privatePath)) rsa.FromXmlString(File.ReadAllText(privatePath).Trim());
-                else File.WriteAllText(privatePath, rsa.ToXmlString(true) + Environment.NewLine, new UTF8Encoding(false));
+                if (File.Exists(privatePath))
+                {
+                    rsa.FromXmlString(File.ReadAllText(privatePath).Trim());
+                }
+                else
+                {
+                    File.WriteAllText(privatePath, rsa.ToXmlString(true) + Environment.NewLine, new UTF8Encoding(false));
+                    generatedNow = true;
+                    try
+                    {
+                        ValheimAutoModSync.AutoModSyncPrivateKeySecurity.HardenPrivateKeyFile(privatePath);
+                    }
+                    catch
+                    {
+                        try { if (File.Exists(privatePath)) File.Delete(privatePath); } catch { }
+                        throw;
+                    }
+                }
                 publicXml = rsa.ToXmlString(false);
             }
             File.WriteAllText(publicPath, publicXml + Environment.NewLine, new UTF8Encoding(false));
+            if (generatedNow) AppendLog("Created server signing identity with restrictive Windows ACL protection.");
+            else AppendLog("Existing server signing identity preserved; the server process will verify/re-harden its ACL for the actual runtime account on startup.");
             using (SHA256 sha = SHA256.Create())
             {
                 string fingerprint = ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(publicXml)));
