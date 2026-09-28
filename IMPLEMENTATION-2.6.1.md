@@ -72,6 +72,21 @@ Once the 2.6.1 client is running, `ValheimAutoModSyncInstaller.exe` becomes **lo
 
 Nexus Mods and CurseForge are the intended mod-site package targets for this release. Thunderstore publication is not part of 2.6.1 release qualification unless its redistribution/policy fit is confirmed separately.
 
+## Private signing-key ACL hardening
+
+2.6.1 treats `ValheimAutoModSync.private.xml` as a server credential rather than ordinary configuration.
+
+On Windows the shared `AutoModSyncPrivateKeySecurity` primitive:
+
+- disables ACL inheritance on the private-key file;
+- replaces broad/inherited access with explicit Full Control for the current Windows process identity, LocalSystem, and local Administrators only;
+- verifies the resulting DACL before the key may be used;
+- is linked into the server, installer, and BuildTool identity-generation paths.
+
+New keys created by installer/BuildTool are secured immediately. Existing identities are re-hardened by the actual server process at startup so upgrades converge on the real runtime account. A key that cannot be secured/verified is not used for signing; a newly generated identity is deleted if hardening fails.
+
+This is deliberately ACL hardening rather than DPAPI/CNG migration in 2.6.1, avoiding machine/account-lock-in and backup/export incompatibilities immediately before release.
+
 ## Password-protected server boundary
 
 A password-protected server must not disclose protected AMS state or synchronized bytes until the exact live connection proves the correct Valheim password.
