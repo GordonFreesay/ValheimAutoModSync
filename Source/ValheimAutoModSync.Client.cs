@@ -3304,8 +3304,8 @@ namespace ValheimAutoModSync
                              "This short code is derived from the server's full signing-key fingerprint for human comparison only. " +
                              "AutoModSync verifies and pins the complete identity internally.\r\n\r\n" +
                              "BepInEx mods are executable code and can act with the permissions of your Valheim process/user account. Only trust servers whose operator you trust to provide code.\r\n\r\n" +
-                             "By choosing Yes, you also confirm that you have permission to receive any mods or configuration files provided by this server. " +
-                             "AutoModSync is not responsible for verifying or enforcing third-party mod licensing or redistribution requirements; by choosing Yes, you confirm that permission yourself.\r\n\r\n" +
+                             "Choosing Yes authorizes this server to provide synchronized executable mod files and configuration to this PC.\r\n\r\n" +
+                             "Third-party content is provided by the server operator. AutoModSync does not determine or verify third-party licensing or redistribution rights.\r\n\r\n" +
                              "Choose Yes only if you intended to join this server. If this first contact was unexpected, compare the code with one published by the server owner.";
 
             Thread thread = new Thread(delegate()
