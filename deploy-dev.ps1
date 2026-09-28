@@ -17,10 +17,9 @@ $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $devRoot = Join-Path $repoRoot 'DevBuild'
 $srcClient = Join-Path $devRoot 'ValheimAutoModSync.Client.dll'
 $srcServer = Join-Path $devRoot 'ValheimAutoModSync.Server.dll'
-$srcApply = Join-Path $devRoot 'ValheimAutoModSync.Apply.exe'
-$srcApplyIcon = Join-Path $devRoot 'ValheimAutoModSync.Apply.ico'
+$srcInstaller = Join-Path $devRoot 'ValheimAutoModSyncInstaller.exe'
 
-foreach ($path in @($srcClient,$srcServer,$srcApply,$srcApplyIcon)) {
+foreach ($path in @($srcClient,$srcServer,$srcInstaller)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw ("Development runtime is missing: " + $path + [Environment]::NewLine + "Run .\\build-dev.bat first.")
     }
@@ -67,25 +66,13 @@ $clientRoot = Normalize-Root $ClientBepInEx 'Client BepInEx root'
 $clientPlugins = Join-Path $clientRoot 'plugins'
 $clientTarget = Resolve-SingleInstalledFile $clientPlugins 'ValheimAutoModSync.Client.dll' (Join-Path $clientPlugins 'ValheimAutoModSync.Client.dll') 'Client plugin'
 
-# Package-manager installs keep Apply.exe beside the client DLL. Standalone installs keep it in BepInEx\AutoModSync.
+# The installer/updater is always deployed beside the active client DLL so package-managed and standalone layouts use one lookup rule.
 $clientPluginDir = Split-Path -Parent $clientTarget
-$packagedApply = Join-Path $clientPluginDir 'ValheimAutoModSync.Apply.exe'
-if (Test-Path -LiteralPath $packagedApply -PathType Leaf) {
-    $applyTarget = $packagedApply
-} else {
-    $applyTarget = Join-Path (Join-Path $clientRoot 'AutoModSync') 'ValheimAutoModSync.Apply.exe'
-    $applyParent = Split-Path -Parent $applyTarget
-    if (-not (Test-Path -LiteralPath $applyParent -PathType Container)) {
-        New-Item -ItemType Directory -Path $applyParent -Force | Out-Null
-    }
-}
-
-$applyIconTarget = Join-Path (Split-Path -Parent $applyTarget) 'ValheimAutoModSync.Apply.ico'
+$installerTarget = Join-Path $clientPluginDir 'ValheimAutoModSyncInstaller.exe'
 
 $rows = @()
 $rows += Copy-Verified $srcClient $clientTarget 'Client'
-$rows += Copy-Verified $srcApply $applyTarget 'Apply helper'
-$rows += Copy-Verified $srcApplyIcon $applyIconTarget 'Apply helper icon'
+$rows += Copy-Verified $srcInstaller $installerTarget 'Installer/updater'
 
 if (-not [String]::IsNullOrWhiteSpace($ServerBepInEx)) {
     $serverRoot = Normalize-Root $ServerBepInEx 'Server BepInEx root'
@@ -103,10 +90,14 @@ if (-not [String]::IsNullOrWhiteSpace($ServerBepInEx)) {
     }
     $rows += Copy-Verified $srcClient $clientPayloadTarget 'Server client payload'
 
-    $releaseTarget = Join-Path (Join-Path $serverAms 'release') 'ValheimAutoModSync.Client.dll'
-    if (Test-Path -LiteralPath $releaseTarget -PathType Leaf) {
-        $rows += Copy-Verified $srcClient $releaseTarget 'Server release client payload'
+    $releaseRoot = Join-Path $serverAms 'release'
+    $releaseTarget = Join-Path $releaseRoot 'ValheimAutoModSync.Client.dll'
+    $releaseInstaller = Join-Path $releaseRoot 'ValheimAutoModSyncInstaller.exe'
+    if (-not (Test-Path -LiteralPath $releaseRoot -PathType Container)) {
+        New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
     }
+    $rows += Copy-Verified $srcClient $releaseTarget 'Server release client payload'
+    $rows += Copy-Verified $srcInstaller $releaseInstaller 'Server release installer/updater payload'
 }
 
 Write-Host ''
