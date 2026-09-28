@@ -220,28 +220,52 @@ namespace ValheimAutoModSync
             throw new UnauthorizedAccessException(message + ". Win32 error " + error + ".");
         }
 
-        // Intent: Returns the pseudo-handle for the current process so its access token can be queried without opening another process handle.\n        [DllImport("kernel32.dll")]\n        private static extern IntPtr GetCurrentProcess();
+        [DllImport("kernel32.dll")]
+        // Intent: Returns the pseudo-handle for the current process so its access token can be queried without opening another process handle.
+        private static extern IntPtr GetCurrentProcess();
 
-        // Intent: Releases the native process-token handle acquired for current-user SID discovery.\n        [DllImport("kernel32.dll", SetLastError = true)]\n        private static extern bool CloseHandle(IntPtr handle);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        // Intent: Releases the native process-token handle acquired for current-user SID discovery.
+        private static extern bool CloseHandle(IntPtr handle);
 
-        // Intent: Releases LocalAlloc-backed buffers returned by Windows SID/security-descriptor conversion APIs.\n        [DllImport("kernel32.dll")]\n        private static extern IntPtr LocalFree(IntPtr memory);
+        [DllImport("kernel32.dll")]
+        // Intent: Releases LocalAlloc-backed buffers returned by Windows SID/security-descriptor conversion APIs.
+        private static extern IntPtr LocalFree(IntPtr memory);
 
-        // Intent: Opens the current process token with query access so AutoModSync can determine the exact runtime account SID.\n        [DllImport("advapi32.dll", SetLastError = true)]\n        private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        // Intent: Opens the current process token with query access so AutoModSync can determine the exact runtime account SID.
+        private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
 
-        // Intent: Reads TOKEN_USER data from the current process token for exact runtime-account SID discovery.\n        [DllImport("advapi32.dll", SetLastError = true)]\n        private static extern bool GetTokenInformation(IntPtr tokenHandle, int tokenInformationClass, IntPtr tokenInformation, uint tokenInformationLength, out uint returnLength);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        // Intent: Reads TOKEN_USER data from the current process token for exact runtime-account SID discovery.
+        private static extern bool GetTokenInformation(IntPtr tokenHandle, int tokenInformationClass, IntPtr tokenInformation, uint tokenInformationLength, out uint returnLength);
 
-        // Intent: Converts a native SID into canonical S-1-... text for deterministic ACL allow-list comparison.\n        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]\n        private static extern bool ConvertSidToStringSidW(IntPtr sid, out IntPtr stringSid);
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        // Intent: Converts a native SID into canonical S-1-... text for deterministic ACL allow-list comparison.
+        private static extern bool ConvertSidToStringSidW(IntPtr sid, out IntPtr stringSid);
 
-        // Intent: Converts the protected exact-principal SDDL string into a native security descriptor for DACL application.\n        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]\n        private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string stringSecurityDescriptor, uint stringSdRevision, out IntPtr securityDescriptor, out uint securityDescriptorSize);
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        // Intent: Converts the protected exact-principal SDDL string into a native security descriptor for DACL application.
+        private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string stringSecurityDescriptor, uint stringSdRevision, out IntPtr securityDescriptor, out uint securityDescriptorSize);
 
-        // Intent: Extracts the DACL pointer from the generated native security descriptor before applying it to the private-key file.\n        [DllImport("advapi32.dll", SetLastError = true)]\n        private static extern bool GetSecurityDescriptorDacl(IntPtr securityDescriptor, out bool daclPresent, out IntPtr dacl, out bool daclDefaulted);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        // Intent: Extracts the DACL pointer from the generated native security descriptor before applying it to the private-key file.
+        private static extern bool GetSecurityDescriptorDacl(IntPtr securityDescriptor, out bool daclPresent, out IntPtr dacl, out bool daclDefaulted);
 
-        // Intent: Applies the protected exact-principal DACL to the private-key file without changing owner, group, or SACL.\n        [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]\n        private static extern uint SetNamedSecurityInfoW(string objectName, int objectType, uint securityInfo, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+        // Intent: Applies the protected exact-principal DACL to the private-key file without changing owner, group, or SACL.
+        private static extern uint SetNamedSecurityInfoW(string objectName, int objectType, uint securityInfo, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
 
-        // Intent: Reads the applied file security descriptor and DACL back from Windows for independent post-write verification.\n        [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]\n        private static extern uint GetNamedSecurityInfoW(string objectName, int objectType, uint securityInfo, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr securityDescriptor);
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+        // Intent: Reads the applied file security descriptor and DACL back from Windows for independent post-write verification.
+        private static extern uint GetNamedSecurityInfoW(string objectName, int objectType, uint securityInfo, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr securityDescriptor);
 
-        // Intent: Reads security-descriptor control flags so verification can require that DACL inheritance is disabled.\n        [DllImport("advapi32.dll", SetLastError = true)]\n        private static extern bool GetSecurityDescriptorControl(IntPtr securityDescriptor, out ushort control, out uint revision);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        // Intent: Reads security-descriptor control flags so verification can require that DACL inheritance is disabled.
+        private static extern bool GetSecurityDescriptorControl(IntPtr securityDescriptor, out ushort control, out uint revision);
 
-        // Intent: Enumerates individual DACL ACEs so verification can reject unexpected principals, flags, rule types, or rights.\n        [DllImport("advapi32.dll", SetLastError = true)]\n        private static extern bool GetAce(IntPtr acl, int aceIndex, out IntPtr ace);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        // Intent: Enumerates individual DACL ACEs so verification can reject unexpected principals, flags, rule types, or rights.
+        private static extern bool GetAce(IntPtr acl, int aceIndex, out IntPtr ace);
     }
 }
