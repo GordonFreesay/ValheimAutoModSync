@@ -479,7 +479,7 @@ namespace ValheimAutoModSync
             List<ZRpc> quarantineTimeouts = new List<ZRpc>();
             foreach (ZRpc rpc in PreflightQuarantinePeers)
             {
-                if (AmsPreflightPeers.Contains(rpc)) continue;
+                if (AmsPreflightPeers.Contains(rpc) || remove.Contains(rpc)) continue;
                 DateTime started;
                 if (PreflightQuarantineStartedUtc.TryGetValue(rpc, out started)
                     && started != DateTime.MinValue
@@ -1252,9 +1252,6 @@ namespace ValheimAutoModSync
                 || String.Equals(method, "ClientHandshake", StringComparison.Ordinal);
         }
 
-        // 2.6.1 defense-in-depth: once an AMS-aware passworded connection has entered the protected
-        // preflight, a modified client cannot invoke the normal ServerHandshake early to trigger
-        // third-party compatibility/version exchange before this exact connection is authenticated.
         // 2.6.1 defense-in-depth: an AMS-aware connection cannot enter the vanilla/third-party
         // compatibility stage until the password boundary and AMS synchronization boundary are both satisfied.
         [HarmonyPatch(typeof(ZNet), "RPC_ServerHandshake")]
