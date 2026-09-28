@@ -14,6 +14,27 @@ A Thunderstore/r2modman package builder remains in the repository for compatibil
 
 The 2.6.1 Nexus/CurseForge artifacts contain the AutoModSync client/server DLLs and the single `ValheimAutoModSyncInstaller.exe`; they do not contain `ValheimAutoModSync.Apply.exe`, a generic downloader, or arbitrary third-party gameplay mods.
 
+## 2.6.1 store package layout
+
+For **Nexus Mods and CurseForge**, `ValheimAutoModSyncInstaller.exe` is now a required runtime component and is included in the store ZIP beside the AutoModSync DLLs under the package's BepInEx plugin directory.
+
+The intended layout is:
+
+```text
+BepInEx/
+  plugins/
+    GordonFreesay-ValheimAutoModSync/
+      ValheimAutoModSync.Client.dll
+      ValheimAutoModSync.Server.dll
+      ValheimAutoModSyncInstaller.exe
+```
+
+The store package intentionally does **not** contain `ValheimAutoModSync.Apply.exe`.
+
+This differs from the old architecture where the standalone installer was only an installation surface and a separate Apply helper performed post-exit replacement. In 2.6.1 the installer executable is also the required visible transactional updater, so omitting it from a store package would make synchronized apply/restart impossible.
+
+The installer/updater is not used to install BepInEx when launched by AMS runtime update mode. Store users still obtain BepInEx through the store/package-manager requirement; runtime `--apply-pending` runs as the current user and only applies already-verified staged AMS changes.
+
 ## Artifacts
 
 | Channel | Version shown to users | Artifact | Purpose |
