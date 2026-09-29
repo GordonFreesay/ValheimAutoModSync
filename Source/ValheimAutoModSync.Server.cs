@@ -1466,7 +1466,7 @@ namespace ValheimAutoModSync
                 // Never release world state, compatibility results, or gameplay traffic from this bootstrap connection.
                 DiscardServerPreflightQuarantine(rpc);
                 if (_instance != null)
-                    _instance.Logger.LogInfo("AutoModSync verified the 2.6.0 client through Valheim's normal server password; reconnect once to consume the one-use 2.6.1 migration grant.");
+                    _instance.Logger.LogInfo("AutoModSync verified server access for the 2.6.0 client through Valheim's normal server-key check; reconnect once to consume the one-use 2.6.1 migration grant.");
 
                 try { rpc.Invoke("Disconnect", new object[0]); } catch { }
                 try { if (rpc.GetSocket() != null) rpc.GetSocket().Close(); } catch { }
