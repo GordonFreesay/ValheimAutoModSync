@@ -1,14 +1,14 @@
-# AutoModSync 2.6.1 security-hardening plan
+# AutoModSync 2.6.1 security-hardening release record
 
-This document is the authoritative scope for Valheim AutoModSync **2.6.1**.
+This document records the approved scope and implemented security/compatibility architecture for Valheim AutoModSync **2.6.1**. Live qualification evidence is recorded in `TESTING-2.6.md`.
 
 ## Release purpose
 
-**2.6.0 is the feature release. 2.6.1 is the security and connection-boundary hardening release for the 2.6 line.**
+**2.6.0 was the feature release. 2.6.1 is the released security and connection-boundary hardening update for the 2.6 line.**
 
-2.6.1 should not add unrelated product features, transfer tuning, new synchronization roots, provider acquisition flows, or broad UI work. It may include security changes and compatibility fixes that are necessary to make the security/preflight model reliable.
+The 2.6.1 scope was intentionally limited to security changes and compatibility work required to make the protected-server/preflight model reliable; unrelated product features, provider acquisition flows, new synchronization roots, broad UI work, and transfer redesigns remained deferred.
 
-Baseline public release: **2.6.0**. Protocol remains **AMS4 / protocol 4**; new behavior is negotiated with capabilities/RPCs.
+Predecessor public release: **2.6.0**. Current release: **2.6.1**. Protocol remains **AMS4 / protocol 4**; newer behavior is negotiated with capabilities/RPCs.
 
 ## Security model
 
@@ -52,7 +52,7 @@ The runtime/distribution contract is now:
 
 - `ValheimAutoModSync.Client.dll`;
 - `ValheimAutoModSync.Server.dll`; and
-- one signed/attested `ValheimAutoModSyncInstaller.exe`, which owns install/repair/uninstall **and** the post-exit transactional apply/recovery path.
+- one `ValheimAutoModSyncInstaller.exe`, which owns install/repair/uninstall **and** the post-exit transactional apply/recovery path.
 
 The client never replaces loaded BepInEx DLLs in-process. After verified staging and durable pending state are written, it launches the installer with the private `--apply-pending` mode, requests a normal Valheim disconnect/quit, and exits. The updater presents a visible ordinary Windows UI and waits passively for that exact Valheim process to exit.
 
@@ -66,7 +66,7 @@ Security/trust requirements:
 - the existing PREPARED/COMMITTED journal, durable backups, rollback/recovery, path/reparse checks, pre/post-write digests, and ownership transition remain the apply authority;
 - no packer, obfuscator, self-decrypting payload, custom preloader, or custom bootstrap loader is introduced.
 
-For the one-time 2.6.0 -> 2.6.1 migration, a standalone 2.6.1 server's signed release payload contains both the 2.6.1 client DLL and the signed installer/updater. On a public server, a 2.6.0 client can stage both directly using its existing 2.6.0 apply path. On a password-protected server, released 2.6.0 cannot speak `password-auth2` and also has a fixed short preflight timeout, so the server uses a constrained two-stage bridge: the first connection receives no protected AMS state and performs Valheim's normal password verification; after Valheim accepts that exact peer, the server records a five-minute, memory-only, one-use migration grant bound to a SHA-256 of that platform peer identity, discards quarantined gameplay/mod traffic, and closes the bootstrap connection. The same 2.6.0 identity reconnects once to consume that grant for synchronization only. Migration authorization cannot pass `ServerHandshake` into gameplay. After the old helper stages the 2.6.1 client DLL plus installer and restarts Valheim, the 2.6.1 client uses the normal exact-connection `password-auth2` boundary and only the installer/updater; it never falls back to legacy `Apply.exe`.
+For the one-time 2.6.0 -> 2.6.1 migration, a standalone 2.6.1 server's authenticated release payload contains both the 2.6.1 client DLL and the installer/updater. On a public server, a 2.6.0 client can stage both directly using its existing 2.6.0 apply path. On a password-protected server, released 2.6.0 cannot speak `password-auth2` and also has a fixed short preflight timeout, so the server uses a constrained two-stage bridge: the first connection receives no protected AMS state and performs Valheim's normal password verification; after Valheim accepts that exact peer, the server records a five-minute, memory-only, one-use migration grant bound to a SHA-256 of that platform peer identity, discards quarantined gameplay/mod traffic, and closes the bootstrap connection. The same 2.6.0 identity reconnects once to consume that grant for synchronization only. Migration authorization cannot pass `ServerHandshake` into gameplay. After the old helper stages the 2.6.1 client DLL plus installer and restarts Valheim, the 2.6.1 client uses the normal exact-connection `password-auth2` boundary and only the installer/updater; it never falls back to legacy `Apply.exe`.
 
 Once the 2.6.1 client is running, `ValheimAutoModSyncInstaller.exe` becomes **local AMS core**, not server-owned mod content. The 2.6.1 client ignores later server attempts to replace that executable and refuses the join with a repair/reinstall message if the local updater is missing. This intentionally avoids self-updating a running executable, temporary executable copies, reboot rename tricks, shell scripts, or other behavior that would reduce scanner/user trust.
 
@@ -167,9 +167,9 @@ The native first-contact trust prompt is a **client security decision**, not a l
 
 The joining player is **not** asked to represent that they personally verified redistribution permission for the server's mod set. The server operator selects and distributes those files and is responsible for ensuring that every synchronized third-party file may be redistributed under its applicable license/permissions.
 
-## Required regression matrix before release
+## Release qualification matrix
 
-2.6.1 cannot be tagged/published until tests cover:
+The 2.6.1 release was not tagged until the required static and live qualification covered:
 
 - no password submitted: zero protected AMS metadata/bytes;
 - wrong password: zero protected AMS metadata/bytes;
@@ -188,7 +188,7 @@ The joining player is **not** asked to represent that they personally verified r
 - an inactive recognized preflight cannot retain auth/quarantine state beyond the configured hard lifetime;
 - existing 2.6.0 transfer/cache/resume/scheduler/path/apply/ownership regressions remain green;
 - final release/store archives contain no `ValheimAutoModSync.Apply.exe`;
-- the exact signed/attested installer/updater performs a live apply/restart/reconnect successfully without elevation or forced process termination;
+- the exact release installer/updater performs a live apply/restart/reconnect successfully without elevation or forced process termination;
 - a real 2.6.0 -> 2.6.1 upgrade receives the installer/updater before the 2.6.1 client needs it.
 
 ## Explicitly deferred
@@ -203,6 +203,6 @@ Unless a new issue is itself a security boundary or necessary compatibility fix 
 - packaging/store workflow redesign;
 - unrelated cleanup/refactors.
 
-## Release rule
+## Release result
 
-Do not merge, tag, or publish v2.6.1 based only on static source gates. The password path and preflight quarantine both alter live connection ordering and require real Valheim/BepInEx validation first.
+The release rule was satisfied before `v2.6.1` was tagged: static gates were supplemented by real Valheim/BepInEx validation, including the protected server-access boundary, stale-mod preflight isolation, the released-2.6.0 migration bridge, updater apply/restart/reconnect, and a normal post-migration 2.6.1 join. See `TESTING-2.6.md` for the dated evidence.
