@@ -92,6 +92,12 @@ namespace ValheimAutoModSync
         private static readonly HashSet<ZRpc> PasswordChallengePeers = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> PasswordAuthorizedPeers = new HashSet<ZRpc>();
         private static readonly Dictionary<ZRpc, PasswordAuthChallenge> PasswordAuthChallenges = new Dictionary<ZRpc, PasswordAuthChallenge>();
+        // 2.6.0 cannot speak password-auth2. Its migration bridge first performs Valheim's normal password verification,
+        // then grants the same platform peer one short-lived, one-use reconnect that may fetch migration data but may not enter gameplay.
+        private static readonly HashSet<ZRpc> Legacy260PasswordBootstrapPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> Legacy260MigrationAuthorizedPeers = new HashSet<ZRpc>();
+        private static readonly Dictionary<string, DateTime> Legacy260MigrationGrants = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        private const int Legacy260MigrationGrantMinutes = 5;
         private static readonly HashSet<ZRpc> PreflightReadyPeers = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> PreflightQuarantinePeers = new HashSet<ZRpc>();
         private static readonly Dictionary<ZRpc, List<HeldRpcInvocation>> HeldPreflightInvocations = new Dictionary<ZRpc, List<HeldRpcInvocation>>();
@@ -437,12 +443,22 @@ namespace ValheimAutoModSync
         // Intent: Reclaims disconnected queued/active peers and active slots whose connected clients stopped requesting data.
         private static void CleanupDisconnectedOrIdleTransfers(DateTime now)
         {
+            // Legacy 2.6.0 migration grants are deliberately short-lived and memory-only. Expire unused grants
+            // independently of socket cleanup so a completed password check never creates durable authorization.
+            List<string> expiredLegacyGrants = new List<string>();
+            foreach (KeyValuePair<string, DateTime> grant in Legacy260MigrationGrants)
+                if (grant.Value == DateTime.MinValue || now > grant.Value) expiredLegacyGrants.Add(grant.Key);
+            int lg;
+            for (lg = 0; lg < expiredLegacyGrants.Count; lg++) Legacy260MigrationGrants.Remove(expiredLegacyGrants[lg]);
+
             HashSet<ZRpc> candidates = new HashSet<ZRpc>();
             foreach (ZRpc rpc in PendingBundleRequests.Keys) candidates.Add(rpc);
             foreach (ZRpc rpc in BundleTransfers.Keys) candidates.Add(rpc);
             foreach (ZRpc rpc in AmsPreflightPeers) candidates.Add(rpc);
             foreach (ZRpc rpc in PasswordChallengePeers) candidates.Add(rpc);
             foreach (ZRpc rpc in PasswordAuthorizedPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in Legacy260PasswordBootstrapPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in Legacy260MigrationAuthorizedPeers) candidates.Add(rpc);
             foreach (ZRpc rpc in PreflightQuarantinePeers) candidates.Add(rpc);
             foreach (ZRpc rpc in PasswordAuthChallenges.Keys) candidates.Add(rpc);
 #if AMS_DEV_TESTS
@@ -535,6 +551,8 @@ namespace ValheimAutoModSync
                 PasswordChallengePeers.Remove(rpc);
                 PasswordAuthChallenges.Remove(rpc);
                 PasswordAuthorizedPeers.Remove(rpc);
+                Legacy260PasswordBootstrapPeers.Remove(rpc);
+                Legacy260MigrationAuthorizedPeers.Remove(rpc);
                 DiscardServerPreflightQuarantine(rpc);
 #if AMS_DEV_TESTS
                 DevelopmentLegacyServerPeers.Remove(rpc);
@@ -1308,7 +1326,21 @@ namespace ValheimAutoModSync
 
                 if (AmsPreflightPeers.Contains(rpc))
                 {
-                    if (IsPasswordProtectedServer() && !CanDiscloseProtectedSyncState(rpc))
+                    if (Legacy260PasswordBootstrapPeers.Contains(rpc))
+                    {
+                        // 2.6.0 releases its held ServerHandshake after its fixed discovery timeout. The server already
+                        // sent ClientHandshake directly, so suppress this duplicate while the existing password dialog remains valid.
+                        if (_instance != null) _instance.Logger.LogDebug("AutoModSync suppressed duplicate 2.6.0 ServerHandshake while Valheim password verification is pending.");
+                        return false;
+                    }
+
+                    if (Legacy260MigrationAuthorizedPeers.Contains(rpc) && !PasswordAuthorizedPeers.Contains(rpc))
+                    {
+                        if (_instance != null) _instance.Logger.LogWarning("AutoModSync blocked gameplay handshake on a migration-only 2.6.0 authorization.");
+                        return false;
+                    }
+
+                    if (IsPasswordProtectedServer() && !PasswordAuthorizedPeers.Contains(rpc))
                     {
                         if (_instance != null) _instance.Logger.LogWarning("AutoModSync blocked an early Valheim ServerHandshake until the password boundary is satisfied.");
                         return false;
@@ -1331,16 +1363,44 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(ZNet), "RPC_PeerInfo")]
         private static class ProtectedPeerInfoGatePatch
         {
-            [HarmonyPriority(Priority.First + 100)]
-            // Intent: Blocks an AMS-aware passworded peer from sending vanilla PeerInfo before that exact connection authenticates.
+            [HarmonyPriority(Priority.First + 200)]
+            // Intent: Current AMS peers may not use vanilla PeerInfo to bypass password-auth2.
+            // The sole exception is an exact 2.6.0 bootstrap peer, whose PeerInfo must run so Valheim itself can validate the password before any AMS migration disclosure.
             private static bool Prefix(ZNet __instance, ZRpc rpc)
             {
                 if (__instance == null || !__instance.IsServer() || rpc == null || !AmsPreflightPeers.Contains(rpc)) return true;
                 if (!IsPasswordProtectedServer()) return true;
-                if (CanDiscloseProtectedSyncState(rpc)) return true;
+                if (Legacy260PasswordBootstrapPeers.Contains(rpc)) return true;
+                if (PasswordAuthorizedPeers.Contains(rpc)) return true;
                 try { rpc.Invoke("Error", new object[] { 6 }); } catch { }
                 if (_instance != null) _instance.Logger.LogWarning("AutoModSync blocked pre-authentication PeerInfo on an AMS-aware passworded connection.");
                 return false;
+            }
+
+            [HarmonyPriority(Priority.Last)]
+            // Intent: A 2.6.0 migration grant is created only after the original Valheim PeerInfo handler has accepted this exact peer.
+            // The authenticated connection is then closed without releasing quarantined gameplay/mod traffic; the next same-identity join consumes the grant for migration only.
+            private static void Postfix(ZNet __instance, ZRpc rpc)
+            {
+                if (__instance == null || !__instance.IsServer() || rpc == null || !Legacy260PasswordBootstrapPeers.Contains(rpc)) return;
+                if (!IsPasswordProtectedServer() || !IsValheimPeerReady(__instance, rpc)) return;
+
+                Legacy260PasswordBootstrapPeers.Remove(rpc);
+                if (!IssueLegacy260MigrationGrant(rpc))
+                {
+                    DiscardServerPreflightQuarantine(rpc);
+                    SendError(rpc, "AutoModSync could not bind the authenticated 2.6.0 migration reconnect to this platform peer.");
+                    try { if (rpc.GetSocket() != null) rpc.GetSocket().Close(); } catch { }
+                    return;
+                }
+
+                // Never release world state, compatibility results, or gameplay traffic from this bootstrap connection.
+                DiscardServerPreflightQuarantine(rpc);
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync verified the 2.6.0 client through Valheim's normal server password; reconnect once to consume the one-use 2.6.1 migration grant.");
+
+                try { rpc.Invoke("Disconnect", new object[0]); } catch { }
+                try { if (rpc.GetSocket() != null) rpc.GetSocket().Close(); } catch { }
             }
         }
 
@@ -1449,14 +1509,85 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Allows protected synchronization disclosure only to public servers or the exact connected ZRpc that proved the password.
-        // The current Valheim password must still be configured when authorization is checked.
+        // Intent: Limits the compatibility exception to the exact released 2.6.0 client; older AMS4 clients remain unable to use the migration bridge.
+        private static bool IsLegacy260MigrationClient(ZRpc rpc)
+        {
+            string version;
+            if (rpc == null || !ClientVersions.TryGetValue(rpc, out version)) return false;
+            version = (version ?? "").Trim();
+            return String.Equals(version, "2.6.0", StringComparison.Ordinal)
+                || String.Equals(version, "2.6.0.0", StringComparison.Ordinal);
+        }
+
+        // Intent: Derives an in-memory migration-grant key from the platform/socket peer identity without retaining or logging that identity in plaintext.
+        // Security: the grant is useful only to the same platform peer, expires quickly, is consumed once, and is never written to disk.
+        private static string Legacy260MigrationIdentityKey(ZRpc rpc)
+        {
+            if (rpc == null) return "";
+            try
+            {
+                string identity = rpc.GetSocket() == null ? "" : (rpc.GetSocket().GetHostName() ?? "");
+                if (String.IsNullOrWhiteSpace(identity)) return "";
+                using (SHA256 sha = SHA256.Create())
+                    return ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes("AMS260-MIGRATION\0" + identity)));
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        // Intent: Issues one short-lived migration reconnect only after Valheim itself accepted the legacy client's password-bearing PeerInfo.
+        private static bool IssueLegacy260MigrationGrant(ZRpc rpc)
+        {
+            string key = Legacy260MigrationIdentityKey(rpc);
+            if (key.Length != 64) return false;
+            Legacy260MigrationGrants[key] = DateTime.UtcNow.AddMinutes(Legacy260MigrationGrantMinutes);
+            return true;
+        }
+
+        // Intent: Consumes a prior successful Valheim-password authorization exactly once for the same 2.6.0 platform peer.
+        // Scope: consumption authorizes migration data only; it is intentionally not added to PasswordAuthorizedPeers and cannot authorize gameplay.
+        private static bool TryConsumeLegacy260MigrationGrant(ZRpc rpc)
+        {
+            string key = Legacy260MigrationIdentityKey(rpc);
+            if (key.Length != 64) return false;
+
+            DateTime expiresUtc;
+            if (!Legacy260MigrationGrants.TryGetValue(key, out expiresUtc)) return false;
+            Legacy260MigrationGrants.Remove(key);
+            return expiresUtc != DateTime.MinValue && DateTime.UtcNow <= expiresUtc;
+        }
+
+        // Intent: Confirms that Valheim's original RPC_PeerInfo accepted this exact socket before a legacy migration grant can be issued.
+        // Wrong passwords, bans, capacity/version failures, and third-party prefixes that stop the original handler all leave the peer not ready.
+        private static bool IsValheimPeerReady(ZNet instance, ZRpc rpc)
+        {
+            if (instance == null || rpc == null) return false;
+            try
+            {
+                List<ZNetPeer> peers = instance.GetPeers();
+                if (peers == null) return false;
+                int i;
+                for (i = 0; i < peers.Count; i++)
+                {
+                    ZNetPeer peer = peers[i];
+                    if (peer != null && peer.m_rpc == rpc) return peer.IsReady();
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        // Intent: Allows protected synchronization disclosure to public servers, the exact current ZRpc that proved password-auth2,
+        // or the exact one-use 2.6.0 migration reconnect created only after an earlier vanilla password success by the same platform peer.
+        // Migration authorization is deliberately separate from gameplay authorization and is blocked from ServerHandshake below.
         private static bool CanDiscloseProtectedSyncState(ZRpc rpc)
         {
             string passwordHash;
             if (!TryGetServerPasswordHash(out passwordHash)) return false;
             if (String.IsNullOrEmpty(passwordHash)) return true;
-            if (rpc == null || !PasswordAuthorizedPeers.Contains(rpc)) return false;
+            if (rpc == null || (!PasswordAuthorizedPeers.Contains(rpc) && !Legacy260MigrationAuthorizedPeers.Contains(rpc))) return false;
             try { return rpc.IsConnected(); } catch { return false; }
         }
 
@@ -1532,15 +1663,50 @@ namespace ValheimAutoModSync
             if (String.IsNullOrEmpty(expectedHash)) return true;
             if (CanDiscloseProtectedSyncState(rpc)) return true;
 
-            PasswordAuthChallenge challenge = GetOrCreatePasswordAuthChallenge(rpc);
-            SendAuthenticationRequiredAck(rpc, challenge.NonceBase64);
-
-            // 2.6.0 and older experimental 2.6.1 clients do not implement the non-replayable challenge response.
+            // Released 2.6.0 predates password-auth2 and has a fixed short AMS discovery timeout. Do not send it
+            // auth-required2: that old client would render its AMS overlay over Valheim's password field.
+            // Instead, first prove the normal Valheim password with zero protected AMS disclosure. A successful
+            // vanilla PeerInfo creates a short one-use reconnect grant; only that reconnect may fetch migration bytes.
             if (!ClientSupportsCapability(rpc, "password-auth2"))
             {
-                SendError(rpc, "This password-protected server requires AutoModSync 2.6.1 or newer with one-time password authentication.");
+                if (!IsLegacy260MigrationClient(rpc))
+                {
+                    SendError(rpc, "This password-protected server requires AutoModSync 2.6.0 or newer; 2.6.0 is supported only through the authenticated migration bridge to 2.6.1.");
+                    return false;
+                }
+
+                if (TryConsumeLegacy260MigrationGrant(rpc))
+                {
+                    Legacy260MigrationAuthorizedPeers.Add(rpc);
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync accepted a one-use authenticated 2.6.0 migration reconnect; protected migration synchronization may now begin.");
+                    return true;
+                }
+
+                string legacySalt;
+                if (!TryGetServerPasswordSalt(out legacySalt))
+                {
+                    SendError(rpc, "AutoModSync could not start the protected Valheim password challenge for 2.6.0 migration.");
+                    return false;
+                }
+
+                Legacy260PasswordBootstrapPeers.Add(rpc);
+                try
+                {
+                    rpc.Invoke("ClientHandshake", new object[] { true, legacySalt });
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync detected a 2.6.0 client; protected synchronization remains withheld while Valheim performs the normal server-password check.");
+                }
+                catch
+                {
+                    Legacy260PasswordBootstrapPeers.Remove(rpc);
+                    throw;
+                }
                 return false;
             }
+
+            PasswordAuthChallenge challenge = GetOrCreatePasswordAuthChallenge(rpc);
+            SendAuthenticationRequiredAck(rpc, challenge.NonceBase64);
 
             // Duplicate hello retries may occur before the first challenge is processed; never create stacked dialogs.
             if (PasswordChallengePeers.Contains(rpc)) return false;
