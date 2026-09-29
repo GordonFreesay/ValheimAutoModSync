@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the current AutoModSync release line. During the 2.6.1 release-candidate period, security reports should be evaluated against the current 2.6.1 branch as well as the latest published release.
+Security fixes are provided for the current AutoModSync release line. The current supported release is 2.6.1; reports should identify the affected version and, when relevant, whether the behavior also reproduces on current `main`.
 
 ## Reporting a vulnerability
 
@@ -21,13 +21,13 @@ AutoModSync treats the remote server and network input as untrusted until the re
 
 Issues that should be reported as security vulnerabilities include, for example:
 
-- bypassing the password boundary on a password-protected server;
-- obtaining protected manifest/mod/config information before required authentication;
-- replaying or transferring authentication state to another connection;
+- bypassing the server-access boundary on a password-protected server;
+- obtaining protected manifest/mod/config information before required server access;
+- replaying or transferring server-access authorization state to another connection;
 - bypassing server identity/signature verification or trust pinning;
 - writing, replacing, or deleting files outside AutoModSync's documented synchronization roots;
 - path traversal, alternate-path aliasing, or reparse/junction/symlink escape;
-- causing the Apply helper to operate on destinations not proven by the verified AMS transaction state;
+- causing the installer/updater transaction engine to operate on destinations not proven by the verified AMS transaction state;
 - bypassing SHA-256/manifest verification so unverified bytes become live;
 - unauthorized stale-file deletion or cross-server ownership confusion;
 - unbounded network/archive/preflight state that permits practical memory/disk exhaustion beyond documented limits;
