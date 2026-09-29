@@ -102,7 +102,9 @@ README.md                       Project overview and installation/security docum
 RELEASE-NOTES-2.6.1.md          Human-facing AutoModSync 2.6.1 release notes
 RELEASE-NOTES-2.6.0.md          Historical AutoModSync 2.6.0 release notes
 TESTING-2.6.md                  Authoritative 2.6 validation evidence and release-gate record
-IMPLEMENTATION-2.6.md           2.6 engineering/implementation record
+IMPLEMENTATION-2.6.md           Historical 2.6 engineering/development ledger
+IMPLEMENTATION-2.6.1.md         2.6.1 security-hardening release record
+IMPLEMENTATION-2.6.2.md         Post-2.6.1 planning backlog
 SOURCE-WALKTHROUGH.md           End-to-end source, trust-boundary, handshake, apply, and reconnect map
 DISTRIBUTION.md                 Versioning, artifact, attestation, and publishing policy
 SIGNING.md                      Authenticode status and GitHub/Sigstore provenance model
