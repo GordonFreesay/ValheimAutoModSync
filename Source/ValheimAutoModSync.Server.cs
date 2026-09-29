@@ -95,6 +95,7 @@ namespace ValheimAutoModSync
         // 2.6.0 cannot speak password-auth2. Its migration bridge first performs Valheim's normal password verification,
         // then grants the same platform peer one short-lived, one-use reconnect that may fetch migration data but may not enter gameplay.
         private static readonly HashSet<ZRpc> Legacy260PasswordBootstrapPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> Legacy260PasswordChallengeSentPeers = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> Legacy260MigrationAuthorizedPeers = new HashSet<ZRpc>();
         private static readonly Dictionary<string, DateTime> Legacy260MigrationGrants = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         private const int Legacy260MigrationGrantMinutes = 5;
@@ -458,6 +459,7 @@ namespace ValheimAutoModSync
             foreach (ZRpc rpc in PasswordChallengePeers) candidates.Add(rpc);
             foreach (ZRpc rpc in PasswordAuthorizedPeers) candidates.Add(rpc);
             foreach (ZRpc rpc in Legacy260PasswordBootstrapPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in Legacy260PasswordChallengeSentPeers) candidates.Add(rpc);
             foreach (ZRpc rpc in Legacy260MigrationAuthorizedPeers) candidates.Add(rpc);
             foreach (ZRpc rpc in PreflightQuarantinePeers) candidates.Add(rpc);
             foreach (ZRpc rpc in PasswordAuthChallenges.Keys) candidates.Add(rpc);
@@ -552,6 +554,7 @@ namespace ValheimAutoModSync
                 PasswordAuthChallenges.Remove(rpc);
                 PasswordAuthorizedPeers.Remove(rpc);
                 Legacy260PasswordBootstrapPeers.Remove(rpc);
+                Legacy260PasswordChallengeSentPeers.Remove(rpc);
                 Legacy260MigrationAuthorizedPeers.Remove(rpc);
                 DiscardServerPreflightQuarantine(rpc);
 #if AMS_DEV_TESTS
@@ -1328,12 +1331,37 @@ namespace ValheimAutoModSync
                 {
                     if (Legacy260PasswordBootstrapPeers.Contains(rpc))
                     {
-                        // Released 2.6.0 reaches this point only after its fixed AMS discovery timeout releases the
-                        // exact original ServerHandshake. Let Valheim process that untouched handshake and emit its normal
-                        // ClientHandshake/server-key prompt. Server-side third-party RPC quarantine remains armed, so no
-                        // compatibility/gameplay traffic is released before successful PeerInfo creates the migration grant.
-                        if (_instance != null) _instance.Logger.LogInfo("AutoModSync allowing released 2.6.0 original ServerHandshake so Valheim can perform the normal server-key check.");
-                        return true;
+                        // Released 2.6.0 first holds this original ServerHandshake for its fixed AMS discovery timeout.
+                        // Once it finally arrives here, suppress the vanilla/third-party ServerHandshake path so client-side
+                        // compatibility validators cannot disconnect before server access is checked. Only now send Valheim's
+                        // normal ClientHandshake challenge; no AMS manifest/config/bundle state is disclosed.
+                        if (Legacy260PasswordChallengeSentPeers.Contains(rpc))
+                        {
+                            if (_instance != null) _instance.Logger.LogDebug("AutoModSync suppressed a duplicate released-2.6.0 ServerHandshake while the normal server-key check is pending.");
+                            return false;
+                        }
+
+                        string legacySalt;
+                        if (!TryGetServerPasswordSalt(out legacySalt))
+                        {
+                            SendError(rpc, "AutoModSync could not start the protected Valheim server-key check for 2.6.0 migration.");
+                            if (_instance != null) _instance.Logger.LogWarning("AutoModSync could not obtain Valheim's server-key salt for the released 2.6.0 migration bootstrap.");
+                            return false;
+                        }
+
+                        Legacy260PasswordChallengeSentPeers.Add(rpc);
+                        try
+                        {
+                            rpc.Invoke("ClientHandshake", new object[] { true, legacySalt });
+                            if (_instance != null) _instance.Logger.LogInfo("AutoModSync released the normal Valheim server-key prompt for the 2.6.0 migration bootstrap; protected synchronization remains withheld.");
+                        }
+                        catch (Exception ex)
+                        {
+                            Legacy260PasswordChallengeSentPeers.Remove(rpc);
+                            SendError(rpc, "AutoModSync could not start the protected Valheim server-key check for 2.6.0 migration.");
+                            if (_instance != null) _instance.Logger.LogWarning("AutoModSync failed to send the released-2.6.0 server-key challenge: " + ex.Message);
+                        }
+                        return false;
                     }
 
                     if (Legacy260MigrationAuthorizedPeers.Contains(rpc) && !PasswordAuthorizedPeers.Contains(rpc))
@@ -1388,6 +1416,7 @@ namespace ValheimAutoModSync
                 if (!IsPasswordProtectedServer() || !IsValheimPeerReady(__instance, rpc)) return;
 
                 Legacy260PasswordBootstrapPeers.Remove(rpc);
+                Legacy260PasswordChallengeSentPeers.Remove(rpc);
                 if (!IssueLegacy260MigrationGrant(rpc))
                 {
                     DiscardServerPreflightQuarantine(rpc);
