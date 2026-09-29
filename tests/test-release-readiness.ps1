@@ -38,7 +38,13 @@ $testing = Read-Text 'TESTING-2.6.md'
 
 Assert-Contains $readme ('**Current public release: ' + $version + '**') 'README'
 Assert-Contains $readme ('ValheimAutoModSync-' + $version + '.zip') 'README'
-Assert-Contains $distribution ('every channel is **' + $version + '**') 'DISTRIBUTION'
+Assert-Contains $distribution ('current AutoModSync release is **' + $version + '**') 'DISTRIBUTION'
+Assert-Contains $distribution ('ValheimAutoModSync-' + $version + '.zip') 'DISTRIBUTION'
+if ($version -eq '2.6.1') {
+    Assert-Contains $distribution ('ValheimAutoModSync-' + $version + '-Nexus.zip') 'DISTRIBUTION'
+    Assert-Contains $distribution ('ValheimAutoModSync-' + $version + '-CurseForge.zip') 'DISTRIBUTION'
+    Assert-Contains $distribution 'Thunderstore publication is deferred for 2.6.1' 'DISTRIBUTION'
+}
 Assert-Contains $releaseNotes ('# Valheim AutoModSync ' + $version) 'Release notes'
 Assert-Contains $modSitesReadme 'AutoModSync' 'ModSites README'
 if ($version -eq '2.6.0') {
