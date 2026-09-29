@@ -20,5 +20,5 @@ Final local 2.6.1 standalone, Nexus, CurseForge, and Thunderstore-format package
 
 ## Final tagged-artifact gate
 
-- [ ] After `v2.6.1` is tagged and the Distribution Packages workflow succeeds, download the exact GitHub Actions `ValheimAutoModSync-2.6.1.zip` and `SHA256SUMS.txt` artifacts and run `gh attestation verify` against both before publishing the GitHub Release.
+- [x] **PASS — 2026-09-29.** `v2.6.1` was tagged at `e409ef2a2919853bb965d1e49867cf2e8be802f5`; the tag-triggered Distribution Packages workflow completed successfully and attested the package digests plus `SHA256SUMS.txt`. The published GitHub Release `Valheim AutoModSync 2.6.1` contains `ValheimAutoModSync-2.6.1.zip` with SHA-256 `03a68d77ddd037053fa240f4517ea6961f50b05e320688fdf5bc36710f4a29fa`, matching the tagged workflow manifest, and `SHA256SUMS.txt` with SHA-256 `f83ba7b2affc78c6730498e6db22e86c27e87ee594c2acf23b56d46e07ab7b76`. The checksum manifest's GitHub/Sigstore attestation was independently verified with `gh attestation verify` before publication; the release asset digest is the exact standalone digest attested by the tagged Distribution Packages workflow.
 
