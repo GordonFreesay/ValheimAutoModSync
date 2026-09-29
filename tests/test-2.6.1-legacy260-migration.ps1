@@ -45,6 +45,7 @@ Write-Host '  PASS only the released 2.6.0 version forms can enter the legacy mi
 Write-Host '[2/6] Checking no protected AMS acknowledgement precedes the legacy Valheim password check...'
 $ensure = Section $server 'private static bool EnsurePreflightAuthorizationOrChallenge' '// Intent: Handles the client''s one-time password response.' 'Legacy authorization selection'
 Assert-Before $ensure 'if (!ClientSupportsCapability(rpc, "password-auth2"))' 'PasswordAuthChallenge challenge = GetOrCreatePasswordAuthChallenge(rpc);' 'Legacy authorization selection'
+Assert-Before $ensure 'if (Legacy260PasswordBootstrapPeers.Contains(rpc)) return false;' 'Legacy260PasswordBootstrapPeers.Add(rpc);' 'Legacy password bootstrap idempotency'
 Assert-Before $ensure 'Legacy260PasswordBootstrapPeers.Add(rpc);' 'rpc.Invoke("ClientHandshake", new object[] { true, legacySalt });' 'Legacy password bootstrap'
 Assert-Contains $ensure 'TryConsumeLegacy260MigrationGrant(rpc)' 'One-use migration reconnect'
 Assert-Contains $ensure 'Legacy260MigrationAuthorizedPeers.Add(rpc);' 'One-use migration reconnect'
