@@ -1328,10 +1328,12 @@ namespace ValheimAutoModSync
                 {
                     if (Legacy260PasswordBootstrapPeers.Contains(rpc))
                     {
-                        // 2.6.0 releases its held ServerHandshake after its fixed discovery timeout. The server already
-                        // sent ClientHandshake directly, so suppress this duplicate while the existing password dialog remains valid.
-                        if (_instance != null) _instance.Logger.LogDebug("AutoModSync suppressed duplicate 2.6.0 ServerHandshake while Valheim password verification is pending.");
-                        return false;
+                        // Released 2.6.0 reaches this point only after its fixed AMS discovery timeout releases the
+                        // exact original ServerHandshake. Let Valheim process that untouched handshake and emit its normal
+                        // ClientHandshake/server-key prompt. Server-side third-party RPC quarantine remains armed, so no
+                        // compatibility/gameplay traffic is released before successful PeerInfo creates the migration grant.
+                        if (_instance != null) _instance.Logger.LogInfo("AutoModSync allowing released 2.6.0 original ServerHandshake so Valheim can perform the normal server-key check.");
+                        return true;
                     }
 
                     if (Legacy260MigrationAuthorizedPeers.Contains(rpc) && !PasswordAuthorizedPeers.Contains(rpc))
@@ -1683,28 +1685,15 @@ namespace ValheimAutoModSync
                     return true;
                 }
 
-                // 2.6.0 retries AMS4_Hello while waiting; the existing Valheim password dialog remains authoritative.
+                // Released 2.6.0 holds its original ServerHandshake for a fixed 3.25-second AMS discovery window.
+                // Sending a synthetic ClientHandshake here races that old gate and disturbs third-party handshake ordering.
+                // Therefore disclose nothing and send nothing: mark this exact RPC as a bootstrap peer, let 2.6.0 time out
+                // naturally, then allow its untouched original ServerHandshake below so Valheim owns the server-key check.
                 if (Legacy260PasswordBootstrapPeers.Contains(rpc)) return false;
 
-                string legacySalt;
-                if (!TryGetServerPasswordSalt(out legacySalt))
-                {
-                    SendError(rpc, "AutoModSync could not start the protected Valheim password challenge for 2.6.0 migration.");
-                    return false;
-                }
-
                 Legacy260PasswordBootstrapPeers.Add(rpc);
-                try
-                {
-                    rpc.Invoke("ClientHandshake", new object[] { true, legacySalt });
-                    if (_instance != null)
-                        _instance.Logger.LogInfo("AutoModSync detected a 2.6.0 client; protected synchronization remains withheld while Valheim performs the normal server-password check.");
-                }
-                catch
-                {
-                    Legacy260PasswordBootstrapPeers.Remove(rpc);
-                    throw;
-                }
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync detected a 2.6.0 client; protected synchronization remains withheld while its original Valheim handshake reaches the normal server-key check.");
                 return false;
             }
 
