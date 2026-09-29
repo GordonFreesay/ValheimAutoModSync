@@ -18,3 +18,7 @@ Released 2.6.0 does not automatically initiate the migration-grant reconnect its
 
 Final local 2.6.1 standalone, Nexus, CurseForge, and Thunderstore-format package builds passed the first-party PII artifact scan. Package inspection confirmed no release ZIP contains `ValheimAutoModSync.Apply.exe`. The Thunderstore-format artifact remains a build/compatibility artifact for 2.6.1 unless separate publication-policy clearance is confirmed.
 
+## Final tagged-artifact gate
+
+- [ ] After `v2.6.1` is tagged and the Distribution Packages workflow succeeds, download the exact GitHub Actions `ValheimAutoModSync-2.6.1.zip` and `SHA256SUMS.txt` artifacts and run `gh attestation verify` against both before publishing the GitHub Release.
+
