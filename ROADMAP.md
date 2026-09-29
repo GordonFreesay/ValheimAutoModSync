@@ -14,7 +14,7 @@ Future 2.x releases, if needed, are limited to maintenance:
 - release/build/provenance corrections needed to keep existing functionality shippable and verifiable; and
 - antivirus false-positive/reputation follow-up that does not expand product behavior.
 
-Previously discussed feature ideas such as provider-assisted mod acquisition, verify-only requirements, license inference, new synchronization roots, new transfer/protocol features, broad UI expansion, operator dashboards, or similar scope expansion are **not on the roadmap**.
+Previously considered feature ideas such as provider-assisted mod acquisition, verify-only requirements, license inference, new synchronization roots, new transfer/protocol features, broad UI expansion, operator dashboards, or similar scope expansion are **not on the roadmap**.
 
 ## Product boundary
 
