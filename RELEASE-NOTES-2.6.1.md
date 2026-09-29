@@ -15,15 +15,15 @@ AutoModSync 2.6.1 is the **security and connection-boundary hardening release fo
 - PREPARED/COMMITTED journaling, verified backups, rollback/recovery, path/reparse validation, hashes, and ownership rules are preserved;
 - no packer, obfuscator, self-decrypting payload, or custom loader was added.
 
-Standalone servers also provide the signed installer/updater in the 2.6.1 migration payload so an existing 2.6.0 client can receive it before the new client DLL depends on it. After that migration, the 2.6.1 client treats the updater as local AutoModSync core and does not let a game server replace the running updater. A missing updater requires an AutoModSync repair/reinstall instead of invoking a self-update workaround.
+Standalone servers also provide the release installer/updater in the 2.6.1 migration payload so an existing 2.6.0 client can receive it before the new client DLL depends on it. After that migration, the 2.6.1 client treats the updater as local AutoModSync core and does not let a game server replace the running updater. A missing updater requires an AutoModSync repair/reinstall instead of invoking a self-update workaround.
 
 The intended 2.6.1 mod-site packages are Nexus Mods and CurseForge. Thunderstore publication is deferred unless its policy fit is confirmed separately.
 
 ## Password-protected servers
 
-Password-protected servers now withhold protected AutoModSync synchronization state until the **exact live connection** proves the correct Valheim password.
+Password-protected servers now withhold protected AutoModSync synchronization state until the **exact live connection** is granted normal Valheim server access.
 
-Before authentication, AMS exposes only product presence/version/protocol, the fact that authentication is required, and an opaque random one-time challenge. It does **not** expose the server signing identity/fingerprint, manifest metadata/content, synchronized paths, hashes, sizes, configuration, bundle/cache state, transfer capabilities, or synchronized bytes.
+Before server access is granted, AMS exposes only product presence/version/protocol, the fact that server access is required, and an opaque random one-time challenge. It does **not** expose the server signing identity/fingerprint, manifest metadata/content, synchronized paths, hashes, sizes, configuration, bundle/cache state, transfer capabilities, or synchronized bytes.
 
 2.6.1 replaces the earlier reusable-verifier proof design with **`password-auth2`**:
 
@@ -33,7 +33,7 @@ Before authentication, AMS exposes only product presence/version/protocol, the f
 - The server challenge is random, exact-connection scoped, one-use, and time-bounded.
 - Authorization/challenge state is discarded when the connection ends.
 
-A restart/reconnect must authenticate normally again before protected AMS synchronization can resume.
+A restart/reconnect must complete the normal server-access check again before protected AMS synchronization can resume.
 
 ## Stale-mod compatibility preflight
 
@@ -84,7 +84,9 @@ Third-party content is provided by the server operator. AutoModSync does not det
 
 Public/no-password servers continue using AMS4/protocol 4.
 
-AutoModSync 2.6.0 and earlier clients cannot use the new password-authentication mechanism on password-protected 2.6.1 servers and fail closed rather than receiving protected synchronization data.
+Released AutoModSync 2.6.0 clients use a dedicated migration bridge on password-protected 2.6.1 servers. The first connection discloses no protected synchronization state before Valheim grants normal server access. After successful server access, the server creates a short-lived, one-use migration grant bound to the same platform identity and intentionally disconnects. A reconnect within the grant lifetime may consume that grant to receive the signed 2.6.1 migration payload; gameplay remains blocked on that migration-only authorization. After the updater applies 2.6.1 and Valheim restarts, the normal 2.6.1 server-access boundary is used.
+
+AutoModSync 2.5.x and earlier clients do not have this protected-server migration bridge and are not given protected synchronization data by a password-protected 2.6.1 server.
 
 ## Security reporting
 
@@ -92,4 +94,4 @@ The repository now includes a `SECURITY.md` policy defining the AMS threat bound
 
 ## Release qualification
 
-Because password authentication and compatibility quarantine alter live connection ordering, v2.6.1 should not be tagged/published until the password matrix and stale-client compatibility case have been reproduced successfully on a real Valheim/BepInEx setup.
+Live release qualification completed on September 29, 2026. The tested path included the protected-server access boundary, wrong/correct server-key behavior, stale-mod preflight isolation, a real released-2.6.0 -> 2.6.1 migration, updater apply/restart/reconnect, a normal post-migration 2.6.1 protected join, and final package inspection confirming that the standalone/Nexus/CurseForge archives contain no `ValheimAutoModSync.Apply.exe`.
