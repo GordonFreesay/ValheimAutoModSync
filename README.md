@@ -104,7 +104,7 @@ RELEASE-NOTES-2.6.0.md          Historical AutoModSync 2.6.0 release notes
 TESTING-2.6.md                  Authoritative 2.6 validation evidence and release-gate record
 IMPLEMENTATION-2.6.md           Historical 2.6 engineering/development ledger
 IMPLEMENTATION-2.6.1.md         2.6.1 security-hardening release record
-IMPLEMENTATION-2.6.2.md         Post-2.6.1 planning backlog
+ROADMAP.md                     Maintenance-only 2.x policy and optional unscheduled Linux 3.0
 SOURCE-WALKTHROUGH.md           End-to-end source, trust-boundary, handshake, apply, and reconnect map
 DISTRIBUTION.md                 Versioning, artifact, attestation, and publishing policy
 SIGNING.md                      Authenticode status and GitHub/Sigstore provenance model
@@ -124,6 +124,12 @@ The validation harnesses intentionally live under `tests/` rather than clutterin
 Generated runtime payloads such as `Client/`, `Tools/`, the compiled server DLL, installers, `DevBuild/`, and `Dist/` are build outputs and are intentionally not versioned. Installable binaries are published through GitHub Releases or the corresponding mod-distribution channel rather than stored in the source tree.
 
 There are intentionally no nested `README.txt` files; the Markdown documents above are the maintained project documentation.
+
+## Roadmap
+
+AutoModSync 2.6.1 is feature-complete for the Windows 2.x product line. 2.x is in maintenance mode: bug, security, compatibility, and release-integrity fixes only; no new product features are planned.
+
+The only contemplated future feature line is an optional Linux / Steam Deck port under 3.0. It is unscheduled, not promised, and may never be developed. See [ROADMAP.md](ROADMAP.md).
 
 ## Building from source
 
