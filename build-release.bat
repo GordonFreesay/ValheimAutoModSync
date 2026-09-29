@@ -8,6 +8,8 @@ set "AMS_VERSION="
 if not exist "%ROOT%VERSION" goto :MissingVersion
 set /p AMS_VERSION=<"%ROOT%VERSION"
 if not defined AMS_VERSION goto :MissingVersion
+set "RELEASE_NOTES=%ROOT%RELEASE-NOTES-%AMS_VERSION%.md"
+if not exist "%RELEASE_NOTES%" goto :MissingReleaseNotes
 set "SOURCE=%ROOT%Source"
 set "CLIENTDIR=%ROOT%Client"
 set "SERVERDIR=%ROOT%Server"
@@ -169,7 +171,7 @@ mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD_PARTY_LICENSES" >nul 2>&1
 copy /y "%ROOT%README.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\README.md" >nul
 copy /y "%ROOT%VERIFYING-RELEASES.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\VERIFYING-RELEASES.md" >nul
 copy /y "%ROOT%SIGNING.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\SIGNING.md" >nul
-copy /y "%ROOT%RELEASE-NOTES-2.6.1.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\RELEASE-NOTES.md" >nul
+copy /y "%RELEASE_NOTES%" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\RELEASE-NOTES.md" >nul
 copy /y "%ROOT%VERSION" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\VERSION" >nul
 copy /y "%ROOT%LICENSE" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\LICENSE" >nul
 copy /y "%ROOT%THIRD-PARTY-NOTICES.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD-PARTY-NOTICES.md" >nul
@@ -286,6 +288,11 @@ set "BEPSOURCE=%BEPEXTRACT%\BepInExPack_Valheim"
 if not exist "%BEPSOURCE%\BepInEx\core\BepInEx.dll" exit /b 1
 echo BepInEx SHA-256 verified.
 exit /b 0
+
+:MissingReleaseNotes
+echo ERROR: Release notes were not found for AutoModSync %AMS_VERSION%.
+echo Expected: "%RELEASE_NOTES%"
+exit /b 1
 
 :MissingVersion
 echo ERROR: VERSION is missing or empty.
