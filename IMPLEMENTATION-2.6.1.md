@@ -191,17 +191,13 @@ The 2.6.1 release was not tagged until the required static and live qualificatio
 - the exact release installer/updater performs a live apply/restart/reconnect successfully without elevation or forced process termination;
 - a real 2.6.0 -> 2.6.1 upgrade receives the installer/updater before the 2.6.1 client needs it.
 
-## Explicitly deferred
+## Post-release scope
 
-Unless a new issue is itself a security boundary or necessary compatibility fix for that boundary, defer it to 2.6.2+:
+2.6.1 completes the planned Windows 2.x feature set. The 2.x line is now maintenance-only: bug fixes, security fixes, compatibility fixes, and release-integrity corrections may be shipped when necessary, but no additional product features are planned.
 
-- provider handoff/acquisition UX;
-- verify-only required mods;
-- broad UI redesign;
-- new transfer algorithms/tuning;
-- new synchronization roots;
-- packaging/store workflow redesign;
-- unrelated cleanup/refactors.
+Previously considered provider handoff/acquisition, verify-only mod requirements, broad UI expansion, new synchronization roots, new transfer/protocol features, and similar product expansion are no longer on the roadmap. AutoModSync intentionally remains a synchronization/integrity tool; third-party mod selection and redistribution responsibility remain with the server operator.
+
+The only contemplated future feature line is an optional Linux / Steam Deck port under 3.0. It is unscheduled, not promised, and may never be developed. See `ROADMAP.md`.
 
 ## Release result
 
