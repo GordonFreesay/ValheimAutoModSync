@@ -226,10 +226,8 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Add a regression gate proving the same `ValheimAutoModSync.Client.dll`, `ValheimAutoModSync.Server.dll`, and `ValheimAutoModSyncInstaller.exe` authored bytes are reused across all applicable release channels for a version.
 - Consider deterministic compiler settings as an additional reproducibility improvement, but treat single-build promotion as the required 2.6.x release-pipeline invariant.
 
-## Post-2.6.0 patch planning
+## Post-2.6 release status
 
-The narrow 2.6.1 access-control patch is tracked in [IMPLEMENTATION-2.6.1.md](IMPLEMENTATION-2.6.1.md). **2.6.1 keeps released 2.6.0 behavior unchanged except that password-protected servers must not expose protected AutoModSync state or transfer synchronized content until Valheim accepts the correct password for that exact connection.**
+The 2.6.1 security and connection-boundary release is recorded in [IMPLEMENTATION-2.6.1.md](IMPLEMENTATION-2.6.1.md). It completed the planned Windows 2.x feature set.
 
-All previously discussed unrelated safety, trust-dialog, packaging, release-pipeline, Defender-process, verify-only, and acquisition work is deferred to [IMPLEMENTATION-2.6.2.md](IMPLEMENTATION-2.6.2.md) and later releases.
-
-The existing 2.6.0 release artifacts remain immutable; 2.6.1 will be a separate version/tag and will not overwrite the attested 2.6.0 ZIP.
+Windows 2.x is now maintenance-only. Previously considered provider acquisition, verify-only requirements, broader UI/product expansion, new synchronization roots, and new transfer/protocol features are not planned. The only contemplated future feature line is an optional, unscheduled Linux / Steam Deck port under 3.0; see [ROADMAP.md](ROADMAP.md).
