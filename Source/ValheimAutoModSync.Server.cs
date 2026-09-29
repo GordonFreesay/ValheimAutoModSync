@@ -99,6 +99,7 @@ namespace ValheimAutoModSync
         private static readonly HashSet<ZRpc> Legacy260PasswordChallengeSentPeers = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> Legacy260JotunnPresenceBypassPeers = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> Legacy260MigrationAuthorizedPeers = new HashSet<ZRpc>();
+        private static readonly Dictionary<ZRpc, DateTime> Legacy260DeferredAuthorizedPreflights = new Dictionary<ZRpc, DateTime>();
         private static readonly Dictionary<string, DateTime> Legacy260MigrationGrants = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         private const int Legacy260MigrationGrantMinutes = 5;
         private static readonly HashSet<ZRpc> PreflightReadyPeers = new HashSet<ZRpc>();
@@ -311,6 +312,7 @@ namespace ValheimAutoModSync
         {
             DateTime now = DateTime.UtcNow;
             TryPublishServerBrowserPresence(now);
+            ServiceLegacy260DeferredAuthorizedPreflights(now);
             DrainPreparedBundleResults();
             ServiceTransferScheduler(now);
 
@@ -559,6 +561,7 @@ namespace ValheimAutoModSync
                 Legacy260PasswordChallengeSentPeers.Remove(rpc);
                 Legacy260JotunnPresenceBypassPeers.Remove(rpc);
                 Legacy260MigrationAuthorizedPeers.Remove(rpc);
+                Legacy260DeferredAuthorizedPreflights.Remove(rpc);
                 DiscardServerPreflightQuarantine(rpc);
 #if AMS_DEV_TESTS
                 DevelopmentLegacyServerPeers.Remove(rpc);
@@ -1306,6 +1309,7 @@ namespace ValheimAutoModSync
             PreflightQuarantineStartedUtc.Remove(rpc);
             HeldPreflightInvocations.Remove(rpc);
             PreflightReadyPeers.Remove(rpc);
+            Legacy260DeferredAuthorizedPreflights.Remove(rpc);
         }
 
         // Intent: AutoModSync protocol methods remain live while compatibility/gameplay methods are quarantined.
@@ -1748,7 +1752,7 @@ namespace ValheimAutoModSync
                 {
                     Legacy260MigrationAuthorizedPeers.Add(rpc);
                     if (_instance != null)
-                        _instance.Logger.LogInfo("AutoModSync accepted a one-use authenticated 2.6.0 migration reconnect; protected migration synchronization may now begin.");
+                        _instance.Logger.LogInfo("AutoModSync accepted a one-use server-access-authorized 2.6.0 migration reconnect; protected migration synchronization may now begin.");
                     return true;
                 }
 
@@ -1871,6 +1875,71 @@ namespace ValheimAutoModSync
             }
         }
 
+        // Intent: Lets released 2.6.0 observe an authorized AMS response before expensive/synchronous manifest work can consume its fixed 3.25-second discovery window.
+        // Security: this path is reachable only after the one-use same-platform migration grant has already been consumed on this exact ZRpc.
+        private static void ScheduleLegacy260AuthorizedPreflight(ZRpc rpc)
+        {
+            if (rpc == null || !Legacy260MigrationAuthorizedPeers.Contains(rpc)) return;
+            if (!CanDiscloseProtectedSyncState(rpc))
+            {
+                SendError(rpc, "AutoModSync server access is required before synchronization data is available.");
+                return;
+            }
+
+            ZPackage ack = new ZPackage();
+            ack.Write(ProtocolVersion);
+            ack.Write(PluginVersion);
+            ack.Write("bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1;bundle-scheduler1;preflight-quarantine1");
+            rpc.Invoke(RpcAck, new object[] { ack });
+
+            DateTime ignored;
+            if (!Legacy260DeferredAuthorizedPreflights.TryGetValue(rpc, out ignored))
+                Legacy260DeferredAuthorizedPreflights[rpc] = DateTime.UtcNow.AddMilliseconds(150.0);
+
+            if (_instance != null)
+                _instance.Logger.LogInfo("AutoModSync sent the authorized 2.6.0 migration acknowledgement; signed synchronization discovery is deferred briefly so the released client can leave its fixed discovery timeout.");
+        }
+
+        // Intent: Completes the released-2.6.0 authorized migration preflight only after its standalone acknowledgement has had a chance to leave the inbound hello handler.
+        private static void ServiceLegacy260DeferredAuthorizedPreflights(DateTime now)
+        {
+            if (Legacy260DeferredAuthorizedPreflights.Count == 0) return;
+
+            List<ZRpc> ready = new List<ZRpc>();
+            foreach (KeyValuePair<ZRpc, DateTime> item in Legacy260DeferredAuthorizedPreflights)
+            {
+                if (item.Key != null && now >= item.Value) ready.Add(item.Key);
+            }
+
+            int i;
+            for (i = 0; i < ready.Count; i++)
+            {
+                ZRpc rpc = ready[i];
+                Legacy260DeferredAuthorizedPreflights.Remove(rpc);
+
+                bool connected = false;
+                try { connected = rpc != null && rpc.IsConnected(); } catch { connected = false; }
+                if (!connected
+                    || !AmsPreflightPeers.Contains(rpc)
+                    || !Legacy260MigrationAuthorizedPeers.Contains(rpc)
+                    || ManifestSentPeers.Contains(rpc))
+                    continue;
+
+                try
+                {
+                    SendAuthorizedPreflight(rpc);
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync released signed synchronization discovery to the authorized 2.6.0 migration reconnect.");
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null)
+                        _instance.Logger.LogWarning("AutoModSync could not complete the deferred 2.6.0 migration preflight: " + ex.Message);
+                    SendError(rpc, "AutoModSync could not complete the authorized migration synchronization preflight.");
+                }
+            }
+        }
+
         // Intent: Releases the server-side third-party RPC quarantine only after a current client says its verified AMS preflight is complete.
         private static void RPC_Ready(ZRpc rpc, ZPackage pkg)
         {
@@ -1927,6 +1996,11 @@ namespace ValheimAutoModSync
 
                 AmsPreflightPeers.Add(rpc);
                 if (!EnsurePreflightAuthorizationOrChallenge(rpc)) return;
+                if (Legacy260MigrationAuthorizedPeers.Contains(rpc) && IsLegacy260MigrationClient(rpc))
+                {
+                    ScheduleLegacy260AuthorizedPreflight(rpc);
+                    return;
+                }
                 SendAuthorizedPreflight(rpc);
             }
             catch (Exception ex)
