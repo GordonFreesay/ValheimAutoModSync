@@ -4,11 +4,11 @@ AutoModSync uses **one semantic version across every distribution channel**.
 
 The authoritative version is the root `VERSION` file. Build scripts and GitHub Actions read that value. `verify-version.ps1` fails the build if the AutoModSync plugin/assembly metadata does not match it.
 
-For the current release, every channel is **2.6.0**. A store name in an archive filename identifies the packaging target; it is not a different software version.
+The current AutoModSync release is **2.6.1**. GitHub/website, Nexus Mods, and CurseForge use 2.6.1. Thunderstore/r2modman remains on its previously published version unless the separate 2.6.1 policy-fit hold is cleared.
 
 ## 2.6.1 publication scope
 
-The **2.6.1 release-candidate publication targets are GitHub/website, Nexus Mods, and CurseForge**.
+The **2.6.1 publication targets are GitHub/website, Nexus Mods, and CurseForge**.
 
 A Thunderstore/r2modman package builder remains in the repository for compatibility/testing and possible future use, but **Thunderstore publication is deferred for 2.6.1 unless its policy fit for server-driven redistribution is confirmed separately**. Building that package does not mean it should be published.
 
@@ -39,12 +39,12 @@ The installer/updater is not used to install BepInEx when launched by AMS runtim
 
 | Channel | Version shown to users | Artifact | Purpose |
 | --- | --- | --- | --- |
-| GitHub / website | `2.6.0` | `ValheimAutoModSync-2.6.0.zip` | Canonical standalone installer package with bundled, hash-pinned BepInEx |
-| Nexus Mods | `2.6.0` | `ValheimAutoModSync-2.6.0-Nexus.zip` | Lightweight Nexus package; BepInEx is a separate requirement and no archive is nested inside the ZIP |
-| CurseForge | `2.6.0` | `ValheimAutoModSync-2.6.0-CurseForge.zip` | Lightweight CurseForge package; BepInEx is a separate requirement |
-| Thunderstore / r2modman | `2.6.0` | `GordonFreesay-ValheimAutoModSync-2.6.0.zip` | Native Thunderstore package with `manifest.json` and BepInEx dependency metadata |
+| GitHub / website | `2.6.1` | `ValheimAutoModSync-2.6.1.zip` | Canonical standalone installer package with bundled, hash-pinned BepInEx |
+| Nexus Mods | `2.6.1` | `ValheimAutoModSync-2.6.1-Nexus.zip` | Lightweight Nexus package; BepInEx is a separate requirement and no archive is nested inside the ZIP |
+| CurseForge | `2.6.1` | `ValheimAutoModSync-2.6.1-CurseForge.zip` | Lightweight CurseForge package; BepInEx is a separate requirement |
+| Thunderstore / r2modman | `2.6.0` currently public | `GordonFreesay-ValheimAutoModSync-2.6.0.zip` | 2.6.1 builder remains available for compatibility/testing, but 2.6.1 publication is deferred pending separate policy fit |
 
-Store-specific packages are **not separate GitHub releases**. The GitHub `v2.6.0` release is the canonical standalone release, and the website should identify **2.6.0** as the current AutoModSync version.
+Store-specific packages are **not separate GitHub releases**. The GitHub `v2.6.1` release is the canonical standalone release, and the website should identify **2.6.1** as the current AutoModSync version.
 
 GitHub Actions artifacts are used as staging outputs for the store packages. For 2.6.1, Nexus Mods and CurseForge are the intended mod-site download locations. Thunderstore remains deferred unless separately cleared as described above.
 
