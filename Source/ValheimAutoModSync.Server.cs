@@ -47,6 +47,7 @@ namespace ValheimAutoModSync
         internal const string RpcBundleEnd = "AMS4_BundleEnd";
         internal const string RpcQueueStatus = "AMS4_QueueStatus";
         internal const string RpcError = "AMS4_Error";
+        private const string Legacy260JotunnVersionDataRpc = "RPC_Jotunn_ReceiveVersionData";
 
         private static ServerPlugin _instance;
         private static ConfigEntry<bool> _enabled;
@@ -96,6 +97,7 @@ namespace ValheimAutoModSync
         // then grants the same platform peer one short-lived, one-use reconnect that may fetch migration data but may not enter gameplay.
         private static readonly HashSet<ZRpc> Legacy260PasswordBootstrapPeers = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> Legacy260PasswordChallengeSentPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> Legacy260JotunnPresenceBypassPeers = new HashSet<ZRpc>();
         private static readonly HashSet<ZRpc> Legacy260MigrationAuthorizedPeers = new HashSet<ZRpc>();
         private static readonly Dictionary<string, DateTime> Legacy260MigrationGrants = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         private const int Legacy260MigrationGrantMinutes = 5;
@@ -555,6 +557,7 @@ namespace ValheimAutoModSync
                 PasswordAuthorizedPeers.Remove(rpc);
                 Legacy260PasswordBootstrapPeers.Remove(rpc);
                 Legacy260PasswordChallengeSentPeers.Remove(rpc);
+                Legacy260JotunnPresenceBypassPeers.Remove(rpc);
                 Legacy260MigrationAuthorizedPeers.Remove(rpc);
                 DiscardServerPreflightQuarantine(rpc);
 #if AMS_DEV_TESTS
@@ -1235,6 +1238,9 @@ namespace ValheimAutoModSync
             private static bool Prefix(ZRpc __instance, string method, object[] parameters)
             {
                 if (_allowPreflightInvoke || __instance == null || !PreflightQuarantinePeers.Contains(__instance)) return true;
+                if (Legacy260JotunnPresenceBypassPeers.Contains(__instance)
+                    && String.Equals(method, Legacy260JotunnVersionDataRpc, StringComparison.Ordinal))
+                    return true;
                 if (IsAutoModSyncRpcMethod(method) || IsServerSecurityControlRpcMethod(method)) return true;
 
                 List<HeldRpcInvocation> queue;
@@ -1308,6 +1314,37 @@ namespace ValheimAutoModSync
             return !String.IsNullOrEmpty(method) && method.StartsWith("AMS4_", StringComparison.Ordinal);
         }
 
+        // Intent: Gives released 2.6.0 clients a Jötunn-compatible presence record so Jötunn does not cancel SendPeerInfo before Valheim can check the server key.
+        // Privacy: this synthetic envelope deliberately contains no server mod names, mod versions, configuration, manifest data, fingerprint, or bundle metadata.
+        private static void SendLegacy260JotunnPresenceSentinel(ZRpc rpc)
+        {
+            if (rpc == null) return;
+
+            // Jötunn 2.30.x treats any successfully parsed ServerVersionData as proof that the compatibility endpoint exists.
+            // Encode the backwards-compatible envelope with zero legacy modules and zero current modules. Version/network
+            // fields are intentionally neutral because this bootstrap record is presence-only and is never used as server inventory.
+            ZPackage sentinel = new ZPackage();
+            sentinel.Write(0);
+            sentinel.Write(0);
+            sentinel.Write(0);
+            sentinel.Write(0);
+            sentinel.Write("");
+            sentinel.Write((uint)0);
+            sentinel.Write(0);
+
+            try
+            {
+                Legacy260JotunnPresenceBypassPeers.Add(rpc);
+                rpc.Invoke(Legacy260JotunnVersionDataRpc, new object[] { sentinel });
+                if (_instance != null)
+                    _instance.Logger.LogDebug("AutoModSync sent a zero-module Jötunn compatibility sentinel for the released 2.6.0 server-key bootstrap.");
+            }
+            finally
+            {
+                Legacy260JotunnPresenceBypassPeers.Remove(rpc);
+            }
+        }
+
         // Intent: Never delays core server denial/password controls; these may represent a ban, capacity, or authentication decision rather than mod compatibility.
         private static bool IsServerSecurityControlRpcMethod(string method)
         {
@@ -1352,6 +1389,7 @@ namespace ValheimAutoModSync
                         Legacy260PasswordChallengeSentPeers.Add(rpc);
                         try
                         {
+                            SendLegacy260JotunnPresenceSentinel(rpc);
                             rpc.Invoke("ClientHandshake", new object[] { true, legacySalt });
                             if (_instance != null) _instance.Logger.LogInfo("AutoModSync released the normal Valheim server-key prompt for the 2.6.0 migration bootstrap; protected synchronization remains withheld.");
                         }
