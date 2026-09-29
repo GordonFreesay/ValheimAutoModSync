@@ -1,8 +1,10 @@
 # AutoModSync 2.6 implementation ledger
 
-> **2.6.1 architecture note:** the 2.6.0 standalone `ValheimAutoModSync.Apply.exe` helper described in historical phase notes was removed in 2.6.1. The same transaction engine now lives inside the single signed/attested `ValheimAutoModSyncInstaller.exe`, which waits visibly for a normal Valheim exit and never force-terminates it.
+> **Historical development ledger:** the phase entries below intentionally preserve the file names, status, and assumptions that existed while 2.6.0 was being built. They are historical evidence, not the current release-status page.
+>
+> **Current 2.6.1 architecture:** the 2.6.0 standalone `ValheimAutoModSync.Apply.exe` helper was removed. The transaction engine now lives inside the single visible `ValheimAutoModSyncInstaller.exe`, which waits for a normal Valheim exit and never force-terminates it. Official package ZIPs receive GitHub/Sigstore provenance; the Windows PE files remain Authenticode-unsigned unless trusted signing is configured.
 
-This document is the repository-authoritative change ledger for AutoModSync 2.6 development.
+This document is the historical engineering/change ledger for AutoModSync 2.6 development. Current release status lives in `README.md`, `RELEASE-NOTES-2.6.1.md`, `TESTING-2.6.md`, and `DISTRIBUTION.md`.
 
 ## Development baseline
 
@@ -221,7 +223,7 @@ Add each 2.6-modified file here in the same phase that introduces the change, wi
 - Replace per-store recompilation in `.github/workflows/publish-nexus.yml`, `.github/workflows/publish-curseforge.yml`, and `.github/workflows/publish-thunderstore.yml` with promotion of the exact store ZIPs produced by the canonical tag-triggered `Distribution Packages` workflow.
 - Build AutoModSync PE binaries once per release tag, then package those exact bytes for standalone/Nexus/CurseForge/Thunderstore without recompiling during publication.
 - Preserve SHA-256 manifests and GitHub/Sigstore attestations for the exact promoted artifacts; fail publication if the selected store artifact does not match the canonical distribution artifact digest for that release.
-- Add a regression gate proving the same `ValheimAutoModSync.Client.dll`, `ValheimAutoModSync.Server.dll`, and `ValheimAutoModSync.Apply.exe` bytes are reused across all release channels for a version.
+- Add a regression gate proving the same `ValheimAutoModSync.Client.dll`, `ValheimAutoModSync.Server.dll`, and `ValheimAutoModSyncInstaller.exe` authored bytes are reused across all applicable release channels for a version.
 - Consider deterministic compiler settings as an additional reproducibility improvement, but treat single-build promotion as the required 2.6.x release-pipeline invariant.
 
 ## Post-2.6.0 patch planning
