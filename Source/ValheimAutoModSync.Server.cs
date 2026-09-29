@@ -1683,6 +1683,9 @@ namespace ValheimAutoModSync
                     return true;
                 }
 
+                // 2.6.0 retries AMS4_Hello while waiting; the existing Valheim password dialog remains authoritative.
+                if (Legacy260PasswordBootstrapPeers.Contains(rpc)) return false;
+
                 string legacySalt;
                 if (!TryGetServerPasswordSalt(out legacySalt))
                 {
