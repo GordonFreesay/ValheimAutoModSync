@@ -1,8 +1,8 @@
 # AutoModSync 2.6.2+ planning backlog
 
-This document collects work intentionally deferred from the narrow **2.6.1 password access-control patch**.
+This document collects work intentionally deferred from the **2.6.1 security and connection-boundary release**.
 
-2.6.1 is reserved for one runtime change only: password-protected servers must not expose protected AutoModSync metadata or transfer synchronized content until Valheim has accepted the correct server password for that exact connection.
+2.6.1 shipped the protected server-access boundary together with the compatibility and updater changes required to make that boundary work safely in real Valheim/BepInEx flows. The items below begin with post-2.6.1 work and should not be backfilled into the released patch.
 
 The items below begin with **2.6.2** and may be split across later patch/minor releases if that produces safer, easier-to-review releases.
 
@@ -10,7 +10,7 @@ The items below begin with **2.6.2** and may be split across later patch/minor r
 
 ### Installer/updater follow-up
 
-The standalone Apply helper and forced-termination fallback were removed in **2.6.1**. 2.6.2 should preserve that architecture rather than reintroducing a second updater executable. Any later updater UX refinements must keep the single signed/attested installer/updater, normal-exit waiting, and transactional recovery model.
+The standalone Apply helper and forced-termination fallback were removed in **2.6.1**. 2.6.2 should preserve that architecture rather than reintroducing a second updater executable. Any later updater UX refinements must keep the single visible installer/updater, normal-exit waiting, and transactional recovery model. Official package provenance remains separate from Windows Authenticode.
 
 
 ### Stale first-contact trust-dialog lifecycle
@@ -39,7 +39,7 @@ Target behavior:
 - store publishing workflows consume the exact canonical Nexus/CurseForge/Thunderstore ZIP produced for the tagged release;
 - publishing workflows do not recompile or repackage AMS binaries;
 - hashes/version/tag association must match the canonical manifest;
-- Client/Server/Apply authored binaries are byte-identical across applicable channel packages.
+- Client/Server/Installer authored binaries are byte-identical across applicable channel packages.
 
 ### Patch-release/readiness cleanup
 
