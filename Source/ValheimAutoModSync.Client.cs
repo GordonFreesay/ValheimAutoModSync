@@ -21,8 +21,8 @@ using UnityEngine;
 [assembly: AssemblyDescription("Client-side Valheim plugin synchronization, trust, verification, restart, and reconnect component.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+[assembly: AssemblyVersion("2.6.1.0")]
+[assembly: AssemblyFileVersion("2.6.1.0")]
 
 namespace ValheimAutoModSync
 {
@@ -31,11 +31,13 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.client";
         public const string PluginName = "Valheim AutoModSync Client";
-        public const string PluginVersion = "2.6.0";
+        public const string PluginVersion = "2.6.1";
         public const int ProtocolVersion = 4;
 
         private const string RpcHello = "AMS4_Hello";
         private const string RpcAck = "AMS4_Ack";
+        private const string RpcAuth = "AMS4_Auth";
+        private const string RpcReady = "AMS4_Ready";
         private const string RpcManifestBegin = "AMS4_ManifestBegin";
         private const string RpcManifestChunk = "AMS4_ManifestChunk";
         private const string RpcManifestEnd = "AMS4_ManifestEnd";
@@ -50,7 +52,7 @@ namespace ValheimAutoModSync
         private const string RpcError = "AMS4_Error";
         private const int BundleBatchChunks = 16;
         private const int BundlePipelineChunks = 128;
-        private const string ClientCapabilities = "roots1;bundle-resume1;bundle-scheduler1";
+        private const string ClientCapabilities = "roots1;bundle-resume1;bundle-scheduler1;password-auth2;preflight-quarantine1";
 
         // 2.6 client-side hard ceilings are deliberately independent of server configuration.
         // A trusted server may choose smaller limits, but it cannot make this client allocate/write unbounded payloads.
@@ -70,6 +72,10 @@ namespace ValheimAutoModSync
         private static bool _waitingForServer;
         private static bool _serverRecognized;
         private static bool _serverAcknowledged;
+        private static bool _serverRequiresPasswordAuth;
+        private static bool _passwordAuthenticatedForAms;
+        private static ZRpc _passwordReplayRpc;
+        private static bool _replayPasswordOnNextPeerInfo;
         private static bool _serverSupportsBundleWindow;
         private static bool _serverSupportsBundleBatch;
         private static bool _serverSupportsBundlePipeline;
@@ -77,9 +83,11 @@ namespace ValheimAutoModSync
         private static bool _serverSupportsBundleScheduler;
         private static bool _allowPeerInfo;
         private static bool _preflightGateActive;
-        private static bool _allowServerHandshake;
-        private static bool _serverHandshakeHeld;
-        private static object[] _heldServerHandshakeParameters = new object[0];
+        private static bool _allowPreflightInvoke;
+        private static bool _serverSupportsPreflightQuarantine;
+        private static string _serverPasswordAuthChallenge = "";
+        private const int MaxHeldPreflightInvocations = 2048;
+        private static readonly List<HeldRpcInvocation> HeldPreflightInvocations = new List<HeldRpcInvocation>();
         private static DateTime _helloSentUtc;
         private static DateTime _lastHelloAttemptUtc;
         private static int _helloAttemptCount;
@@ -101,6 +109,8 @@ namespace ValheimAutoModSync
         private static int _staleTrustPromptThreadId;
         private static DateTime _staleTrustPromptDismissUntilUtc = DateTime.MinValue;
         private static DateTime _staleTrustPromptNextDismissUtc = DateTime.MinValue;
+        private static DateTime _trustPromptNextForegroundUtc = DateTime.MinValue;
+        private static bool _trustPromptForegroundEstablished;
         private static readonly Dictionary<int, string> ManifestParts = new Dictionary<int, string>();
         private static readonly List<ManifestEntry> NeededFiles = new List<ManifestEntry>();
         private static FileStream _bundleStream;
@@ -157,6 +167,12 @@ namespace ValheimAutoModSync
         private static readonly List<AutoModSyncOwnershipEntry> DesiredOwnershipEntries = new List<AutoModSyncOwnershipEntry>();
         private static bool _ownershipLedgerChanged;
 
+        private sealed class HeldRpcInvocation
+        {
+            public string Method = "";
+            public object[] Parameters = new object[0];
+        }
+
         private sealed class ManifestEntry
         {
             public char Kind;
@@ -178,8 +194,8 @@ namespace ValheimAutoModSync
             public ISteamMatchmakingRulesResponse Response;
         }
 
-        // Intent: BepInEx client entry point; initializes only on the playable Valheim process, hands any interrupted apply back to the out-of-process transaction helper, restores reconnect state, and installs synchronization hooks.
-        // Recovery safety: the running game never mutates live synchronized DLL/config destinations itself. A pending/journaled transaction causes an immediate helper-owned recovery restart before AMS can join a server.
+        // Intent: BepInEx client entry point; initializes only on the playable Valheim process, retires the obsolete 2.6.0 helper, hands interrupted apply state to the installer/updater, restores reconnect state, and installs synchronization hooks.
+        // Recovery safety: the running game never mutates live synchronized DLL/config destinations itself. A pending/journaled transaction causes an immediate installer/updater-owned recovery restart before AMS can join a server.
         private void Awake()
         {
             _instance = this;
@@ -193,6 +209,7 @@ namespace ValheimAutoModSync
                 _showServerBadges = Config.Bind("Discovery", "ShowServerBadges", true,
                     "Show a small AMS logo beside Steam-backed servers that passively advertise AutoModSync in Valheim's Join Game browser.");
                 HideBepInExConsoleAndDisableFutureConsole();
+                RetireLegacyApplyHelper();
                 if (HasPendingApplyRecovery())
                 {
                     ScheduleRecoveredStagingRestart();
@@ -206,6 +223,7 @@ namespace ValheimAutoModSync
                 harmony.PatchAll(typeof(OnNewConnectionPatch));
                 harmony.PatchAll(typeof(InvokeServerHandshakeGatePatch));
                 harmony.PatchAll(typeof(SendPeerInfoPatch));
+                harmony.PatchAll(typeof(ClientHandshakePasswordReplayPatch));
                 harmony.PatchAll(typeof(ReconnectCharacterSelectionPatch));
                 harmony.PatchAll(typeof(ReconnectJoinServerPatch));
                 harmony.PatchAll(typeof(CaptureOriginalJoinRequestPatch));
@@ -215,6 +233,37 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 Logger.LogError("AutoModSync client startup failed: " + ex);
+            }
+        }
+
+        // Intent: Removes the obsolete 2.6.0 Apply helper/icon after a successful migration so 2.6.1 retains only the signed installer/updater executable.
+        // Migration safety: failure to delete a still-locked legacy file is non-fatal and is retried on the next client launch; the legacy helper is never executed by 2.6.1.
+        private static void RetireLegacyApplyHelper()
+        {
+            string amsRoot;
+            try { amsRoot = GetAutoModSyncRoot(); }
+            catch { return; }
+
+            string[] legacyNames = new string[]
+            {
+                "ValheimAutoModSync.Apply.exe",
+                "ValheimAutoModSync.Apply.ico"
+            };
+
+            int i;
+            for (i = 0; i < legacyNames.Length; i++)
+            {
+                string path = Path.Combine(amsRoot, legacyNames[i]);
+                if (!File.Exists(path)) continue;
+                try
+                {
+                    File.Delete(path);
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync retired obsolete 2.6.0 component: " + legacyNames[i]);
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync could not yet retire obsolete " + legacyNames[i] + "; it is never used by 2.6.1 and cleanup will retry next launch. " + ex.Message);
+                }
             }
         }
 
@@ -236,6 +285,31 @@ namespace ValheimAutoModSync
         // Compatibility: non-AutoModSync servers are released after a short discovery window; acknowledged AutoModSync servers get a longer manifest-start window.
         private void Update()
         {
+            // Intent: Preserves a visible local cancel path while Valheim owns password entry.
+            // AMS is intentionally hidden during this period; Escape closes the dialog and aborts
+            // the exact protected connection without releasing any quarantined compatibility RPCs.
+            if (_serverRequiresPasswordAuth && _waitingForServer && _pendingRpc != null)
+            {
+                bool passwordDialogOpen = false;
+                try { passwordDialogOpen = ZNet.instance != null && ZNet.instance.InPasswordDialog(); }
+                catch { passwordDialogOpen = false; }
+
+                if (passwordDialogOpen && Input.GetKeyDown(KeyCode.Escape))
+                {
+                    try
+                    {
+                        FieldInfo dialogField = AccessTools.Field(typeof(ZNet), "m_passwordDialog");
+                        object dialogObject = dialogField == null || ZNet.instance == null ? null : dialogField.GetValue(ZNet.instance);
+                        Component dialogComponent = dialogObject as Component;
+                        if (dialogComponent != null) dialogComponent.gameObject.SetActive(false);
+                    }
+                    catch { }
+
+                    AbortAutoModSyncJoin("Server password entry was cancelled.");
+                    return;
+                }
+            }
+
 #if AMS_DEV_TESTS
             if (_devUiPreviewActive) UpdateDevelopmentUiPreview();
             TryRunDevelopmentServerBrowserProbe();
@@ -309,6 +383,13 @@ namespace ValheimAutoModSync
                 }
             }
 #endif
+
+            if (_trustPromptPending && !_trustPromptForegroundEstablished &&
+                (_trustPromptNextForegroundUtc == DateTime.MinValue || DateTime.UtcNow >= _trustPromptNextForegroundUtc))
+            {
+                _trustPromptForegroundEstablished = PromoteNativeTrustPrompt();
+                _trustPromptNextForegroundUtc = DateTime.UtcNow.AddMilliseconds(100.0);
+            }
 
             if (_trustPromptPending && _trustPromptDecision != 0)
             {
@@ -726,7 +807,8 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
         private static class OnNewConnectionPatch
         {
-            // Intent: On the client side, registers AutoModSync RPC handlers and arms the preflight gate before Valheim's OnNewConnection body can send ServerHandshake.
+            [HarmonyPriority(Priority.First + 200)]
+            // Intent: On the client side, registers AutoModSync RPC handlers and arms the preflight gate before Valheim's OnNewConnection body or ordinary third-party prefixes can send compatibility traffic.
             // This early hook is what prevents Jotunn/other validators from rejecting a client before required files can be synchronized.
             private static void Prefix(ZNet __instance, ZNetPeer peer)
             {
@@ -757,20 +839,52 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(ZRpc), "Invoke", new Type[] { typeof(string), typeof(object[]) })]
         private static class InvokeServerHandshakeGatePatch
         {
-            [HarmonyPriority(Priority.First)]
-            // Intent: Intercepts only the outgoing vanilla ServerHandshake while AutoModSync preflight is active.
-            // Compatibility: every other RPC is untouched; the held ServerHandshake is replayed unchanged once preflight succeeds or fails open.
+            [HarmonyPriority(Priority.First + 200)]
+            // Intent: Quarantines every non-AMS outbound RPC on the active client connection until synchronization establishes that the loaded mod set is current.
+            // Compatibility: this prevents stale ServerSync/Jotunn/other custom version RPCs from racing AMS; non-AMS servers receive the exact queued calls after the normal short fail-open window.
             private static bool Prefix(ZRpc __instance, string method, object[] parameters)
             {
-                if (_allowServerHandshake) return true;
+                if (_allowPreflightInvoke) return true;
                 if (!_preflightGateActive || __instance == null || __instance != _pendingRpc) return true;
-                if (!String.Equals(method, "ServerHandshake", StringComparison.Ordinal)) return true;
+                if (IsAutoModSyncRpcMethod(method)) return true;
 
-                _serverHandshakeHeld = true;
-                _heldServerHandshakeParameters = parameters == null ? new object[0] : (object[])parameters.Clone();
-                if (_instance != null) _instance.Logger.LogDebug("AutoModSync held Valheim ServerHandshake with " + _heldServerHandshakeParameters.Length.ToString(CultureInfo.InvariantCulture) + " argument(s) until preflight completes.");
+                // Before AMS recognition, preserve ordinary/non-AMS disconnect behavior. Once this
+                // exact connection is positively AMS-aware, stale compatibility prefixes can emit
+                // Disconnect from the same SendPeerInfo invocation AMS intercepted for password auth.
+                // Such a disconnect is neither authoritative nor safe to replay after synchronization.
+                if (String.Equals(method, "Disconnect", StringComparison.Ordinal))
+                {
+                    if (!_serverAcknowledged && !_serverRecognized) return true;
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync suppressed a stale preflight Disconnect emitted after AMS recognition.");
+                    return false;
+                }
+
+                if (HeldPreflightInvocations.Count >= MaxHeldPreflightInvocations)
+                {
+                    if (_serverAcknowledged || _serverRecognized)
+                    {
+                        AbortAutoModSyncJoin("AutoModSync preflight RPC quarantine exceeded its bounded queue; the protected join was aborted.");
+                        return false;
+                    }
+
+                    FailOpen("AutoModSync preflight RPC quarantine exceeded its bounded queue before an AMS server was recognized.");
+                    return true;
+                }
+
+                HeldRpcInvocation held = new HeldRpcInvocation();
+                held.Method = method ?? "";
+                held.Parameters = parameters == null ? new object[0] : (object[])parameters.Clone();
+                HeldPreflightInvocations.Add(held);
+                if (_instance != null) _instance.Logger.LogDebug("AutoModSync quarantined preflight RPC '" + held.Method + "' until synchronization finishes.");
                 return false;
             }
+        }
+
+        // Intent: Identifies only AutoModSync protocol traffic, which must remain live while all compatibility/gameplay RPCs are quarantined.
+        private static bool IsAutoModSyncRpcMethod(string method)
+        {
+            return !String.IsNullOrEmpty(method) && method.StartsWith("AMS4_", StringComparison.Ordinal);
         }
 
         [HarmonyPatch(typeof(FejdStartup), "ShowCharacterSelection")]
@@ -827,15 +941,78 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(ZNet), "SendPeerInfo")]
         private static class SendPeerInfoPatch
         {
-            // Intent: Legacy/fallback SendPeerInfo gate for connection paths that bypass the new pre-handshake gate.
-            // Compatibility: a connection already completed by preflight passes through untouched; otherwise the older AMS4 probe behavior is retained.
+            [HarmonyPriority(Priority.First + 100)]
+            // Intent: Converts the first passworded SendPeerInfo into AMS4_Auth, then replays normal PeerInfo only after synchronization.
+            // Valheim's password dialog still owns input; vanilla PeerInfo and third-party compatibility validation stay behind authentication.
             private static bool Prefix(ZNet __instance, ZRpc rpc, string password)
             {
                 if (__instance == null || __instance.IsServer() || _allowPeerInfo) return true;
                 if (rpc == null) return true;
+
+                if (_serverRequiresPasswordAuth && _waitingForServer && rpc == _pendingRpc)
+                {
+                    if (String.IsNullOrEmpty(password))
+                    {
+                        AbortAutoModSyncJoin("A server password is required before AutoModSync can receive protected synchronization information.");
+                        return false;
+                    }
+
+                    _pendingPassword = password;
+                    string verifier;
+                    if (!TryCreateValheimPasswordProof(password, out verifier))
+                    {
+                        _pendingPassword = "";
+                        AbortAutoModSyncJoin("AutoModSync could not derive the local Valheim password verifier; protected synchronization was not requested.");
+                        return false;
+                    }
+
+                    string response;
+                    if (!TryCreatePasswordChallengeResponse(verifier, _serverPasswordAuthChallenge, out response))
+                    {
+                        _pendingPassword = "";
+                        AbortAutoModSyncJoin("AutoModSync could not create the one-time password challenge response; protected synchronization was not requested.");
+                        return false;
+                    }
+
+                    try
+                    {
+                        ZPackage auth = new ZPackage();
+                        auth.Write(response);
+                        rpc.Invoke(RpcAuth, new object[] { auth });
+                        _helloSentUtc = DateTime.UtcNow;
+                        ShowSyncOverlay(AutoModSyncUiPhase.Checking, "Authenticating server password...",
+                            "AutoModSync is waiting for the server to accept the one-time password challenge before requesting any protected mod information.");
+                        if (_instance != null) _instance.Logger.LogInfo("AutoModSync sent a one-time HMAC password challenge response; the reusable Valheim password verifier was not transmitted through AMS.");
+                    }
+                    catch (Exception ex)
+                    {
+                        _pendingPassword = "";
+                        AbortAutoModSyncJoin("AutoModSync password authentication could not be sent: " + ex.Message);
+                    }
+                    return false;
+                }
+
+                // After AMS finishes on the same already-authenticated connection, replay the saved password
+                // exactly once into Valheim's original PeerInfo so the player is not prompted a second time.
+                if (_passwordAuthenticatedForAms && _replayPasswordOnNextPeerInfo && rpc == _passwordReplayRpc)
+                {
+                    string replayPassword = _pendingPassword;
+                    _replayPasswordOnNextPeerInfo = false;
+                    try
+                    {
+                        InvokeValheimSendPeerInfo(rpc, replayPassword);
+                    }
+                    finally
+                    {
+                        ClearPasswordAuthenticationState();
+                    }
+                    return false;
+                }
+
                 if (PreflightComplete.Contains(rpc)) return true;
                 if (_preflightGateActive && rpc == _pendingRpc) return true;
 
+                // Legacy/fallback path retained for connection paths that bypass the early ServerHandshake gate.
                 RegisterRpc(rpc);
                 _pendingRpc = rpc;
                 _pendingPassword = password ?? "";
@@ -856,11 +1033,14 @@ namespace ValheimAutoModSync
                 _waitingForServer = true;
                 _serverRecognized = false;
                 _serverAcknowledged = false;
+                _serverRequiresPasswordAuth = false;
+                _passwordAuthenticatedForAms = false;
                 _serverSupportsBundleWindow = false;
                 _serverSupportsBundleBatch = false;
                 _serverSupportsBundlePipeline = false;
                 _serverSupportsBundleResume = false;
                 _serverSupportsBundleScheduler = false;
+                _serverSupportsPreflightQuarantine = false;
                 _preflightGateActive = false;
 #if AMS_DEV_TESTS
                 _devEmulateLegacyClient = ConsumeDevelopmentLegacyClientMarker();
@@ -884,6 +1064,52 @@ namespace ValheimAutoModSync
                 }
                 return false;
             }
+
+            // Intent: Neutralizes only connection-status side effects produced by stale third-party
+            // SendPeerInfo prefixes during the intercepted AMS password-auth submission.
+            // The actual socket remains under AMS preflight control; later real AMS/Valheim errors
+            // still win normally and compatibility runs again after synchronized readiness.
+            private static void Postfix(ZNet __instance, ZRpc rpc)
+            {
+                if (__instance == null || __instance.IsServer() || rpc == null) return;
+                if (!_serverRequiresPasswordAuth || !_waitingForServer || rpc != _pendingRpc || !_serverAcknowledged) return;
+
+                try
+                {
+                    FieldInfo statusField = AccessTools.Field(typeof(ZNet), "m_connectionStatus");
+                    if (statusField == null || !statusField.FieldType.IsEnum) return;
+
+                    object connecting = Enum.Parse(statusField.FieldType, "Connecting");
+                    object current = statusField.GetValue(null);
+                    if (current == null || !current.Equals(connecting))
+                    {
+                        statusField.SetValue(null, connecting);
+                        if (_instance != null)
+                            _instance.Logger.LogInfo("AutoModSync restored Valheim connection status after stale preflight compatibility side effects.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null)
+                        _instance.Logger.LogDebug("AutoModSync could not normalize preflight connection status: " + ex.Message);
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(ZNet), "RPC_ClientHandshake")]
+        private static class ClientHandshakePasswordReplayPatch
+        {
+            [HarmonyPriority(Priority.First + 100)]
+            // Intent: Suppresses a second password dialog during the post-sync handshake while still allowing compatibility prefixes to execute.
+            // The saved password is fed to the following SendPeerInfo exactly once for the already-authenticated ZRpc.
+            private static void Prefix(ZNet __instance, ZRpc rpc, ref bool needPassword)
+            {
+                if (__instance == null || __instance.IsServer() || rpc == null) return;
+                if (!_passwordAuthenticatedForAms || rpc != _passwordReplayRpc || String.IsNullOrEmpty(_pendingPassword)) return;
+                needPassword = false;
+                _replayPasswordOnNextPeerInfo = true;
+                if (_instance != null) _instance.Logger.LogDebug("AutoModSync reused the already-accepted password for Valheim's post-sync handshake; no second password prompt is required.");
+            }
         }
 
         // Intent: Registers all AMS4 RPC names exactly once on a ZRpc so manifest and bundle messages can be handled without replacing Valheim's own RPC table entries.
@@ -894,6 +1120,8 @@ namespace ValheimAutoModSync
             {
                 rpc.Register<ZPackage>(RpcHello, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcAck, new Action<ZRpc, ZPackage>(RPC_Ack));
+                rpc.Register<ZPackage>(RpcAuth, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcReady, new Action<ZRpc, ZPackage>(RPC_NoOp));
                 rpc.Register<ZPackage>(RpcManifestBegin, new Action<ZRpc, ZPackage>(RPC_ManifestBegin));
                 rpc.Register<ZPackage>(RpcManifestChunk, new Action<ZRpc, ZPackage>(RPC_ManifestChunk));
                 rpc.Register<ZPackage>(RpcManifestEnd, new Action<ZRpc, ZPackage>(RPC_ManifestEnd));
@@ -917,8 +1145,8 @@ namespace ValheimAutoModSync
         // Intent: Safe placeholder for protocol messages that are outbound-only on the client; receiving one requires no action.
         private static void RPC_NoOp(ZRpc rpc, ZPackage pkg) { }
 
-        // Intent: Handles the optional AMS4 preflight acknowledgement sent before server manifest hashing.
-        // Workflow: validates protocol version, records that an AutoModSync server responded, and extends the timeout while manifest generation proceeds.
+        // Intent: Handles the AMS4 acknowledgement. 2.6.1 uses a presence-only auth-required
+        // acknowledgement on passworded servers and a second full-capability acknowledgement only after authentication.
         private static void RPC_Ack(ZRpc rpc, ZPackage pkg)
         {
             if (!_waitingForServer || rpc != _pendingRpc) return;
@@ -930,12 +1158,51 @@ namespace ValheimAutoModSync
                 try { serverVersion = pkg.ReadString(); } catch { serverVersion = ""; }
                 try { capabilities = pkg.ReadString(); } catch { capabilities = ""; }
                 if (protocol != ProtocolVersion) throw new InvalidDataException("AutoModSync protocol mismatch during preflight acknowledgement.");
+
+                bool authenticationRequired = capabilities.IndexOf("auth-required2", StringComparison.Ordinal) >= 0;
                 _serverAcknowledged = true;
+                if (authenticationRequired)
+                {
+                    string challenge = "";
+                    try { challenge = pkg.ReadString(); } catch { challenge = ""; }
+                    if (!IsValidPasswordAuthChallenge(challenge))
+                        throw new InvalidDataException("AutoModSync password challenge was missing or malformed.");
+
+                    _serverRequiresPasswordAuth = true;
+                    _passwordAuthenticatedForAms = false;
+                    _serverPasswordAuthChallenge = challenge;
+                    _serverSupportsBundleWindow = false;
+                    _serverSupportsBundleBatch = false;
+                    _serverSupportsBundlePipeline = false;
+                    _serverSupportsBundleResume = false;
+                    _serverSupportsBundleScheduler = false;
+                    _serverSupportsPreflightQuarantine = false;
+                    _helloSentUtc = DateTime.MinValue;
+
+                    // Valheim owns password entry. Keep the AMS panel hidden until the player submits
+                    // so it cannot cover or interfere with the native password field.
+                    HideSyncOverlay();
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync server detected; protected synchronization state is gated behind a one-time password challenge.");
+                    return;
+                }
+
+                bool completedPasswordAuthentication = _serverRequiresPasswordAuth;
+                _serverRequiresPasswordAuth = false;
+                _serverPasswordAuthChallenge = "";
+                if (completedPasswordAuthentication)
+                {
+                    _passwordAuthenticatedForAms = true;
+                    _helloSentUtc = DateTime.UtcNow;
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync server accepted the one-time password challenge response; signed synchronization discovery may now begin.");
+                }
+
                 _serverSupportsBundleWindow = capabilities.IndexOf("bundle-window1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleBatch = capabilities.IndexOf("bundle-batch1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundlePipeline = capabilities.IndexOf("bundle-pipeline1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleResume = capabilities.IndexOf("bundle-resume1", StringComparison.Ordinal) >= 0;
                 _serverSupportsBundleScheduler = capabilities.IndexOf("bundle-scheduler1", StringComparison.Ordinal) >= 0;
+                _serverSupportsPreflightQuarantine = capabilities.IndexOf("preflight-quarantine1", StringComparison.Ordinal) >= 0;
                 ShowSyncOverlay(AutoModSyncUiPhase.Checking, "AutoModSync server detected.",
                     "Waiting for the signed server manifest...");
 #if AMS_DEV_TESTS
@@ -1182,6 +1449,19 @@ namespace ValheimAutoModSync
                 if (!seen.Add(destinationKey))
                     throw new InvalidDataException("Server manifest contained a duplicate destination: " + rel);
 
+                // 2.6.1 migration-only core payload: a 2.6.0 standalone client does not know this filename and will
+                // stage it with the new Client.dll. Once the 2.6.1 client is running, the installer/updater is local AMS
+                // core and is never replaced by the server it is about to connect to. This avoids a running updater ever
+                // needing to overwrite itself and keeps server-provided content limited to the documented mod/config roots.
+                if (kind == 'P' && String.Equals(rel, "ValheimAutoModSyncInstaller.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    string installedUpdater = SafeTargetPath(kind, rel);
+                    if (!File.Exists(installedUpdater))
+                        throw new FileNotFoundException("AutoModSync 2.6.1 requires its signed installer/updater. Repair or reinstall AutoModSync before joining.", installedUpdater);
+                    if (_instance != null) _instance.Logger.LogDebug("Ignoring migration-only server installer/updater payload; the locally installed 2.6.1 core updater remains authoritative.");
+                    continue;
+                }
+
                 if (kind == 'P' && IsPackageManagedAutoModSync() && IsAutoModSyncOwnedRelativePath(rel))
                 {
                     if (_instance != null) _instance.Logger.LogDebug("Ignoring server-advertised package-managed AutoModSync file: " + rel);
@@ -1234,6 +1514,12 @@ namespace ValheimAutoModSync
             for (oi = 0; oi < owned.Count; oi++)
             {
                 AutoModSyncOwnershipEntry prior = owned[oi];
+
+                // Installer/updater is 2.6.1 local core, not server-owned synchronized content. Relinquish any
+                // development/prerelease ledger entry rather than ever scheduling the running updater for stale deletion.
+                if (prior.Kind == 'P' && String.Equals(prior.RelativePath, "ValheimAutoModSyncInstaller.exe", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 string key = prior.Kind + ":" + prior.RelativePath;
                 if (manifestByKey.ContainsKey(key)) continue;
 
@@ -1287,7 +1573,7 @@ namespace ValheimAutoModSync
 
                 if (String.Equals(pluginRoot, actualDir, StringComparison.OrdinalIgnoreCase)) return false;
 
-                return File.Exists(Path.Combine(actualDir, "ValheimAutoModSync.Apply.exe"));
+                return File.Exists(Path.Combine(actualDir, "ValheimAutoModSyncInstaller.exe"));
             }
             catch
             {
@@ -1310,6 +1596,7 @@ namespace ValheimAutoModSync
 
             return String.Equals(name, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)
                 || String.Equals(name, "ValheimAutoModSync.Server.dll", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(name, "ValheimAutoModSyncInstaller.exe", StringComparison.OrdinalIgnoreCase)
                 || String.Equals(name, "ValheimAutoModSync.Apply.exe", StringComparison.OrdinalIgnoreCase);
         }
 
@@ -1799,11 +2086,12 @@ namespace ValheimAutoModSync
             AbortAutoModSyncJoin(message);
         }
 
-        // Intent: Persists the verified pending-file list and reconnect token, launches the external apply helper, disconnects cleanly, then schedules Valheim to quit.
-        // Reason: loaded plugin DLLs cannot be safely replaced in-process, so file replacement occurs after this process exits.
+        // Intent: Persists the verified pending-file list and reconnect token, launches the visible signed installer/updater, disconnects cleanly, then schedules Valheim to quit.
+        // Reason: loaded plugin DLLs cannot be safely replaced in-process; the updater waits for a normal Valheim exit and never force-terminates the game.
         private static void BeginApplyAndRestart()
         {
             if (_restartRequested) return;
+            ClearPasswordAuthenticationState();
             _restartRequested = true;
             ShowSyncOverlay(AutoModSyncUiPhase.Applying, "Preparing synchronized changes...",
                 "Verified files are ready. Preparing a crash-safe apply transaction before Valheim restarts.");
@@ -1839,15 +2127,15 @@ namespace ValheimAutoModSync
 
                 PersistPackageManagedLaunchContext(amsRoot);
 
-                string helper = FindApplyHelper(amsRoot);
-                if (!File.Exists(helper)) throw new FileNotFoundException("AutoModSync apply helper is missing.", helper);
+                string updater = FindInstallerUpdater(amsRoot);
+                if (!File.Exists(updater)) throw new FileNotFoundException("AutoModSync installer/updater is missing.", updater);
 
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = helper;
-                psi.Arguments = Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
+                psi.FileName = updater;
+                psi.Arguments = "--apply-pending " + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
                 psi.UseShellExecute = false;
-                psi.CreateNoWindow = true;
-                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                psi.CreateNoWindow = false;
+                psi.WindowStyle = ProcessWindowStyle.Normal;
                 Process.Start(psi);
 
                 ShowSyncOverlay(AutoModSyncUiPhase.Restarting,
@@ -1856,6 +2144,7 @@ namespace ValheimAutoModSync
                 if (_instance != null) _instance.Logger.LogInfo("Mods synchronized. Closing this Valheim instance cleanly before applying updates and relaunching.");
                 try
                 {
+                    _allowPreflightInvoke = true;
                     if (ZNet.instance != null)
                     {
                         MethodInfo disconnect = AccessTools.Method(typeof(ZNet), "Disconnect");
@@ -1863,6 +2152,7 @@ namespace ValheimAutoModSync
                     }
                 }
                 catch { }
+                finally { _allowPreflightInvoke = false; }
                 _quitAfterUtc = DateTime.UtcNow.AddMilliseconds(900.0);
             }
             catch (Exception ex)
@@ -1872,7 +2162,7 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Publishes the verified pending-file list atomically and durably before launching the helper.
+        // Intent: Publishes the verified pending-file list atomically and durably before launching the updater.
         // Safety: a temporary file is flushed with write-through semantics, then renamed on the same volume; an existing pending request is treated as recovery state instead of being overwritten.
         // Intent: Writes the versioned Phase 6 apply plan durably; write entries name verified staging files and delete entries carry the last-owned digest.
         private static void WritePendingFileDurable(string pendingPath, IList<string> entries)
@@ -1910,7 +2200,7 @@ namespace ValheimAutoModSync
             return "W|" + entry.Kind + "|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(rel));
         }
 
-        // Intent: Encodes deletion authority from the exact last-owned digest; the apply helper rechecks these bytes after Valheim exits before deleting anything.
+        // Intent: Encodes deletion authority from the exact last-owned digest; the installer/updater rechecks these bytes after Valheim exits before deleting anything.
         private static string MakePendingDeleteEntry(AutoModSyncOwnershipEntry entry)
         {
             if (entry == null || !IsSupportedManifestKind(entry.Kind) || entry.Size < 0 || !IsSha256Hex(entry.Sha256))
@@ -1988,21 +2278,29 @@ namespace ValheimAutoModSync
             }
         }
 
-        // Intent: Locates the apply helper beside a package-managed plugin when present, otherwise uses the normal BepInEx/AutoModSync helper path.
-        private static string FindApplyHelper(string amsRoot)
+        // Intent: Locates the single signed installer/updater beside the active AutoModSync client plugin.
+        // Migration: there is deliberately no fallback to legacy ValheimAutoModSync.Apply.exe.
+        private static string FindInstallerUpdater(string amsRoot)
         {
             try
             {
                 string pluginDir = Path.GetDirectoryName(typeof(ClientPlugin).Assembly.Location);
                 if (!String.IsNullOrEmpty(pluginDir))
                 {
-                    string packaged = Path.Combine(pluginDir, "ValheimAutoModSync.Apply.exe");
+                    string packaged = Path.Combine(pluginDir, "ValheimAutoModSyncInstaller.exe");
                     if (File.Exists(packaged)) return packaged;
+                }
+
+                string pluginRoot = Paths.PluginPath;
+                if (!String.IsNullOrEmpty(pluginRoot))
+                {
+                    string standalone = Path.Combine(pluginRoot, "ValheimAutoModSyncInstaller.exe");
+                    if (File.Exists(standalone)) return standalone;
                 }
             }
             catch { }
 
-            return Path.Combine(amsRoot, "ValheimAutoModSync.Apply.exe");
+            return "";
         }
 
         // Intent: Arms the 2.5.0 pre-handshake gate for one outgoing ZRpc before vanilla ServerHandshake is emitted.
@@ -2014,19 +2312,22 @@ namespace ValheimAutoModSync
 #if AMS_DEV_TESTS
             _devUiPreviewActive = false;
 #endif
+            ClearPasswordAuthenticationState();
             _pendingRpc = rpc;
             _pendingPassword = "";
             _waitingForServer = true;
             _serverRecognized = false;
             _serverAcknowledged = false;
+            _serverRequiresPasswordAuth = false;
             _serverSupportsBundleWindow = false;
             _serverSupportsBundleBatch = false;
             _serverSupportsBundlePipeline = false;
             _serverSupportsBundleResume = false;
             _serverSupportsBundleScheduler = false;
+            _serverSupportsPreflightQuarantine = false;
             _preflightGateActive = true;
-            _serverHandshakeHeld = false;
-            _heldServerHandshakeParameters = new object[0];
+            _allowPreflightInvoke = false;
+            HeldPreflightInvocations.Clear();
 #if AMS_DEV_TESTS
             _devEmulateLegacyClient = ConsumeDevelopmentLegacyClientMarker();
 #endif
@@ -2041,6 +2342,87 @@ namespace ValheimAutoModSync
             _reconnectBackend = _capturedServerBackend >= 0 ? _capturedServerBackend : GetCurrentOnlineBackend();
             if (_instance != null && _reconnectHost.Length > 0)
                 _instance.Logger.LogDebug("AutoModSync preflight captured reconnect endpoint " + _reconnectHost + ".");
+        }
+
+        // Intent: Produces the exact salted proof Valheim itself would place in PeerInfo, without sending the plaintext password to the AMS server.
+        private static bool TryCreateValheimPasswordProof(string password, out string proof)
+        {
+            proof = "";
+            try
+            {
+                FieldInfo saltField = AccessTools.Field(typeof(ZNet), "m_serverPasswordSalt");
+                MethodInfo hashMethod = AccessTools.Method(typeof(ZNet), "HashPassword", new Type[] { typeof(string), typeof(string) });
+                if (saltField == null || hashMethod == null) return false;
+                string salt = saltField.GetValue(null) as string ?? "";
+                if (String.IsNullOrEmpty(salt)) return false;
+                proof = hashMethod.Invoke(null, new object[] { password ?? "", salt }) as string ?? "";
+                return !String.IsNullOrEmpty(proof);
+            }
+            catch
+            {
+                proof = "";
+                return false;
+            }
+        }
+
+        // Intent: Converts the local Valheim salted verifier into a connection-specific, one-time HMAC response.
+        // Security: AMS never transmits the reusable salted verifier; the server challenge is random, connection-scoped, one-use, and time-bounded.
+        private static bool TryCreatePasswordChallengeResponse(string verifier, string challengeBase64, out string responseBase64)
+        {
+            responseBase64 = "";
+            try
+            {
+                if (String.IsNullOrEmpty(verifier) || !IsValidPasswordAuthChallenge(challengeBase64)) return false;
+                byte[] challenge = Convert.FromBase64String(challengeBase64);
+                byte[] domain = Encoding.UTF8.GetBytes("AMS4-AUTH2\0");
+                byte[] message = new byte[domain.Length + challenge.Length];
+                Buffer.BlockCopy(domain, 0, message, 0, domain.Length);
+                Buffer.BlockCopy(challenge, 0, message, domain.Length, challenge.Length);
+                using (HMACSHA256 hmac = new HMACSHA256(Encoding.UTF8.GetBytes(verifier)))
+                    responseBase64 = Convert.ToBase64String(hmac.ComputeHash(message));
+                return !String.IsNullOrEmpty(responseBase64);
+            }
+            catch
+            {
+                responseBase64 = "";
+                return false;
+            }
+        }
+
+        // Intent: Accepts only the fixed 32-byte random challenge representation emitted by a 2.6.1 server.
+        private static bool IsValidPasswordAuthChallenge(string challengeBase64)
+        {
+            if (String.IsNullOrEmpty(challengeBase64) || challengeBase64.Length > 128) return false;
+            try { return Convert.FromBase64String(challengeBase64).Length == 32; }
+            catch { return false; }
+        }
+
+        // Intent: Removes all in-memory password/authentication replay state so it cannot survive a completed, failed, or disconnected connection.
+        private static void ClearPasswordAuthenticationState()
+        {
+            _pendingPassword = "";
+            _serverRequiresPasswordAuth = false;
+            _passwordAuthenticatedForAms = false;
+            _serverPasswordAuthChallenge = "";
+            _passwordReplayRpc = null;
+            _replayPasswordOnNextPeerInfo = false;
+        }
+
+        // Intent: Invokes Valheim's original SendPeerInfo under a one-call bypass flag to avoid recursively intercepting AMS's own replay.
+        private static void InvokeValheimSendPeerInfo(ZRpc rpc, string password)
+        {
+            if (rpc == null || ZNet.instance == null) return;
+            MethodInfo send = AccessTools.Method(typeof(ZNet), "SendPeerInfo", new Type[] { typeof(ZRpc), typeof(string) });
+            if (send == null) throw new MissingMethodException("ZNet.SendPeerInfo(ZRpc,string)");
+            try
+            {
+                _allowPeerInfo = true;
+                send.Invoke(ZNet.instance, new object[] { rpc, password ?? "" });
+            }
+            finally
+            {
+                _allowPeerInfo = false;
+            }
         }
 
         // Intent: Starts the AMS4_Hello preflight after Valheim has registered its base RPC handlers while preserving the timestamp of the first attempt for the fail-open deadline.
@@ -2084,48 +2466,81 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Completes preflight and resumes the untouched normal connection flow.
-        // If the early gate held ServerHandshake it replays that RPC once; if running in the legacy SendPeerInfo path it delegates to ContinuePeerInfo instead.
+        // Current peers coordinate server readiness first, then every quarantined client-side RPC is replayed in original order; the legacy SendPeerInfo path remains as fallback.
         private static void ResumeNormalHandshake()
         {
             if (_preflightGateActive)
             {
                 ZRpc rpc = _pendingRpc;
-                bool releaseServerHandshake = _serverHandshakeHeld;
-                object[] serverHandshakeParameters = _heldServerHandshakeParameters == null ? new object[0] : (object[])_heldServerHandshakeParameters.Clone();
+                List<HeldRpcInvocation> heldInvocations = new List<HeldRpcInvocation>(HeldPreflightInvocations);
+                bool replayAcceptedPassword = _passwordAuthenticatedForAms && !String.IsNullOrEmpty(_pendingPassword) && rpc != null;
+
+                // A current 2.6.1 server holds its own third-party outbound RPCs as well. Signal that this
+                // exact client connection has completed AMS before either side releases stale-version-sensitive traffic.
+                if (_serverRecognized && _serverSupportsPreflightQuarantine && rpc != null)
+                {
+                    try
+                    {
+                        rpc.Invoke(RpcReady, new object[] { new ZPackage() });
+                        if (_instance != null) _instance.Logger.LogDebug("AutoModSync signaled preflight readiness; server-side compatibility RPC quarantine may now release.");
+                    }
+                    catch (Exception ex)
+                    {
+                        AbortAutoModSyncJoin("AutoModSync could not release the server-side preflight quarantine: " + ex.Message);
+                        return;
+                    }
+                }
+
+                if (replayAcceptedPassword)
+                {
+                    _passwordReplayRpc = rpc;
+                    _replayPasswordOnNextPeerInfo = true;
+                }
+                else
+                {
+                    ClearPasswordAuthenticationState();
+                }
+
                 _waitingForServer = false;
                 _serverRecognized = false;
                 _serverAcknowledged = false;
+                _serverRequiresPasswordAuth = false;
                 _serverSupportsBundleWindow = false;
                 _serverSupportsBundleBatch = false;
                 _serverSupportsBundlePipeline = false;
                 _serverSupportsBundleResume = false;
                 _serverSupportsBundleScheduler = false;
+                _serverSupportsPreflightQuarantine = false;
                 _preflightGateActive = false;
-                _serverHandshakeHeld = false;
-                _heldServerHandshakeParameters = new object[0];
                 _pendingRpc = null;
                 _helloSentUtc = DateTime.MinValue;
                 _lastHelloAttemptUtc = DateTime.MinValue;
                 _helloAttemptCount = 0;
+                HeldPreflightInvocations.Clear();
                 if (!_restartRequested && _uiState.Phase != AutoModSyncUiPhase.Complete) HideSyncOverlay();
                 ResetManifestState();
 
                 if (rpc != null) PreflightComplete.Add(rpc);
-                if (!releaseServerHandshake || rpc == null) return;
+                if (rpc == null || heldInvocations.Count == 0) return;
 
                 try
                 {
-                    _allowServerHandshake = true;
-                    rpc.Invoke("ServerHandshake", serverHandshakeParameters);
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync released the original Valheim ServerHandshake with " + serverHandshakeParameters.Length.ToString(CultureInfo.InvariantCulture) + " argument(s) after preflight.");
+                    _allowPreflightInvoke = true;
+                    int i;
+                    for (i = 0; i < heldInvocations.Count; i++)
+                    {
+                        HeldRpcInvocation held = heldInvocations[i];
+                        rpc.Invoke(held.Method, held.Parameters);
+                    }
+                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync released " + heldInvocations.Count.ToString(CultureInfo.InvariantCulture) + " quarantined preflight RPC(s) in original client-side order after synchronization.");
                 }
                 catch (Exception ex)
                 {
-                    if (_instance != null) _instance.Logger.LogWarning("Could not resume Valheim ServerHandshake: " + ex.Message);
+                    if (_instance != null) _instance.Logger.LogWarning("Could not resume quarantined Valheim/mod handshake RPCs: " + ex.Message);
                 }
                 finally
                 {
-                    _allowServerHandshake = false;
+                    _allowPreflightInvoke = false;
                 }
                 return;
             }
@@ -2149,13 +2564,9 @@ namespace ValheimAutoModSync
             _pendingRpc = null;
             if (!_restartRequested && _uiState.Phase != AutoModSyncUiPhase.Complete) HideSyncOverlay();
             ResetManifestState();
-            if (rpc == null || ZNet.instance == null) return;
             try
             {
-                MethodInfo send = AccessTools.Method(typeof(ZNet), "SendPeerInfo", new Type[] { typeof(ZRpc), typeof(string) });
-                if (send == null) throw new MissingMethodException("ZNet.SendPeerInfo(ZRpc,string)");
-                _allowPeerInfo = true;
-                send.Invoke(ZNet.instance, new object[] { rpc, password });
+                InvokeValheimSendPeerInfo(rpc, password);
             }
             catch (Exception ex)
             {
@@ -2163,7 +2574,7 @@ namespace ValheimAutoModSync
             }
             finally
             {
-                _allowPeerInfo = false;
+                ClearPasswordAuthenticationState();
             }
         }
 
@@ -2188,14 +2599,14 @@ namespace ValheimAutoModSync
             _waitingForServer = false;
             _serverRecognized = true;
             _serverAcknowledged = true;
+            ClearPasswordAuthenticationState();
             _allowPeerInfo = false;
-            _allowServerHandshake = false;
+            _allowPreflightInvoke = false;
 
-            // Keep the gate armed for this exact RPC until the socket is closed. If close itself fails,
-            // the original ServerHandshake remains held rather than silently falling through.
+            // Keep the gate armed for this exact RPC until the socket is closed. Any stale third-party
+            // compatibility RPCs accumulated before the failure are discarded rather than replayed.
             _preflightGateActive = rpc != null;
-            _serverHandshakeHeld = rpc != null;
-            _heldServerHandshakeParameters = new object[0];
+            HeldPreflightInvocations.Clear();
 
             ResetManifestState();
             ShowTransientSyncOverlay(AutoModSyncUiPhase.Failed, "AutoModSync blocked this join.",
@@ -2203,7 +2614,13 @@ namespace ValheimAutoModSync
             if (_instance != null) _instance.Logger.LogError((reason ?? "AutoModSync synchronization failed.") + " The recognized AutoModSync join was aborted.");
 
             if (rpc == null) return;
-            try { rpc.Invoke("Disconnect", new object[0]); } catch { }
+            try
+            {
+                _allowPreflightInvoke = true;
+                rpc.Invoke("Disconnect", new object[0]);
+            }
+            catch { }
+            finally { _allowPreflightInvoke = false; }
             try
             {
                 if (rpc.GetSocket() != null) rpc.GetSocket().Close();
@@ -2926,6 +3343,8 @@ namespace ValheimAutoModSync
             _trustPromptDecision = 0;
             int generation = ++_trustPromptGeneration;
             _trustPromptPending = true;
+            _trustPromptForegroundEstablished = false;
+            _trustPromptNextForegroundUtc = DateTime.MinValue;
             _uiState.SetServerFingerprint(fingerprint);
             ShowSyncOverlay(AutoModSyncUiPhase.Trust, "Trust this server?",
                 "A Windows confirmation dialog is open. The short security code is for optional out-of-band comparison; the full identity is pinned internally.");
@@ -2958,6 +3377,9 @@ namespace ValheimAutoModSync
                              "Security code: " + code + "\r\n\r\n" +
                              "This short code is derived from the server's full signing-key fingerprint for human comparison only. " +
                              "AutoModSync verifies and pins the complete identity internally.\r\n\r\n" +
+                             "BepInEx mods are executable code and can act with the permissions of your Valheim process/user account. Only trust servers whose operator you trust to provide code.\r\n\r\n" +
+                             "Choosing Yes authorizes this server to provide synchronized executable mod files and configuration to this PC.\r\n\r\n" +
+                             "Third-party content is provided by the server operator. AutoModSync does not determine or verify third-party licensing or redistribution rights.\r\n\r\n" +
                              "Choose Yes only if you intended to join this server. If this first contact was unexpected, compare the code with one published by the server owner.";
 
             Thread thread = new Thread(delegate()
@@ -2973,7 +3395,9 @@ namespace ValheimAutoModSync
                     const uint MB_DEFBUTTON2 = 0x00000100u;
                     const uint MB_SETFOREGROUND = 0x00010000u;
                     const uint MB_TOPMOST = 0x00040000u;
-                    int answer = MessageBox(IntPtr.Zero, message, TrustPromptCaption,
+                    IntPtr owner = IntPtr.Zero;
+                    try { owner = Process.GetCurrentProcess().MainWindowHandle; } catch { owner = IntPtr.Zero; }
+                    int answer = MessageBox(owner, message, TrustPromptCaption,
                         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST);
                     decision = answer == 6 ? 1 : 2;
                 }
@@ -3008,6 +3432,32 @@ namespace ValheimAutoModSync
             thread.IsBackground = true;
             try { thread.SetApartmentState(ApartmentState.STA); } catch { }
             thread.Start();
+        }
+
+        // Intent: Brings the native trust dialog above Valheim once Windows has created it, including fullscreen/borderless cases where MB_TOPMOST alone may not win z-order immediately.
+        // UX safety: only the uniquely captioned AutoModSync trust prompt is promoted; no unrelated application window is moved or activated.
+        private static bool PromoteNativeTrustPrompt()
+        {
+            try
+            {
+                IntPtr hwnd = FindWindow(null, TrustPromptCaption);
+                if (hwnd == IntPtr.Zero) return false;
+
+                const uint SWP_NOSIZE = 0x0001u;
+                const uint SWP_NOMOVE = 0x0002u;
+                const uint SWP_SHOWWINDOW = 0x0040u;
+                IntPtr HWND_TOPMOST = new IntPtr(-1);
+
+                ShowWindow(hwnd, 5);
+                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW);
+                BringWindowToTop(hwnd);
+                SetForegroundWindow(hwnd);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         // Intent: Best-effort dismissal when a protected connection dies while the native trust dialog is still open.
@@ -3102,6 +3552,8 @@ namespace ValheimAutoModSync
             _trustPromptDecision = 0;
             _trustPromptGeneration++;
             _trustPromptNativeThreadId = 0;
+            _trustPromptForegroundEstablished = false;
+            _trustPromptNextForegroundUtc = DateTime.MinValue;
 #if AMS_DEV_TESTS
             _devTrustDisconnectGeneration = 0;
             _devTrustDisconnectUtc = DateTime.MinValue;
@@ -3140,14 +3592,16 @@ namespace ValheimAutoModSync
             _waitingForServer = false;
             _serverRecognized = false;
             _serverAcknowledged = false;
+            ClearPasswordAuthenticationState();
             _serverSupportsBundleWindow = false;
             _serverSupportsBundleBatch = false;
             _serverSupportsBundlePipeline = false;
             _serverSupportsBundleResume = false;
             _serverSupportsBundleScheduler = false;
+            _serverSupportsPreflightQuarantine = false;
             _preflightGateActive = false;
-            _serverHandshakeHeld = false;
-            _heldServerHandshakeParameters = new object[0];
+            _allowPreflightInvoke = false;
+            HeldPreflightInvocations.Clear();
             _pendingRpc = null;
             _helloSentUtc = DateTime.MinValue;
             _lastHelloAttemptUtc = DateTime.MinValue;
@@ -4207,8 +4661,20 @@ namespace ValheimAutoModSync
         private static extern IntPtr GetConsoleWindow();
 
         [DllImport("user32.dll")]
-        // Intent: Native Windows API import used to hide an already-open BepInEx console window.
+        // Intent: Native Windows API import used to hide an already-open BepInEx console window and restore the AutoModSync trust dialog.
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        // Intent: Promotes the AutoModSync trust dialog into the topmost z-order without resizing or moving it.
+        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+
+        [DllImport("user32.dll")]
+        // Intent: Requests foreground keyboard/mouse focus for the AutoModSync trust dialog after it has been created.
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        // Intent: Moves the AutoModSync trust dialog to the top of its current z-order as an additional fullscreen-window compatibility measure.
+        private static extern bool BringWindowToTop(IntPtr hWnd);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         // Intent: Native trust prompt shown from a background thread so Unity networking continues while the user decides.
@@ -4348,25 +4814,25 @@ namespace ValheimAutoModSync
             return File.Exists(pending) || Directory.Exists(transaction);
         }
 
-        // Intent: Immediately hands interrupted transaction recovery back to the external helper, then exits this mixed/uncertain process without joining any server.
+        // Intent: Immediately hands interrupted transaction recovery back to the installer/updater, then exits this mixed/uncertain process without joining any server.
         // Workflow: the helper waits for this PID to exit, resolves PREPARED as rollback/retry or COMMITTED as cleanup, preserves reconnect state when safe, and owns the next relaunch.
         private static void ScheduleRecoveredStagingRestart()
         {
             string amsRoot = GetAutoModSyncRoot();
-            string helper = FindApplyHelper(amsRoot);
-            if (!File.Exists(helper)) throw new FileNotFoundException("AutoModSync apply helper is missing during staged-file recovery.", helper);
+            string updater = FindInstallerUpdater(amsRoot);
+            if (!File.Exists(updater)) throw new FileNotFoundException("AutoModSync installer/updater is missing during staged-file recovery.", updater);
 
             ProcessStartInfo psi = new ProcessStartInfo();
-            psi.FileName = helper;
-            psi.Arguments = Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
+            psi.FileName = updater;
+            psi.Arguments = "--apply-pending " + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
             psi.UseShellExecute = false;
-            psi.CreateNoWindow = true;
-            psi.WindowStyle = ProcessWindowStyle.Hidden;
+            psi.CreateNoWindow = false;
+            psi.WindowStyle = ProcessWindowStyle.Normal;
             Process.Start(psi);
 
             _restartRequested = true;
             _quitAfterUtc = DateTime.UtcNow.AddMilliseconds(900.0);
-            if (_instance != null) _instance.Logger.LogWarning("AutoModSync detected unfinished transactional apply state; handing recovery to the external helper and restarting before any server join.");
+            if (_instance != null) _instance.Logger.LogWarning("AutoModSync detected unfinished transactional apply state; handing recovery to the installer/updater and restarting before any server join.");
         }
 
     }

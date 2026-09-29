@@ -18,8 +18,8 @@ using Steamworks;
 [assembly: AssemblyDescription("Server-side signed manifest and synchronized BepInEx plugin transfer component.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+[assembly: AssemblyVersion("2.6.1.0")]
+[assembly: AssemblyFileVersion("2.6.1.0")]
 
 namespace ValheimAutoModSync
 {
@@ -28,11 +28,13 @@ namespace ValheimAutoModSync
     {
         public const string PluginGuid = "com.gordonfreesay.valheimautomodsync.server";
         public const string PluginName = "Valheim AutoModSync Server";
-        public const string PluginVersion = "2.6.0";
+        public const string PluginVersion = "2.6.1";
         public const int ProtocolVersion = 4;
 
         internal const string RpcHello = "AMS4_Hello";
         internal const string RpcAck = "AMS4_Ack";
+        internal const string RpcAuth = "AMS4_Auth";
+        internal const string RpcReady = "AMS4_Ready";
         internal const string RpcManifestBegin = "AMS4_ManifestBegin";
         internal const string RpcManifestChunk = "AMS4_ManifestChunk";
         internal const string RpcManifestEnd = "AMS4_ManifestEnd";
@@ -45,6 +47,7 @@ namespace ValheimAutoModSync
         internal const string RpcBundleEnd = "AMS4_BundleEnd";
         internal const string RpcQueueStatus = "AMS4_QueueStatus";
         internal const string RpcError = "AMS4_Error";
+        private const string Legacy260JotunnVersionDataRpc = "RPC_Jotunn_ReceiveVersionData";
 
         private static ServerPlugin _instance;
         private static ConfigEntry<bool> _enabled;
@@ -84,6 +87,30 @@ namespace ValheimAutoModSync
         private static readonly Dictionary<ZRpc, string> ClientVersions = new Dictionary<ZRpc, string>();
         private static readonly Dictionary<ZRpc, string> ClientCapabilities = new Dictionary<ZRpc, string>();
         private static readonly HashSet<ZRpc> ManifestSentPeers = new HashSet<ZRpc>();
+        // 2.6.1 password boundary: these sets are keyed by the exact live ZRpc object, never by endpoint/player identity.
+        // A later connection therefore cannot inherit authorization from an earlier connection.
+        private static readonly HashSet<ZRpc> AmsPreflightPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> PasswordChallengePeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> PasswordAuthorizedPeers = new HashSet<ZRpc>();
+        private static readonly Dictionary<ZRpc, PasswordAuthChallenge> PasswordAuthChallenges = new Dictionary<ZRpc, PasswordAuthChallenge>();
+        // 2.6.0 cannot speak password-auth2. Its migration bridge first performs Valheim's normal password verification,
+        // then grants the same platform peer one short-lived, one-use reconnect that may fetch migration data but may not enter gameplay.
+        private static readonly HashSet<ZRpc> Legacy260PasswordBootstrapPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> Legacy260PasswordChallengeSentPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> Legacy260JotunnPresenceBypassPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> Legacy260MigrationAuthorizedPeers = new HashSet<ZRpc>();
+        private static readonly Dictionary<ZRpc, DateTime> Legacy260DeferredAuthorizedPreflights = new Dictionary<ZRpc, DateTime>();
+        private static readonly Dictionary<string, DateTime> Legacy260MigrationGrants = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        private const int Legacy260MigrationGrantMinutes = 5;
+        private static readonly HashSet<ZRpc> PreflightReadyPeers = new HashSet<ZRpc>();
+        private static readonly HashSet<ZRpc> PreflightQuarantinePeers = new HashSet<ZRpc>();
+        private static readonly Dictionary<ZRpc, List<HeldRpcInvocation>> HeldPreflightInvocations = new Dictionary<ZRpc, List<HeldRpcInvocation>>();
+        private static readonly Dictionary<ZRpc, DateTime> PreflightQuarantineStartedUtc = new Dictionary<ZRpc, DateTime>();
+        private const int MaxHeldPreflightInvocations = 2048;
+        private const int MaxInactivePreflightMinutes = 30;
+        private static bool _allowPreflightInvoke;
+        private static FieldInfo _serverPasswordField;
+        private static MethodInfo _serverPasswordSaltMethod;
         private static readonly Dictionary<ZRpc, BundleTransfer> BundleTransfers = new Dictionary<ZRpc, BundleTransfer>();
         private static readonly Dictionary<ZRpc, PendingBundleRequest> PendingBundleRequests = new Dictionary<ZRpc, PendingBundleRequest>();
         private static readonly Dictionary<ZRpc, long> SchedulerPeerIds = new Dictionary<ZRpc, long>();
@@ -111,6 +138,18 @@ namespace ValheimAutoModSync
         private static readonly object PreparedBundleResultsLock = new object();
         private static readonly Queue<PreparedBundleResult> PreparedBundleResults = new Queue<PreparedBundleResult>();
         
+        private sealed class PasswordAuthChallenge
+        {
+            public string NonceBase64 = "";
+            public DateTime IssuedUtc = DateTime.MinValue;
+        }
+
+        private sealed class HeldRpcInvocation
+        {
+            public string Method = "";
+            public object[] Parameters = new object[0];
+        }
+
         private sealed class FileRecord
         {
             public string RelativePath;
@@ -205,7 +244,7 @@ namespace ValheimAutoModSync
             _instance = this;
             _enabled = Config.Bind("General", "Enabled", true, "Enable the AutoModSync server role on this Valheim instance.");
             _excludePatterns = Config.Bind("General", "ExcludePatterns",
-                "ValheimAutoModSync.Server.dll;ValheimAutoModSync.Client.dll;ValheimAutoModSync.Apply.exe;manifest.json;icon.png;README.md;CHANGELOG.md;LICENSE;THIRD-PARTY-NOTICES.md;*.pdb;*.mdb;*.log;*.tmp;*.bak;*.md",
+                "ValheimAutoModSync.Server.dll;ValheimAutoModSync.Client.dll;ValheimAutoModSyncInstaller.exe;ValheimAutoModSync.Apply.exe;manifest.json;icon.png;README.md;CHANGELOG.md;LICENSE;THIRD-PARTY-NOTICES.md;*.pdb;*.mdb;*.log;*.tmp;*.bak;*.md",
                 "Semicolon-separated wildcard patterns that will not be sent to clients from any synchronized root. Match is checked against both the relative path and file name.");
             _serverOnlyPatterns = Config.Bind("Compatibility", "ServerOnlyPatterns", "",
                 "Semicolon-separated plugin/patcher wildcard patterns that exist on the server but must never be copied to clients.");
@@ -252,8 +291,12 @@ namespace ValheimAutoModSync
                 CleanupOldBundleCache();
                 Logger.LogInfo("AutoModSync uses Valheim's existing ZRpc connection; no additional listening port is opened.");
                 Logger.LogInfo("AutoModSync server identity verification code: " + AutoModSyncIdentityDisplay.VerificationCode(_publicFingerprint) + ".");
-                new Harmony(PluginGuid).PatchAll(typeof(NetworkPatches));
-                Logger.LogInfo("AutoModSync early connection hooks installed.");
+                Harmony harmony = new Harmony(PluginGuid);
+                harmony.PatchAll(typeof(NetworkPatches));
+                harmony.PatchAll(typeof(ServerInvokePreflightQuarantinePatch));
+                harmony.PatchAll(typeof(ProtectedServerHandshakeGatePatch));
+                harmony.PatchAll(typeof(ProtectedPeerInfoGatePatch));
+                Logger.LogInfo("AutoModSync early connection/password-boundary hooks installed.");
                 try { UpgradeDevelopmentTransferDefaults(); }
                 catch (Exception migrateEx) { Logger.LogWarning("AutoModSync could not migrate development transfer defaults; continuing with existing values: " + migrateEx.Message); }
             }
@@ -269,6 +312,7 @@ namespace ValheimAutoModSync
         {
             DateTime now = DateTime.UtcNow;
             TryPublishServerBrowserPresence(now);
+            ServiceLegacy260DeferredAuthorizedPreflights(now);
             DrainPreparedBundleResults();
             ServiceTransferScheduler(now);
 
@@ -404,9 +448,25 @@ namespace ValheimAutoModSync
         // Intent: Reclaims disconnected queued/active peers and active slots whose connected clients stopped requesting data.
         private static void CleanupDisconnectedOrIdleTransfers(DateTime now)
         {
+            // Legacy 2.6.0 migration grants are deliberately short-lived and memory-only. Expire unused grants
+            // independently of socket cleanup so a completed password check never creates durable authorization.
+            List<string> expiredLegacyGrants = new List<string>();
+            foreach (KeyValuePair<string, DateTime> grant in Legacy260MigrationGrants)
+                if (grant.Value == DateTime.MinValue || now > grant.Value) expiredLegacyGrants.Add(grant.Key);
+            int lg;
+            for (lg = 0; lg < expiredLegacyGrants.Count; lg++) Legacy260MigrationGrants.Remove(expiredLegacyGrants[lg]);
+
             HashSet<ZRpc> candidates = new HashSet<ZRpc>();
             foreach (ZRpc rpc in PendingBundleRequests.Keys) candidates.Add(rpc);
             foreach (ZRpc rpc in BundleTransfers.Keys) candidates.Add(rpc);
+            foreach (ZRpc rpc in AmsPreflightPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in PasswordChallengePeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in PasswordAuthorizedPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in Legacy260PasswordBootstrapPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in Legacy260PasswordChallengeSentPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in Legacy260MigrationAuthorizedPeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in PreflightQuarantinePeers) candidates.Add(rpc);
+            foreach (ZRpc rpc in PasswordAuthChallenges.Keys) candidates.Add(rpc);
 #if AMS_DEV_TESTS
             foreach (ZRpc rpc in DevelopmentSuppressedAmsPeers) candidates.Add(rpc);
             foreach (ZRpc rpc in DevelopmentFailClosedModes.Keys) candidates.Add(rpc);
@@ -437,6 +497,45 @@ namespace ValheimAutoModSync
                 }
             }
 
+            // Connections that never identify as AMS should not retain third-party traffic indefinitely.
+            // Normal ServerHandshake releases this earlier; five seconds is only a fail-safe for unusual connection paths.
+            List<ZRpc> quarantineTimeouts = new List<ZRpc>();
+            foreach (ZRpc rpc in PreflightQuarantinePeers)
+            {
+                if (AmsPreflightPeers.Contains(rpc) || remove.Contains(rpc)) continue;
+                DateTime started;
+                if (PreflightQuarantineStartedUtc.TryGetValue(rpc, out started)
+                    && started != DateTime.MinValue
+                    && (now - started).TotalSeconds >= 5.0)
+                    quarantineTimeouts.Add(rpc);
+            }
+            int qt;
+            for (qt = 0; qt < quarantineTimeouts.Count; qt++)
+                ReleaseServerPreflightQuarantine(quarantineTimeouts[qt], "non-AMS discovery timeout");
+
+            // A recognized peer cannot hold authentication/trust/quarantine state forever without progressing.
+            // Active or queued bundle transfers use their existing transfer/scheduler timeouts and are not capped here.
+            List<ZRpc> expiredPreflights = new List<ZRpc>();
+            foreach (ZRpc rpc in AmsPreflightPeers)
+            {
+                if (remove.Contains(rpc) || PreflightReadyPeers.Contains(rpc)) continue;
+                if (BundleTransfers.ContainsKey(rpc) || PendingBundleRequests.ContainsKey(rpc)) continue;
+                DateTime started;
+                if (PreflightQuarantineStartedUtc.TryGetValue(rpc, out started)
+                    && started != DateTime.MinValue
+                    && (now - started).TotalMinutes >= MaxInactivePreflightMinutes)
+                    expiredPreflights.Add(rpc);
+            }
+            int ep;
+            for (ep = 0; ep < expiredPreflights.Count; ep++)
+            {
+                ZRpc rpc = expiredPreflights[ep];
+                SendError(rpc, "AutoModSync preflight expired before synchronization progressed. Reconnect to try again.");
+                DiscardServerPreflightQuarantine(rpc);
+                try { if (rpc.GetSocket() != null) rpc.GetSocket().Close(); } catch { }
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync closed an inactive preflight that exceeded the bounded preflight lifetime.");
+            }
+
             int i;
             for (i = 0; i < idle.Count; i++)
             {
@@ -454,6 +553,16 @@ namespace ValheimAutoModSync
                 ClientVersions.Remove(rpc);
                 ClientCapabilities.Remove(rpc);
                 ManifestSentPeers.Remove(rpc);
+                AmsPreflightPeers.Remove(rpc);
+                PasswordChallengePeers.Remove(rpc);
+                PasswordAuthChallenges.Remove(rpc);
+                PasswordAuthorizedPeers.Remove(rpc);
+                Legacy260PasswordBootstrapPeers.Remove(rpc);
+                Legacy260PasswordChallengeSentPeers.Remove(rpc);
+                Legacy260JotunnPresenceBypassPeers.Remove(rpc);
+                Legacy260MigrationAuthorizedPeers.Remove(rpc);
+                Legacy260DeferredAuthorizedPreflights.Remove(rpc);
+                DiscardServerPreflightQuarantine(rpc);
 #if AMS_DEV_TESTS
                 DevelopmentLegacyServerPeers.Remove(rpc);
                 DevelopmentSuppressedAmsPeers.Remove(rpc);
@@ -1048,11 +1157,12 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Loads or creates the persistent RSA server identity used to sign manifests.
-        // Workflow: generates a 2048-bit keypair only when absent, writes the public key, and derives the fingerprint clients pin on first trust.
+        // Security: the private key is ACL-hardened to the actual server runtime identity + SYSTEM + Administrators before AMS reads or uses it; failure is fail-closed.
         private static void LoadIdentity()
         {
             string path = Path.Combine(Paths.ConfigPath, "ValheimAutoModSync.private.xml");
             string publicPath = Path.Combine(Paths.ConfigPath, "ValheimAutoModSync.public.xml");
+            bool generatedNow = false;
 
             if (!File.Exists(path))
             {
@@ -1066,10 +1176,28 @@ namespace ValheimAutoModSync
                     string generatedPublicXml = generated.ToXmlString(false);
                     File.WriteAllText(path, privateXml + Environment.NewLine, new UTF8Encoding(false));
                     File.WriteAllText(publicPath, generatedPublicXml + Environment.NewLine, new UTF8Encoding(false));
+                    generatedNow = true;
                 }
-
-                if (_instance != null) _instance.Logger.LogInfo("Generated a new AutoModSync server signing identity at " + path + ". Back up this private identity to preserve the server fingerprint.");
             }
+
+            try
+            {
+                AutoModSyncPrivateKeySecurity.HardenPrivateKeyFile(path);
+            }
+            catch
+            {
+                if (generatedNow)
+                {
+                    try { if (File.Exists(path)) File.Delete(path); } catch { }
+                    try { if (File.Exists(publicPath)) File.Delete(publicPath); } catch { }
+                }
+                throw;
+            }
+
+            if (generatedNow && _instance != null)
+                _instance.Logger.LogInfo("Generated a new ACL-protected AutoModSync server signing identity at " + path + ". Back up this private identity securely to preserve the server fingerprint.");
+            else if (_instance != null)
+                _instance.Logger.LogDebug("AutoModSync verified restrictive ACL protection on the server private signing identity.");
 
             string xml = File.ReadAllText(path).Trim();
             RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048);
@@ -1085,11 +1213,13 @@ namespace ValheimAutoModSync
         [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
         private static class NetworkPatches
         {
-            // Intent: Registers AutoModSync RPC handlers as early as possible for each incoming server-side ZNet connection.
+            [HarmonyPriority(Priority.First + 200)]
+            // Intent: Arms a bounded server-side outbound RPC quarantine before ordinary third-party OnNewConnection prefixes can send compatibility/version traffic.
             private static void Prefix(ZNet __instance, ZNetPeer peer)
             {
                 if (__instance == null || !__instance.IsServer()) return;
                 if (_enabled == null || !_enabled.Value || peer == null || peer.m_rpc == null) return;
+                ArmServerPreflightQuarantine(peer.m_rpc);
                 RegisterRpc(peer.m_rpc);
             }
 
@@ -1099,6 +1229,251 @@ namespace ValheimAutoModSync
                 if (__instance == null || !__instance.IsServer()) return;
                 if (_enabled == null || !_enabled.Value || peer == null || peer.m_rpc == null) return;
                 RegisterRpc(peer.m_rpc);
+            }
+        }
+
+        [HarmonyPatch(typeof(ZRpc), "Invoke", new Type[] { typeof(string), typeof(object[]) })]
+        private static class ServerInvokePreflightQuarantinePatch
+        {
+            [HarmonyPriority(Priority.First + 200)]
+            // Intent: Holds non-AMS, non-security-control outbound RPCs while a new connection is in AMS discovery/synchronization.
+            // Compatibility: stale ServerSync/Jotunn-style version messages cannot reject an old client before AMS can replace it.
+            private static bool Prefix(ZRpc __instance, string method, object[] parameters)
+            {
+                if (_allowPreflightInvoke || __instance == null || !PreflightQuarantinePeers.Contains(__instance)) return true;
+                if (Legacy260JotunnPresenceBypassPeers.Contains(__instance)
+                    && String.Equals(method, Legacy260JotunnVersionDataRpc, StringComparison.Ordinal))
+                    return true;
+                if (IsAutoModSyncRpcMethod(method) || IsServerSecurityControlRpcMethod(method)) return true;
+
+                List<HeldRpcInvocation> queue;
+                if (!HeldPreflightInvocations.TryGetValue(__instance, out queue))
+                {
+                    queue = new List<HeldRpcInvocation>();
+                    HeldPreflightInvocations[__instance] = queue;
+                }
+                if (queue.Count >= MaxHeldPreflightInvocations)
+                {
+                    SendError(__instance, "AutoModSync preflight RPC quarantine exceeded its bounded queue; reconnect after reducing pre-handshake RPC traffic.");
+                    try { if (__instance.GetSocket() != null) __instance.GetSocket().Close(); } catch { }
+                    return false;
+                }
+
+                HeldRpcInvocation held = new HeldRpcInvocation();
+                held.Method = method ?? "";
+                held.Parameters = parameters == null ? new object[0] : (object[])parameters.Clone();
+                queue.Add(held);
+                if (_instance != null) _instance.Logger.LogDebug("AutoModSync quarantined server preflight RPC '" + held.Method + "' until synchronization is ready.");
+                return false;
+            }
+        }
+
+        // Intent: Starts a bounded hold for third-party preflight messages on exactly one live connection.
+        private static void ArmServerPreflightQuarantine(ZRpc rpc)
+        {
+            if (rpc == null || PreflightQuarantinePeers.Contains(rpc)) return;
+            PreflightQuarantinePeers.Add(rpc);
+            HeldPreflightInvocations[rpc] = new List<HeldRpcInvocation>();
+            PreflightQuarantineStartedUtc[rpc] = DateTime.UtcNow;
+        }
+
+        // Intent: Releases queued server-side third-party RPCs in their original invocation order only after AMS is safe to yield the connection.
+        private static void ReleaseServerPreflightQuarantine(ZRpc rpc, string reason)
+        {
+            if (rpc == null || !PreflightQuarantinePeers.Remove(rpc)) return;
+            PreflightQuarantineStartedUtc.Remove(rpc);
+            List<HeldRpcInvocation> queue;
+            if (!HeldPreflightInvocations.TryGetValue(rpc, out queue)) queue = new List<HeldRpcInvocation>();
+            HeldPreflightInvocations.Remove(rpc);
+
+            try
+            {
+                _allowPreflightInvoke = true;
+                int i;
+                for (i = 0; i < queue.Count; i++)
+                    rpc.Invoke(queue[i].Method, queue[i].Parameters);
+                if (_instance != null && queue.Count > 0)
+                    _instance.Logger.LogInfo("AutoModSync released " + queue.Count.ToString(CultureInfo.InvariantCulture) + " quarantined server RPC(s) after " + (reason ?? "preflight") + ".");
+            }
+            finally
+            {
+                _allowPreflightInvoke = false;
+            }
+        }
+
+        // Intent: Drops stale queued compatibility traffic without replay when the connection will not continue with the loaded mod set.
+        private static void DiscardServerPreflightQuarantine(ZRpc rpc)
+        {
+            if (rpc == null) return;
+            PreflightQuarantinePeers.Remove(rpc);
+            PreflightQuarantineStartedUtc.Remove(rpc);
+            HeldPreflightInvocations.Remove(rpc);
+            PreflightReadyPeers.Remove(rpc);
+            Legacy260DeferredAuthorizedPreflights.Remove(rpc);
+        }
+
+        // Intent: AutoModSync protocol methods remain live while compatibility/gameplay methods are quarantined.
+        private static bool IsAutoModSyncRpcMethod(string method)
+        {
+            return !String.IsNullOrEmpty(method) && method.StartsWith("AMS4_", StringComparison.Ordinal);
+        }
+
+        // Intent: Gives released 2.6.0 clients a Jötunn-compatible presence record so Jötunn does not cancel SendPeerInfo before Valheim can check the server key.
+        // Privacy: this synthetic envelope deliberately contains no server mod names, mod versions, configuration, manifest data, fingerprint, or bundle metadata.
+        private static void SendLegacy260JotunnPresenceSentinel(ZRpc rpc)
+        {
+            if (rpc == null) return;
+
+            // Jötunn 2.30.x treats any successfully parsed ServerVersionData as proof that the compatibility endpoint exists.
+            // Encode the backwards-compatible envelope with zero legacy modules and zero current modules. Version/network
+            // fields are intentionally neutral because this bootstrap record is presence-only and is never used as server inventory.
+            ZPackage sentinel = new ZPackage();
+            sentinel.Write(0);
+            sentinel.Write(0);
+            sentinel.Write(0);
+            sentinel.Write(0);
+            sentinel.Write("");
+            sentinel.Write((uint)0);
+            sentinel.Write(0);
+
+            try
+            {
+                Legacy260JotunnPresenceBypassPeers.Add(rpc);
+                rpc.Invoke(Legacy260JotunnVersionDataRpc, new object[] { sentinel });
+                if (_instance != null)
+                    _instance.Logger.LogDebug("AutoModSync sent a zero-module Jötunn compatibility sentinel for the released 2.6.0 server-key bootstrap.");
+            }
+            finally
+            {
+                Legacy260JotunnPresenceBypassPeers.Remove(rpc);
+            }
+        }
+
+        // Intent: Never delays core server denial/password controls; these may represent a ban, capacity, or authentication decision rather than mod compatibility.
+        private static bool IsServerSecurityControlRpcMethod(string method)
+        {
+            return String.Equals(method, "Error", StringComparison.Ordinal)
+                || String.Equals(method, "Disconnect", StringComparison.Ordinal)
+                || String.Equals(method, "ClientHandshake", StringComparison.Ordinal);
+        }
+
+        // 2.6.1 defense-in-depth: an AMS-aware connection cannot enter the vanilla/third-party
+        // compatibility stage until the password boundary and AMS synchronization boundary are both satisfied.
+        [HarmonyPatch(typeof(ZNet), "RPC_ServerHandshake")]
+        private static class ProtectedServerHandshakeGatePatch
+        {
+            [HarmonyPriority(Priority.First + 200)]
+            // Intent: Blocks early ServerHandshake for current AMS peers, while also using normal ServerHandshake as the compatibility-quarantine release point for legacy/non-AMS peers.
+            private static bool Prefix(ZNet __instance, ZRpc rpc)
+            {
+                if (__instance == null || !__instance.IsServer() || rpc == null) return true;
+
+                if (AmsPreflightPeers.Contains(rpc))
+                {
+                    if (Legacy260PasswordBootstrapPeers.Contains(rpc))
+                    {
+                        // Released 2.6.0 first holds this original ServerHandshake for its fixed AMS discovery timeout.
+                        // Once it finally arrives here, suppress the vanilla/third-party ServerHandshake path so client-side
+                        // compatibility validators cannot disconnect before server access is checked. Only now send Valheim's
+                        // normal ClientHandshake challenge; no AMS manifest/config/bundle state is disclosed.
+                        if (Legacy260PasswordChallengeSentPeers.Contains(rpc))
+                        {
+                            if (_instance != null) _instance.Logger.LogDebug("AutoModSync suppressed a duplicate released-2.6.0 ServerHandshake while the normal server-key check is pending.");
+                            return false;
+                        }
+
+                        string legacySalt;
+                        if (!TryGetServerPasswordSalt(out legacySalt))
+                        {
+                            SendError(rpc, "AutoModSync could not start the protected Valheim server-key check for 2.6.0 migration.");
+                            if (_instance != null) _instance.Logger.LogWarning("AutoModSync could not obtain Valheim's server-key salt for the released 2.6.0 migration bootstrap.");
+                            return false;
+                        }
+
+                        Legacy260PasswordChallengeSentPeers.Add(rpc);
+                        try
+                        {
+                            SendLegacy260JotunnPresenceSentinel(rpc);
+                            rpc.Invoke("ClientHandshake", new object[] { true, legacySalt });
+                            if (_instance != null) _instance.Logger.LogInfo("AutoModSync released the normal Valheim server-key prompt for the 2.6.0 migration bootstrap; protected synchronization remains withheld.");
+                        }
+                        catch (Exception ex)
+                        {
+                            Legacy260PasswordChallengeSentPeers.Remove(rpc);
+                            SendError(rpc, "AutoModSync could not start the protected Valheim server-key check for 2.6.0 migration.");
+                            if (_instance != null) _instance.Logger.LogWarning("AutoModSync failed to send the released-2.6.0 server-key challenge: " + ex.Message);
+                        }
+                        return false;
+                    }
+
+                    if (Legacy260MigrationAuthorizedPeers.Contains(rpc) && !PasswordAuthorizedPeers.Contains(rpc))
+                    {
+                        if (_instance != null) _instance.Logger.LogWarning("AutoModSync blocked gameplay handshake on a migration-only 2.6.0 authorization.");
+                        return false;
+                    }
+
+                    if (IsPasswordProtectedServer() && !PasswordAuthorizedPeers.Contains(rpc))
+                    {
+                        if (_instance != null) _instance.Logger.LogWarning("AutoModSync blocked an early Valheim ServerHandshake until the password boundary is satisfied.");
+                        return false;
+                    }
+
+                    if (ClientSupportsCapability(rpc, "preflight-quarantine1") && !PreflightReadyPeers.Contains(rpc))
+                    {
+                        if (_instance != null) _instance.Logger.LogWarning("AutoModSync blocked an early Valheim ServerHandshake until synchronization preflight is complete.");
+                        return false;
+                    }
+                }
+
+                ReleaseServerPreflightQuarantine(rpc, "Valheim ServerHandshake");
+                return true;
+            }
+        }
+
+        // A client that has positively entered AMS preflight cannot bypass the 2.6.1 password
+        // boundary by sending vanilla PeerInfo instead of AMS4_Auth. Non-AMS clients are untouched.
+        [HarmonyPatch(typeof(ZNet), "RPC_PeerInfo")]
+        private static class ProtectedPeerInfoGatePatch
+        {
+            [HarmonyPriority(Priority.First + 200)]
+            // Intent: Current AMS peers may not use vanilla PeerInfo to bypass password-auth2.
+            // The sole exception is an exact 2.6.0 bootstrap peer, whose PeerInfo must run so Valheim itself can validate the password before any AMS migration disclosure.
+            private static bool Prefix(ZNet __instance, ZRpc rpc)
+            {
+                if (__instance == null || !__instance.IsServer() || rpc == null || !AmsPreflightPeers.Contains(rpc)) return true;
+                if (!IsPasswordProtectedServer()) return true;
+                if (Legacy260PasswordBootstrapPeers.Contains(rpc)) return true;
+                if (PasswordAuthorizedPeers.Contains(rpc)) return true;
+                try { rpc.Invoke("Error", new object[] { 6 }); } catch { }
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync blocked pre-authentication PeerInfo on an AMS-aware passworded connection.");
+                return false;
+            }
+
+            [HarmonyPriority(Priority.Last)]
+            // Intent: A 2.6.0 migration grant is created only after the original Valheim PeerInfo handler has accepted this exact peer.
+            // The authenticated connection is then closed without releasing quarantined gameplay/mod traffic; the next same-identity join consumes the grant for migration only.
+            private static void Postfix(ZNet __instance, ZRpc rpc)
+            {
+                if (__instance == null || !__instance.IsServer() || rpc == null || !Legacy260PasswordBootstrapPeers.Contains(rpc)) return;
+                if (!IsPasswordProtectedServer() || !IsValheimPeerReady(__instance, rpc)) return;
+
+                Legacy260PasswordBootstrapPeers.Remove(rpc);
+                Legacy260PasswordChallengeSentPeers.Remove(rpc);
+                if (!IssueLegacy260MigrationGrant(rpc))
+                {
+                    DiscardServerPreflightQuarantine(rpc);
+                    SendError(rpc, "AutoModSync could not bind the authenticated 2.6.0 migration reconnect to this platform peer.");
+                    try { if (rpc.GetSocket() != null) rpc.GetSocket().Close(); } catch { }
+                    return;
+                }
+
+                // Never release world state, compatibility results, or gameplay traffic from this bootstrap connection.
+                DiscardServerPreflightQuarantine(rpc);
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync verified server access for the 2.6.0 client through Valheim's normal server-key check; reconnect once to consume the one-use 2.6.1 migration grant.");
+
+                try { rpc.Invoke("Disconnect", new object[0]); } catch { }
+                try { if (rpc.GetSocket() != null) rpc.GetSocket().Close(); } catch { }
             }
         }
 
@@ -1134,6 +1509,8 @@ namespace ValheimAutoModSync
             {
                 rpc.Register<ZPackage>(RpcHello, new Action<ZRpc, ZPackage>(RPC_Hello));
                 rpc.Register<ZPackage>(RpcAck, new Action<ZRpc, ZPackage>(RPC_NoOp));
+                rpc.Register<ZPackage>(RpcAuth, new Action<ZRpc, ZPackage>(RPC_Auth));
+                rpc.Register<ZPackage>(RpcReady, new Action<ZRpc, ZPackage>(RPC_Ready));
                 rpc.Register<ZPackage>(RpcGetBundle, new Action<ZRpc, ZPackage>(RPC_GetBundle));
                 rpc.Register<ZPackage>(RpcGetBundleChunk, new Action<ZRpc, ZPackage>(RPC_GetBundleChunk));
                 rpc.Register<ZPackage>(RpcGetBundleBatch, new Action<ZRpc, ZPackage>(RPC_GetBundleBatch));
@@ -1158,8 +1535,429 @@ namespace ValheimAutoModSync
         // Intent: Safe placeholder for protocol messages that are response-only from the server's perspective.
         private static void RPC_NoOp(ZRpc rpc, ZPackage pkg) { }
 
+        // Intent: Reads Valheim's server-password state without exposing the hash or salt through AMS.
+        // Security: reflection failure is fail-closed for protected synchronization; it never falls back to manifest disclosure.
+        private static bool TryGetServerPasswordHash(out string passwordHash)
+        {
+            passwordHash = "";
+            try
+            {
+                if (_serverPasswordField == null) _serverPasswordField = AccessTools.Field(typeof(ZNet), "m_serverPassword");
+                if (_serverPasswordField == null) return false;
+                passwordHash = _serverPasswordField.GetValue(null) as string ?? "";
+                return true;
+            }
+            catch
+            {
+                passwordHash = "";
+                return false;
+            }
+        }
+
+        // Intent: Treats an unreadable password state as protected so reflection drift cannot become a disclosure bypass.
+        private static bool IsPasswordProtectedServer()
+        {
+            string passwordHash;
+            // Unknown password state is treated as protected so AMS cannot disclose synchronization state after a game update changes internals.
+            if (!TryGetServerPasswordHash(out passwordHash)) return true;
+            return !String.IsNullOrEmpty(passwordHash);
+        }
+
+        // Intent: Obtains Valheim's existing per-server password salt solely to drive the normal client password challenge.
+        private static bool TryGetServerPasswordSalt(out string salt)
+        {
+            salt = "";
+            try
+            {
+                if (_serverPasswordSaltMethod == null)
+                    _serverPasswordSaltMethod = AccessTools.Method(typeof(ZNet), "ServerPasswordSalt", Type.EmptyTypes);
+                if (_serverPasswordSaltMethod == null) return false;
+                salt = _serverPasswordSaltMethod.Invoke(null, null) as string ?? "";
+                return !String.IsNullOrEmpty(salt);
+            }
+            catch
+            {
+                salt = "";
+                return false;
+            }
+        }
+
+        // Intent: Limits the compatibility exception to the exact released 2.6.0 client; older AMS4 clients remain unable to use the migration bridge.
+        private static bool IsLegacy260MigrationClient(ZRpc rpc)
+        {
+            string version;
+            if (rpc == null || !ClientVersions.TryGetValue(rpc, out version)) return false;
+            version = (version ?? "").Trim();
+            return String.Equals(version, "2.6.0", StringComparison.Ordinal)
+                || String.Equals(version, "2.6.0.0", StringComparison.Ordinal);
+        }
+
+        // Intent: Derives an in-memory migration-grant key from the platform/socket peer identity without retaining or logging that identity in plaintext.
+        // Security: the grant is useful only to the same platform peer, expires quickly, is consumed once, and is never written to disk.
+        private static string Legacy260MigrationIdentityKey(ZRpc rpc)
+        {
+            if (rpc == null) return "";
+            try
+            {
+                string identity = rpc.GetSocket() == null ? "" : (rpc.GetSocket().GetHostName() ?? "");
+                if (String.IsNullOrWhiteSpace(identity)) return "";
+                using (SHA256 sha = SHA256.Create())
+                    return ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes("AMS260-MIGRATION\0" + identity)));
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        // Intent: Issues one short-lived migration reconnect only after Valheim itself accepted the legacy client's password-bearing PeerInfo.
+        private static bool IssueLegacy260MigrationGrant(ZRpc rpc)
+        {
+            string key = Legacy260MigrationIdentityKey(rpc);
+            if (key.Length != 64) return false;
+            Legacy260MigrationGrants[key] = DateTime.UtcNow.AddMinutes(Legacy260MigrationGrantMinutes);
+            return true;
+        }
+
+        // Intent: Consumes a prior successful Valheim-password authorization exactly once for the same 2.6.0 platform peer.
+        // Scope: consumption authorizes migration data only; it is intentionally not added to PasswordAuthorizedPeers and cannot authorize gameplay.
+        private static bool TryConsumeLegacy260MigrationGrant(ZRpc rpc)
+        {
+            string key = Legacy260MigrationIdentityKey(rpc);
+            if (key.Length != 64) return false;
+
+            DateTime expiresUtc;
+            if (!Legacy260MigrationGrants.TryGetValue(key, out expiresUtc)) return false;
+            Legacy260MigrationGrants.Remove(key);
+            return expiresUtc != DateTime.MinValue && DateTime.UtcNow <= expiresUtc;
+        }
+
+        // Intent: Confirms that Valheim's original RPC_PeerInfo accepted this exact socket before a legacy migration grant can be issued.
+        // Wrong passwords, bans, capacity/version failures, and third-party prefixes that stop the original handler all leave the peer not ready.
+        private static bool IsValheimPeerReady(ZNet instance, ZRpc rpc)
+        {
+            if (instance == null || rpc == null) return false;
+            try
+            {
+                List<ZNetPeer> peers = instance.GetPeers();
+                if (peers == null) return false;
+                int i;
+                for (i = 0; i < peers.Count; i++)
+                {
+                    ZNetPeer peer = peers[i];
+                    if (peer != null && peer.m_rpc == rpc) return peer.IsReady();
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        // Intent: Allows protected synchronization disclosure to public servers, the exact current ZRpc that proved password-auth2,
+        // or the exact one-use 2.6.0 migration reconnect created only after an earlier vanilla password success by the same platform peer.
+        // Migration authorization is deliberately separate from gameplay authorization and is blocked from ServerHandshake below.
+        private static bool CanDiscloseProtectedSyncState(ZRpc rpc)
+        {
+            string passwordHash;
+            if (!TryGetServerPasswordHash(out passwordHash)) return false;
+            if (String.IsNullOrEmpty(passwordHash)) return true;
+            if (rpc == null || (!PasswordAuthorizedPeers.Contains(rpc) && !Legacy260MigrationAuthorizedPeers.Contains(rpc))) return false;
+            try { return rpc.IsConnected(); } catch { return false; }
+        }
+
+        // Intent: Enforces the disclosure gate at every manifest/bundle entry point and returns only a generic auth-required error on denial.
+        private static bool RequireProtectedSyncAuthorization(ZRpc rpc)
+        {
+            if (CanDiscloseProtectedSyncState(rpc)) return true;
+            SendError(rpc, "AutoModSync authentication is required before synchronization data is available.");
+            return false;
+        }
+
+        // Intent: Sends the only AMS acknowledgement allowed before password authentication.
+        // It discloses product presence/version/protocol and that authentication is required, but no
+        // signing identity, manifest dimensions, filenames, hashes, sizes, configuration, cache keys, or transfer capabilities.
+        private static void SendAuthenticationRequiredAck(ZRpc rpc, string challengeBase64)
+        {
+            ZPackage ack = new ZPackage();
+            ack.Write(ProtocolVersion);
+            ack.Write(PluginVersion);
+            ack.Write("auth-required2");
+            ack.Write(challengeBase64 ?? "");
+            rpc.Invoke(RpcAck, new object[] { ack });
+        }
+
+        // Intent: Creates one cryptographically random, exact-connection password challenge and reuses it only for duplicate hello retries on that same live connection.
+        private static PasswordAuthChallenge GetOrCreatePasswordAuthChallenge(ZRpc rpc)
+        {
+            PasswordAuthChallenge challenge;
+            if (PasswordAuthChallenges.TryGetValue(rpc, out challenge)) return challenge;
+
+            byte[] nonce = new byte[32];
+            using (RandomNumberGenerator rng = RandomNumberGenerator.Create()) rng.GetBytes(nonce);
+            challenge = new PasswordAuthChallenge();
+            challenge.NonceBase64 = Convert.ToBase64String(nonce);
+            challenge.IssuedUtc = DateTime.UtcNow;
+            PasswordAuthChallenges[rpc] = challenge;
+            return challenge;
+        }
+
+        // Intent: Computes the expected one-time HMAC response using Valheim's already-salted verifier as a key without transmitting that reusable verifier.
+        private static byte[] ComputePasswordAuthResponse(string verifier, string challengeBase64)
+        {
+            byte[] challenge = Convert.FromBase64String(challengeBase64);
+            if (challenge.Length != 32) throw new InvalidDataException("Invalid AutoModSync password challenge.");
+            byte[] domain = Encoding.UTF8.GetBytes("AMS4-AUTH2\0");
+            byte[] message = new byte[domain.Length + challenge.Length];
+            Buffer.BlockCopy(domain, 0, message, 0, domain.Length);
+            Buffer.BlockCopy(challenge, 0, message, domain.Length, challenge.Length);
+            using (HMACSHA256 hmac = new HMACSHA256(Encoding.UTF8.GetBytes(verifier ?? "")))
+                return hmac.ComputeHash(message);
+        }
+
+        // Intent: Compares fixed-length authentication bytes without an early-exit position leak.
+        private static bool ConstantTimeEquals(byte[] a, byte[] b)
+        {
+            if (a == null || b == null || a.Length != b.Length) return false;
+            int diff = 0;
+            int i;
+            for (i = 0; i < a.Length; i++) diff |= a[i] ^ b[i];
+            return diff == 0;
+        }
+
+        // Intent: Preserves 2.6.0 behavior on public servers and starts a presence-only Valheim password challenge on protected servers.
+        private static bool EnsurePreflightAuthorizationOrChallenge(ZRpc rpc)
+        {
+            string expectedHash;
+            if (!TryGetServerPasswordHash(out expectedHash))
+            {
+                SendError(rpc, "AutoModSync cannot verify the server authentication state; protected synchronization is unavailable.");
+                return false;
+            }
+
+            if (String.IsNullOrEmpty(expectedHash)) return true;
+            if (CanDiscloseProtectedSyncState(rpc)) return true;
+
+            // Released 2.6.0 predates password-auth2 and has a fixed short AMS discovery timeout. Do not send it
+            // auth-required2: that old client would render its AMS overlay over Valheim's password field.
+            // Instead, first prove the normal Valheim password with zero protected AMS disclosure. A successful
+            // vanilla PeerInfo creates a short one-use reconnect grant; only that reconnect may fetch migration bytes.
+            if (!ClientSupportsCapability(rpc, "password-auth2"))
+            {
+                if (!IsLegacy260MigrationClient(rpc))
+                {
+                    SendError(rpc, "This password-protected server requires AutoModSync 2.6.0 or newer; 2.6.0 is supported only through the authenticated migration bridge to 2.6.1.");
+                    return false;
+                }
+
+                if (TryConsumeLegacy260MigrationGrant(rpc))
+                {
+                    Legacy260MigrationAuthorizedPeers.Add(rpc);
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync accepted a one-use server-access-authorized 2.6.0 migration reconnect; protected migration synchronization may now begin.");
+                    return true;
+                }
+
+                // Released 2.6.0 holds its original ServerHandshake for a fixed 3.25-second AMS discovery window.
+                // Sending a synthetic ClientHandshake here races that old gate and disturbs third-party handshake ordering.
+                // Therefore disclose nothing and send nothing: mark this exact RPC as a bootstrap peer, let 2.6.0 time out
+                // naturally, then allow its untouched original ServerHandshake below so Valheim owns the server-key check.
+                if (Legacy260PasswordBootstrapPeers.Contains(rpc)) return false;
+
+                Legacy260PasswordBootstrapPeers.Add(rpc);
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync detected a 2.6.0 client; protected synchronization remains withheld while its original Valheim handshake reaches the normal server-key check.");
+                return false;
+            }
+
+            PasswordAuthChallenge challenge = GetOrCreatePasswordAuthChallenge(rpc);
+            SendAuthenticationRequiredAck(rpc, challenge.NonceBase64);
+
+            // Duplicate hello retries may occur before the first challenge is processed; never create stacked dialogs.
+            if (PasswordChallengePeers.Contains(rpc)) return false;
+
+            string salt;
+            if (!TryGetServerPasswordSalt(out salt))
+            {
+                SendError(rpc, "AutoModSync could not start the protected Valheim password challenge.");
+                return false;
+            }
+
+            PasswordChallengePeers.Add(rpc);
+            try
+            {
+                // Invoke the normal Valheim client password challenge directly. Deliberately do NOT run
+                // server RPC_ServerHandshake yet, because third-party prefixes there can advertise mod lists.
+                rpc.Invoke("ClientHandshake", new object[] { true, salt });
+                if (_instance != null)
+                    _instance.Logger.LogInfo("AutoModSync detected a password-protected server; protected synchronization state is withheld pending one-time password authentication.");
+            }
+            catch
+            {
+                PasswordChallengePeers.Remove(rpc);
+                PasswordAuthChallenges.Remove(rpc);
+                throw;
+            }
+            return false;
+        }
+
+        // Intent: Handles the client's one-time password response. The reusable Valheim salted verifier never traverses AMS.
+        // Security: challenge state is exact-ZRpc scoped, consumed before comparison, and expires after fifteen minutes.
+        private static void RPC_Auth(ZRpc rpc, ZPackage pkg)
+        {
+            if (ZNet.instance == null || !ZNet.instance.IsServer() || rpc == null) return;
+            try
+            {
+                string expectedHash;
+                if (!TryGetServerPasswordHash(out expectedHash))
+                {
+                    SendError(rpc, "AutoModSync cannot verify the server authentication state; protected synchronization is unavailable.");
+                    return;
+                }
+
+                if (String.IsNullOrEmpty(expectedHash))
+                {
+                    PasswordChallengePeers.Remove(rpc);
+                    PasswordAuthChallenges.Remove(rpc);
+                    PasswordAuthorizedPeers.Add(rpc);
+                    SendAuthorizedPreflight(rpc);
+                    return;
+                }
+
+                PasswordAuthChallenge challenge;
+                if (!AmsPreflightPeers.Contains(rpc)
+                    || !PasswordChallengePeers.Contains(rpc)
+                    || !PasswordAuthChallenges.TryGetValue(rpc, out challenge))
+                {
+                    SendError(rpc, "AutoModSync authentication is required before synchronization data is available.");
+                    return;
+                }
+
+                // Consume before validation so even an observed response cannot be retried on this connection.
+                PasswordChallengePeers.Remove(rpc);
+                PasswordAuthChallenges.Remove(rpc);
+
+                if (challenge.IssuedUtc == DateTime.MinValue || (DateTime.UtcNow - challenge.IssuedUtc).TotalMinutes > 15.0)
+                {
+                    PasswordAuthorizedPeers.Remove(rpc);
+                    try { rpc.Invoke("Error", new object[] { 6 }); } catch { }
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync rejected an expired one-time password challenge response.");
+                    return;
+                }
+
+                string responseBase64 = pkg == null ? "" : (pkg.ReadString() ?? "");
+                byte[] response;
+                try { response = Convert.FromBase64String(responseBase64); }
+                catch { response = new byte[0]; }
+                byte[] expected = ComputePasswordAuthResponse(expectedHash, challenge.NonceBase64);
+
+                if (response.Length != 32 || !ConstantTimeEquals(response, expected))
+                {
+                    PasswordAuthorizedPeers.Remove(rpc);
+                    try { rpc.Invoke("Error", new object[] { 6 }); } catch { }
+                    if (_instance != null) _instance.Logger.LogWarning("AutoModSync rejected an incorrect one-time password challenge response; no protected synchronization state was disclosed.");
+                    return;
+                }
+
+                bool connected;
+                try { connected = rpc.IsConnected(); } catch { connected = false; }
+                if (!connected) return;
+
+                PasswordAuthorizedPeers.Add(rpc);
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync one-time password authentication succeeded for this connection; protected synchronization may now begin.");
+                SendAuthorizedPreflight(rpc);
+            }
+            catch (Exception ex)
+            {
+                PasswordChallengePeers.Remove(rpc);
+                PasswordAuthChallenges.Remove(rpc);
+                PasswordAuthorizedPeers.Remove(rpc);
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync password authentication failed closed: " + ex.Message);
+                SendError(rpc, "AutoModSync authentication failed; protected synchronization remains unavailable.");
+            }
+        }
+
+        // Intent: Lets released 2.6.0 observe an authorized AMS response before expensive/synchronous manifest work can consume its fixed 3.25-second discovery window.
+        // Security: this path is reachable only after the one-use same-platform migration grant has already been consumed on this exact ZRpc.
+        private static void ScheduleLegacy260AuthorizedPreflight(ZRpc rpc)
+        {
+            if (rpc == null || !Legacy260MigrationAuthorizedPeers.Contains(rpc)) return;
+            if (!CanDiscloseProtectedSyncState(rpc))
+            {
+                SendError(rpc, "AutoModSync server access is required before synchronization data is available.");
+                return;
+            }
+
+            ZPackage ack = new ZPackage();
+            ack.Write(ProtocolVersion);
+            ack.Write(PluginVersion);
+            ack.Write("bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1;bundle-scheduler1;preflight-quarantine1");
+            rpc.Invoke(RpcAck, new object[] { ack });
+
+            DateTime ignored;
+            if (!Legacy260DeferredAuthorizedPreflights.TryGetValue(rpc, out ignored))
+                Legacy260DeferredAuthorizedPreflights[rpc] = DateTime.UtcNow.AddMilliseconds(150.0);
+
+            if (_instance != null)
+                _instance.Logger.LogInfo("AutoModSync sent the authorized 2.6.0 migration acknowledgement; signed synchronization discovery is deferred briefly so the released client can leave its fixed discovery timeout.");
+        }
+
+        // Intent: Completes the released-2.6.0 authorized migration preflight only after its standalone acknowledgement has had a chance to leave the inbound hello handler.
+        private static void ServiceLegacy260DeferredAuthorizedPreflights(DateTime now)
+        {
+            if (Legacy260DeferredAuthorizedPreflights.Count == 0) return;
+
+            List<ZRpc> ready = new List<ZRpc>();
+            foreach (KeyValuePair<ZRpc, DateTime> item in Legacy260DeferredAuthorizedPreflights)
+            {
+                if (item.Key != null && now >= item.Value) ready.Add(item.Key);
+            }
+
+            int i;
+            for (i = 0; i < ready.Count; i++)
+            {
+                ZRpc rpc = ready[i];
+                Legacy260DeferredAuthorizedPreflights.Remove(rpc);
+
+                bool connected = false;
+                try { connected = rpc != null && rpc.IsConnected(); } catch { connected = false; }
+                if (!connected
+                    || !AmsPreflightPeers.Contains(rpc)
+                    || !Legacy260MigrationAuthorizedPeers.Contains(rpc)
+                    || ManifestSentPeers.Contains(rpc))
+                    continue;
+
+                try
+                {
+                    SendAuthorizedPreflight(rpc);
+                    if (_instance != null)
+                        _instance.Logger.LogInfo("AutoModSync released signed synchronization discovery to the authorized 2.6.0 migration reconnect.");
+                }
+                catch (Exception ex)
+                {
+                    if (_instance != null)
+                        _instance.Logger.LogWarning("AutoModSync could not complete the deferred 2.6.0 migration preflight: " + ex.Message);
+                    SendError(rpc, "AutoModSync could not complete the authorized migration synchronization preflight.");
+                }
+            }
+        }
+
+        // Intent: Releases the server-side third-party RPC quarantine only after a current client says its verified AMS preflight is complete.
+        private static void RPC_Ready(ZRpc rpc, ZPackage pkg)
+        {
+            if (ZNet.instance == null || !ZNet.instance.IsServer() || rpc == null) return;
+            if (!AmsPreflightPeers.Contains(rpc) || !ClientSupportsCapability(rpc, "preflight-quarantine1"))
+            {
+                SendError(rpc, "AutoModSync preflight readiness was not negotiated for this connection.");
+                return;
+            }
+            if (!RequireProtectedSyncAuthorization(rpc)) return;
+
+            PreflightReadyPeers.Add(rpc);
+            ReleaseServerPreflightQuarantine(rpc, "verified AMS preflight");
+        }
+
         // Intent: Handles the client's AMS4_Hello preflight probe.
-        // Workflow: validates protocol, immediately sends the optional 2.5.0 acknowledgement, builds/uses the signed manifest, then streams its header and ordered text chunks before normal Valheim mod validation begins.
+        // 2.6.1 ordering: public servers retain 2.6.0 behavior; passworded servers stop after a presence-only
+        // acknowledgement/password challenge and cannot reach the signed manifest until this exact ZRpc authenticates.
         private static void RPC_Hello(ZRpc rpc, ZPackage pkg)
         {
             try
@@ -1171,7 +1969,6 @@ namespace ValheimAutoModSync
                     return;
                 }
 #if AMS_DEV_TESTS
-                // A one-shot marker selects the next peer, then every AMS4_Hello retry on that same connection stays silent.
                 if (DevelopmentSuppressedAmsPeers.Contains(rpc))
                 {
                     if (_instance != null) _instance.Logger.LogDebug("AutoModSync DEV TEST continuing to suppress AMS response for the selected peer retry.");
@@ -1188,11 +1985,8 @@ namespace ValheimAutoModSync
                 ClientVersions[rpc] = clientVersion ?? "";
                 ClientCapabilities[rpc] = clientCapabilities ?? "";
 #if AMS_DEV_TESTS
-                bool emulateLegacyServer = ArmDevelopmentLegacyServerPeer(rpc);
-                string failClosedMode = ArmDevelopmentFailClosedMode(rpc);
-#else
-                bool emulateLegacyServer = false;
-                string failClosedMode = "";
+                ArmDevelopmentLegacyServerPeer(rpc);
+                ArmDevelopmentFailClosedMode(rpc);
 #endif
                 if (protocol != ProtocolVersion)
                 {
@@ -1200,129 +1994,156 @@ namespace ValheimAutoModSync
                     return;
                 }
 
-#if AMS_DEV_TESTS
-                if (String.Equals(failClosedMode, "bad-ack", StringComparison.Ordinal))
+                AmsPreflightPeers.Add(rpc);
+                if (!EnsurePreflightAuthorizationOrChallenge(rpc)) return;
+                if (Legacy260MigrationAuthorizedPeers.Contains(rpc) && IsLegacy260MigrationClient(rpc))
                 {
-                    ZPackage badAck = new ZPackage();
-                    badAck.Write(ProtocolVersion + 1);
-                    badAck.Write("DEV-INVALID");
-                    badAck.Write("");
-                    rpc.Invoke(RpcAck, new object[] { badAck });
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected malformed/protocol-mismatched AMS4_Ack.");
+                    ScheduleLegacy260AuthorizedPreflight(rpc);
                     return;
                 }
-#endif
-
-                string ackCapabilities = emulateLegacyServer
-                    ? "bundle-window1;bundle-batch1;bundle-pipeline1"
-                    : "bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1;bundle-scheduler1";
-#if AMS_DEV_TESTS
-                if (String.Equals(failClosedMode, "bad-legacy-chunk", StringComparison.Ordinal))
-                    ackCapabilities = "";
-#endif
-
-                ZPackage ack = new ZPackage();
-                ack.Write(ProtocolVersion);
-#if AMS_DEV_TESTS
-                ack.Write(emulateLegacyServer ? "2.5.0" : PluginVersion);
-#else
-                ack.Write(PluginVersion);
-#endif
-                ack.Write(ackCapabilities);
-                rpc.Invoke(RpcAck, new object[] { ack });
-
-#if AMS_DEV_TESTS
-                if (String.Equals(failClosedMode, "ack-no-manifest", StringComparison.Ordinal))
-                {
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED sent a valid AMS4_Ack and intentionally withheld the manifest.");
-                    return;
-                }
-
-                if (String.Equals(failClosedMode, "bad-manifest-header", StringComparison.Ordinal))
-                {
-                    ZPackage badBegin = new ZPackage();
-                    badBegin.Write(ProtocolVersion + 1);
-                    badBegin.Write(0);
-                    badBegin.Write("0");
-                    badBegin.Write(_publicKeyXml);
-                    badBegin.Write("AAAA");
-                    badBegin.Write("bundle1");
-                    rpc.Invoke(RpcManifestBegin, new object[] { badBegin });
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an invalid manifest header.");
-                    return;
-                }
-#endif
-
-                EnsureManifest(false);
-                if (ManifestRequiresRootSync() && clientCapabilities.IndexOf("roots1", StringComparison.Ordinal) < 0)
-                {
-                    SendError(rpc, "This server requires AutoModSync root synchronization support (patchers/config). Update the AutoModSync client to 2.5.0 or newer.");
-                    return;
-                }
-                byte[] bytes = Encoding.UTF8.GetBytes(_manifestText);
-                int partChars = 24000;
-                int totalParts = Math.Max(1, (_manifestText.Length + partChars - 1) / partChars);
-                string manifestSignature = _manifestSignature;
-#if AMS_DEV_TESTS
-                if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
-                    totalParts = 2;
-                else if (String.Equals(failClosedMode, "bad-signature", StringComparison.Ordinal))
-                    manifestSignature = "AAAA";
-#endif
-
-                ZPackage begin = new ZPackage();
-                begin.Write(ProtocolVersion);
-                begin.Write(totalParts);
-                begin.Write(bytes.Length.ToString(CultureInfo.InvariantCulture));
-                begin.Write(_publicKeyXml);
-                begin.Write(manifestSignature);
-                begin.Write("bundle1");
-                rpc.Invoke(RpcManifestBegin, new object[] { begin });
-
-#if AMS_DEV_TESTS
-                if (String.Equals(failClosedMode, "server-error", StringComparison.Ordinal))
-                {
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injecting AMS4_Error after manifest recognition.");
-                    SendError(rpc, "DEV TEST server-reported AMS error after recognition.");
-                    return;
-                }
-
-                if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
-                {
-                    ZPackage partial = new ZPackage();
-                    partial.Write(0);
-                    partial.Write(_manifestText);
-                    rpc.Invoke(RpcManifestChunk, new object[] { partial });
-                    ZPackage incompleteEnd = new ZPackage();
-                    incompleteEnd.Write(2);
-                    rpc.Invoke(RpcManifestEnd, new object[] { incompleteEnd });
-                    if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an incomplete two-part manifest.");
-                    return;
-                }
-#endif
-
-                int part;
-                for (part = 0; part < totalParts; part++)
-                {
-                    int start = part * partChars;
-                    int len = Math.Min(partChars, _manifestText.Length - start);
-                    string text = len > 0 ? _manifestText.Substring(start, len) : "";
-                    ZPackage chunk = new ZPackage();
-                    chunk.Write(part);
-                    chunk.Write(text);
-                    rpc.Invoke(RpcManifestChunk, new object[] { chunk });
-                }
-
-                ZPackage end = new ZPackage();
-                end.Write(totalParts);
-                rpc.Invoke(RpcManifestEnd, new object[] { end });
-                ManifestSentPeers.Add(rpc);
+                SendAuthorizedPreflight(rpc);
             }
             catch (Exception ex)
             {
-                if (_instance != null) _instance.Logger.LogWarning("Manifest send failed: " + ex);
-                SendError(rpc, "Server failed to create the AutoModSync manifest.");
+                if (_instance != null) _instance.Logger.LogWarning("AutoModSync preflight failed: " + ex);
+                SendError(rpc, "Server failed during AutoModSync preflight.");
             }
+        }
+
+        // Intent: Emits the full AMS capability acknowledgement and signed manifest only after the disclosure gate succeeds.
+        // All protected metadata/manifest emission is centralized here so a future caller cannot accidentally bypass the password boundary.
+        private static void SendAuthorizedPreflight(ZRpc rpc)
+        {
+            if (!RequireProtectedSyncAuthorization(rpc)) return;
+
+            string clientCapabilities = "";
+            ClientCapabilities.TryGetValue(rpc, out clientCapabilities);
+            clientCapabilities = clientCapabilities ?? "";
+#if AMS_DEV_TESTS
+            bool emulateLegacyServer = DevelopmentLegacyServerPeers.Contains(rpc);
+            string failClosedMode = GetDevelopmentFailClosedMode(rpc);
+#else
+            bool emulateLegacyServer = false;
+            string failClosedMode = "";
+#endif
+
+#if AMS_DEV_TESTS
+            if (String.Equals(failClosedMode, "bad-ack", StringComparison.Ordinal))
+            {
+                ZPackage badAck = new ZPackage();
+                badAck.Write(ProtocolVersion + 1);
+                badAck.Write("DEV-INVALID");
+                badAck.Write("");
+                rpc.Invoke(RpcAck, new object[] { badAck });
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected malformed/protocol-mismatched AMS4_Ack.");
+                return;
+            }
+#endif
+
+            string ackCapabilities = emulateLegacyServer
+                ? "bundle-window1;bundle-batch1;bundle-pipeline1"
+                : "bundle-window1;bundle-batch1;bundle-pipeline1;bundle-resume1;bundle-scheduler1;preflight-quarantine1";
+#if AMS_DEV_TESTS
+            if (String.Equals(failClosedMode, "bad-legacy-chunk", StringComparison.Ordinal))
+                ackCapabilities = "";
+#endif
+
+            ZPackage ack = new ZPackage();
+            ack.Write(ProtocolVersion);
+#if AMS_DEV_TESTS
+            ack.Write(emulateLegacyServer ? "2.5.0" : PluginVersion);
+#else
+            ack.Write(PluginVersion);
+#endif
+            ack.Write(ackCapabilities);
+            rpc.Invoke(RpcAck, new object[] { ack });
+
+#if AMS_DEV_TESTS
+            if (String.Equals(failClosedMode, "ack-no-manifest", StringComparison.Ordinal))
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED sent a valid AMS4_Ack and intentionally withheld the manifest.");
+                return;
+            }
+
+            if (String.Equals(failClosedMode, "bad-manifest-header", StringComparison.Ordinal))
+            {
+                ZPackage badBegin = new ZPackage();
+                badBegin.Write(ProtocolVersion + 1);
+                badBegin.Write(0);
+                badBegin.Write("0");
+                badBegin.Write(_publicKeyXml);
+                badBegin.Write("AAAA");
+                badBegin.Write("bundle1");
+                rpc.Invoke(RpcManifestBegin, new object[] { badBegin });
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an invalid manifest header.");
+                return;
+            }
+#endif
+
+            EnsureManifest(false);
+            if (ManifestRequiresRootSync() && clientCapabilities.IndexOf("roots1", StringComparison.Ordinal) < 0)
+            {
+                SendError(rpc, "This server requires AutoModSync root synchronization support (patchers/config). Update the AutoModSync client to 2.5.0 or newer.");
+                return;
+            }
+            byte[] bytes = Encoding.UTF8.GetBytes(_manifestText);
+            int partChars = 24000;
+            int totalParts = Math.Max(1, (_manifestText.Length + partChars - 1) / partChars);
+            string manifestSignature = _manifestSignature;
+#if AMS_DEV_TESTS
+            if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
+                totalParts = 2;
+            else if (String.Equals(failClosedMode, "bad-signature", StringComparison.Ordinal))
+                manifestSignature = "AAAA";
+#endif
+
+            ZPackage begin = new ZPackage();
+            begin.Write(ProtocolVersion);
+            begin.Write(totalParts);
+            begin.Write(bytes.Length.ToString(CultureInfo.InvariantCulture));
+            begin.Write(_publicKeyXml);
+            begin.Write(manifestSignature);
+            begin.Write("bundle1");
+            rpc.Invoke(RpcManifestBegin, new object[] { begin });
+
+#if AMS_DEV_TESTS
+            if (String.Equals(failClosedMode, "server-error", StringComparison.Ordinal))
+            {
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injecting AMS4_Error after manifest recognition.");
+                SendError(rpc, "DEV TEST server-reported AMS error after recognition.");
+                return;
+            }
+
+            if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
+            {
+                ZPackage partial = new ZPackage();
+                partial.Write(0);
+                partial.Write(_manifestText);
+                rpc.Invoke(RpcManifestChunk, new object[] { partial });
+                ZPackage incompleteEnd = new ZPackage();
+                incompleteEnd.Write(2);
+                rpc.Invoke(RpcManifestEnd, new object[] { incompleteEnd });
+                if (_instance != null) _instance.Logger.LogInfo("AutoModSync DEV FAIL-CLOSED injected an incomplete two-part manifest.");
+                return;
+            }
+#endif
+
+            int part;
+            for (part = 0; part < totalParts; part++)
+            {
+                int partStart = part * partChars;
+                int len = Math.Min(partChars, _manifestText.Length - partStart);
+                string text = len > 0 ? _manifestText.Substring(partStart, len) : "";
+                ZPackage chunk = new ZPackage();
+                chunk.Write(part);
+                chunk.Write(text);
+                rpc.Invoke(RpcManifestChunk, new object[] { chunk });
+            }
+
+            ZPackage end = new ZPackage();
+            end.Write(totalParts);
+            rpc.Invoke(RpcManifestEnd, new object[] { end });
+            ManifestSentPeers.Add(rpc);
         }
 
         // Intent: Builds a compressed package containing exactly the current signed manifest records requested by this client.
@@ -1332,6 +2153,7 @@ namespace ValheimAutoModSync
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                if (!RequireProtectedSyncAuthorization(rpc)) return;
                 int count = pkg.ReadInt();
                 if (count < 1 || count > 4096) throw new InvalidDataException("Invalid AutoModSync bundle request size.");
 
@@ -2160,6 +2982,7 @@ namespace ValheimAutoModSync
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                if (!RequireProtectedSyncAuthorization(rpc)) return;
                 int index = pkg.ReadInt();
                 int requestedCount = 1;
                 try { requestedCount = pkg.ReadInt(); } catch { requestedCount = 1; }
@@ -2194,6 +3017,7 @@ namespace ValheimAutoModSync
             try
             {
                 if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+                if (!RequireProtectedSyncAuthorization(rpc)) return;
                 int index = pkg.ReadInt();
                 int requestedCount = 1;
                 try { requestedCount = pkg.ReadInt(); } catch { requestedCount = 1; }
@@ -2684,21 +3508,42 @@ namespace ValheimAutoModSync
                 // 2.4.5+: no packed game-root bootstrap is distributed or synchronized.
 
                 string releaseClientPlugin = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "ValheimAutoModSync.Client.dll");
-                if (!IsPackageManagedAutoModSync() && File.Exists(releaseClientPlugin))
+                string releaseInstallerUpdater = Path.Combine(Paths.BepInExRootPath, "AutoModSync", "release", "ValheimAutoModSyncInstaller.exe");
+                if (!IsPackageManagedAutoModSync())
                 {
-                    // The standalone release payload is outside BepInEx/plugins but still under the fixed BepInEx root.
-                    // Reparse validation prevents a local junction/symlink from turning that special source into an arbitrary read.
-                    AutoModSyncPathSafety.EnsureNoReparsePoints(Paths.BepInExRootPath, releaseClientPlugin, true);
-                    records.RemoveAll(delegate(FileRecord x) { return x.Kind == 'P' && String.Equals(x.RelativePath, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase); });
-                    FileInfo cfi = new FileInfo(releaseClientPlugin);
-                    FileRecord cr = new FileRecord();
-                    cr.Kind = 'P';
-                    cr.RelativePath = "ValheimAutoModSync.Client.dll";
-                    cr.FullPath = releaseClientPlugin;
-                    cr.SourceLabel = "BepInEx/AutoModSync/release";
-                    cr.Size = cfi.Length;
-                    cr.Sha256 = Sha256File(releaseClientPlugin);
-                    records.Add(cr);
+                    if (File.Exists(releaseClientPlugin))
+                    {
+                        // The standalone release payload is outside BepInEx/plugins but still under the fixed BepInEx root.
+                        // Reparse validation prevents a local junction/symlink from turning that special source into an arbitrary read.
+                        AutoModSyncPathSafety.EnsureNoReparsePoints(Paths.BepInExRootPath, releaseClientPlugin, true);
+                        records.RemoveAll(delegate(FileRecord x) { return x.Kind == 'P' && String.Equals(x.RelativePath, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase); });
+                        FileInfo cfi = new FileInfo(releaseClientPlugin);
+                        FileRecord cr = new FileRecord();
+                        cr.Kind = 'P';
+                        cr.RelativePath = "ValheimAutoModSync.Client.dll";
+                        cr.FullPath = releaseClientPlugin;
+                        cr.SourceLabel = "BepInEx/AutoModSync/release";
+                        cr.Size = cfi.Length;
+                        cr.Sha256 = Sha256File(releaseClientPlugin);
+                        records.Add(cr);
+                    }
+
+                    if (File.Exists(releaseInstallerUpdater))
+                    {
+                        // Migration contract: 2.6.0 clients receive the signed installer/updater as an ordinary verified plugin-root payload
+                        // before the 2.6.1 client DLL relies on it, avoiding a dead-end upgrade that would require legacy Apply.exe.
+                        AutoModSyncPathSafety.EnsureNoReparsePoints(Paths.BepInExRootPath, releaseInstallerUpdater, true);
+                        records.RemoveAll(delegate(FileRecord x) { return x.Kind == 'P' && String.Equals(x.RelativePath, "ValheimAutoModSyncInstaller.exe", StringComparison.OrdinalIgnoreCase); });
+                        FileInfo ifi = new FileInfo(releaseInstallerUpdater);
+                        FileRecord ir = new FileRecord();
+                        ir.Kind = 'P';
+                        ir.RelativePath = "ValheimAutoModSyncInstaller.exe";
+                        ir.FullPath = releaseInstallerUpdater;
+                        ir.SourceLabel = "BepInEx/AutoModSync/release";
+                        ir.Size = ifi.Length;
+                        ir.Sha256 = Sha256File(releaseInstallerUpdater);
+                        records.Add(ir);
+                    }
                 }
 
                 records.Sort(delegate(FileRecord a, FileRecord b)
@@ -2876,7 +3721,7 @@ namespace ValheimAutoModSync
 
                 if (String.Equals(pluginRoot, actualDir, StringComparison.OrdinalIgnoreCase)) return false;
 
-                return File.Exists(Path.Combine(actualDir, "ValheimAutoModSync.Apply.exe"));
+                return File.Exists(Path.Combine(actualDir, "ValheimAutoModSyncInstaller.exe"));
             }
             catch
             {
@@ -2889,6 +3734,7 @@ namespace ValheimAutoModSync
         {
             if (String.Equals(name, "ValheimAutoModSync.Server.dll", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "ValheimAutoModSync.Client.dll", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(name, "ValheimAutoModSyncInstaller.exe", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "ValheimAutoModSync.Apply.exe", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "manifest.json", StringComparison.OrdinalIgnoreCase)) return true;
             if (String.Equals(name, "icon.png", StringComparison.OrdinalIgnoreCase)) return true;

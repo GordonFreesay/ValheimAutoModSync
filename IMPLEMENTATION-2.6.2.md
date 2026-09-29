@@ -8,17 +8,10 @@ The items below begin with **2.6.2** and may be split across later patch/minor r
 
 ## Candidate 2.6.2 safety/release-integrity work
 
-### Apply-helper process safety
+### Installer/updater follow-up
 
-Remove the 2.6.0 forced Valheim termination fallback from `ValheimAutoModSync.Apply.exe`.
+The standalone Apply helper and forced-termination fallback were removed in **2.6.1**. 2.6.2 should preserve that architecture rather than reintroducing a second updater executable. Any later updater UX refinements must keep the single signed/attested installer/updater, normal-exit waiting, and transactional recovery model.
 
-Target behavior:
-
-- wait a bounded amount of time for the originating Valheim PID to exit naturally;
-- if it remains alive, abort before mutating synchronized live files;
-- never terminate Valheim, Steam, or unrelated processes;
-- preserve verified staging/pending state for a later retry;
-- prove a later clean invocation can complete the existing transactional apply path.
 
 ### Stale first-contact trust-dialog lifecycle
 

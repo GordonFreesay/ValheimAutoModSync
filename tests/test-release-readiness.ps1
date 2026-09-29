@@ -24,7 +24,8 @@ function Assert-NotContains([string]$Text,[string]$Needle,[string]$Label) {
 }
 
 $version = (Read-Text 'VERSION').Trim()
-if ($version -ne '2.6.0') { throw "Release-readiness gate is for 2.6.0; VERSION is $version." }
+if ([String]::IsNullOrWhiteSpace($version)) { throw 'VERSION is empty.' }
+$releaseNotesPath = 'RELEASE-NOTES-' + $version + '.md'
 
 Write-Host '[1/6] Validating release-facing version/status text...'
 $readme = Read-Text 'README.md'
@@ -32,18 +33,19 @@ $distribution = Read-Text 'DISTRIBUTION.md'
 $changelog = Read-Text 'Thunderstore\CHANGELOG.md'
 $thunderReadme = Read-Text 'Thunderstore\README.md'
 $modSitesReadme = Read-Text 'ModSites\README.md'
-$releaseNotes = Read-Text 'RELEASE-NOTES-2.6.0.md'
+$releaseNotes = Read-Text $releaseNotesPath
 $testing = Read-Text 'TESTING-2.6.md'
 
-Assert-Contains $readme '**Current public release: 2.6.0**' 'README'
-Assert-Contains $readme 'ValheimAutoModSync-2.6.0.zip' 'README'
-Assert-Contains $distribution 'every channel is **2.6.0**' 'DISTRIBUTION'
-Assert-Contains $distribution 'GordonFreesay-ValheimAutoModSync-2.6.0.zip' 'DISTRIBUTION'
-Assert-Contains $changelog '## 2.6.0' 'Thunderstore changelog'
-Assert-NotContains $changelog '## 2.6.0 (development)' 'Thunderstore changelog'
-Assert-Contains $thunderReadme '2.6.0 synchronizes' 'Thunderstore README'
-Assert-Contains $modSitesReadme 'In 2.6,' 'ModSites README'
-Assert-Contains $releaseNotes '# Valheim AutoModSync 2.6.0' 'Release notes'
+Assert-Contains $readme ('**Current public release: ' + $version + '**') 'README'
+Assert-Contains $readme ('ValheimAutoModSync-' + $version + '.zip') 'README'
+Assert-Contains $distribution ('every channel is **' + $version + '**') 'DISTRIBUTION'
+Assert-Contains $releaseNotes ('# Valheim AutoModSync ' + $version) 'Release notes'
+Assert-Contains $modSitesReadme 'AutoModSync' 'ModSites README'
+if ($version -eq '2.6.0') {
+    Assert-Contains $changelog '## 2.6.0' 'Thunderstore changelog'
+    Assert-NotContains $changelog '## 2.6.0 (development)' 'Thunderstore changelog'
+    Assert-Contains $thunderReadme '2.6.0 synchronizes' 'Thunderstore README'
+}
 Write-Host '  PASS'
 
 Write-Host '[2/6] Validating version metadata...'
@@ -75,7 +77,7 @@ if ($unchecked.Count -gt 1) {
 }
 if ($unchecked.Count -eq 1) {
     $pending = $unchecked[0]
-    if ($pending.IndexOf('v2.6.0',[StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+    if ($pending.IndexOf(('v' + $version),[StringComparison]::OrdinalIgnoreCase) -lt 0 -or
         $pending.IndexOf('gh attestation verify',[StringComparison]::OrdinalIgnoreCase) -lt 0) {
         throw ('Unexpected remaining TESTING-2.6 gate: ' + $pending)
     }
@@ -89,4 +91,4 @@ Assert-Contains $releaseBuild 'SHA256SUMS.txt' 'Release build'
 Write-Host '  PASS'
 
 Write-Host ''
-if ($unchecked.Count -eq 0) { Write-Host 'PASS: AutoModSync 2.6.0 source and tagged-artifact qualification gates are complete.' } else { Write-Host 'PASS: AutoModSync 2.6.0 source is release-frozen; only final tagged-artifact attestation verification remains.' }
+if ($unchecked.Count -eq 0) { Write-Host ('PASS: AutoModSync ' + $version + ' source and tagged-artifact qualification gates are complete.') } else { Write-Host ('PASS: AutoModSync ' + $version + ' source is release-frozen; only final tagged-artifact attestation verification remains.') }

@@ -4,13 +4,14 @@
   <img src="Thunderstore/icon.png" alt="Valheim AutoModSync icon" width="160">
 </p>
 
-**Current public release: 2.6.0**
+**Current public release: 2.6.1**
 
 AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's synchronized BepInEx files, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
 
 - Website: https://gordonfreesay.com/AutoModSync
 - Repository: https://github.com/gordonfreesay/ValheimAutoModSync
 - Releases: https://github.com/gordonfreesay/ValheimAutoModSync/releases
+- 2.6.1 release notes: [RELEASE-NOTES-2.6.1.md](RELEASE-NOTES-2.6.1.md)
 - 2.6.0 release notes: [RELEASE-NOTES-2.6.0.md](RELEASE-NOTES-2.6.0.md)
 - Verify official downloads: [VERIFYING-RELEASES.md](VERIFYING-RELEASES.md)
 
@@ -30,11 +31,11 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 - Automatic reconnect to the server that triggered synchronization.
 - Existing extra client plugins are not automatically deleted.
 - One installer supports Client, Dedicated Server, and Host & Play roles.
-- One shared semantic version is used across the standalone, Nexus Mods, CurseForge, and Thunderstore/r2modman packages.
+- One shared semantic version is used across the packages published for a release. The 2.6.1 publication targets are GitHub, Nexus Mods, and CurseForge; Thunderstore/r2modman publication is deferred pending separate policy fit.
 
 ## Installation
 
-Close Valheim and any running Valheim Dedicated Server first. Download and extract `ValheimAutoModSync-2.6.0.zip`, then run:
+Close Valheim and any running Valheim Dedicated Server first. Download and extract `ValheimAutoModSync-2.6.1.zip`, then run:
 
 ```text
 ValheimAutoModSyncInstaller.exe
@@ -54,7 +55,7 @@ Launch Valheim or the dedicated server normally after installation.
 
 ## Distribution channels
 
-AutoModSync uses one shared version across every channel. The current software version is **2.6.0** whether it is installed from the standalone GitHub release, Nexus Mods, CurseForge, or Thunderstore/r2modman.
+AutoModSync uses one shared version across the channels published for a given release. The current 2.6.1 publication targets are GitHub, Nexus Mods, and CurseForge. Thunderstore/r2modman remains on its previously published version unless 2.6.1 policy fit is confirmed separately.
 
 Store-specific archive names identify packaging targets only; they do not create separate AutoModSync versions or separate GitHub releases. See `DISTRIBUTION.md` for the build/publishing workflows and required store credentials.
 
@@ -65,7 +66,7 @@ Store-specific archive names identify packaging targets only; they do not create
 3. **Download** — only missing or changed synchronized files are transferred.
 4. **Verify** — received data and extracted files are verified before installation.
 5. **Restart** — changed files are staged and Valheim restarts so BepInEx can load them.
-6. **Reconnect** — AutoModSync returns to the same server when the connection type permits it. Valheim still owns any server password prompt.
+6. **Reconnect** — AutoModSync returns to the same server when the connection type permits it. Valheim still owns the normal server-key/server-access prompt.
 
 ## Third-party mod redistribution
 
@@ -88,7 +89,7 @@ The generated server private signing identity (`BepInEx/config/ValheimAutoModSyn
 High-level layout of the checked-in source tree:
 
 ```text
-Source/                         AutoModSync C# client/server/apply/installer and shared safety/state code
+Source/                         AutoModSync C# client/server/installer-updater and shared safety/state code
 Server/                         Example dedicated-server configuration
 Thunderstore/                   Thunderstore/r2modman metadata, README, changelog, notices, icon, and tcli config
 ModSites/                       Nexus Mods / CurseForge package documentation
@@ -98,7 +99,8 @@ tests/                          Development, CI, live-runtime, installer, and re
 THIRD_PARTY_LICENSES/           Third-party license texts
 
 README.md                       Project overview and installation/security documentation
-RELEASE-NOTES-2.6.0.md          Human-facing AutoModSync 2.6.0 release notes
+RELEASE-NOTES-2.6.1.md          Human-facing AutoModSync 2.6.1 release notes
+RELEASE-NOTES-2.6.0.md          Historical AutoModSync 2.6.0 release notes
 TESTING-2.6.md                  Authoritative 2.6 validation evidence and release-gate record
 IMPLEMENTATION-2.6.md           2.6 engineering/implementation record
 SOURCE-WALKTHROUGH.md           End-to-end source, trust-boundary, handshake, apply, and reconnect map
@@ -125,7 +127,7 @@ There are intentionally no nested `README.txt` files; the Markdown documents abo
 
 Local builds can run `build-release.bat` on a Windows PC with Valheim installed. The builder uses the Windows .NET Framework C# compiler to build the managed AutoModSync components and produces the runtime files used by the release package. These generated payloads are ignored by Git; a source checkout is not itself an install package.
 
-The root `VERSION` file is the authoritative distribution version. `verify-version.ps1` checks the client/server plugin versions and all AutoModSync assembly/installer versions before a release build. `build-all-releases.bat` builds the standalone, Nexus, CurseForge, and Thunderstore packages from the same compiled binaries.
+The root `VERSION` file is the authoritative distribution version. `verify-version.ps1` checks the client/server plugin versions and all AutoModSync assembly/installer versions before a release build. The repository can still build a Thunderstore compatibility artifact, but 2.6.1 publication is scoped to standalone GitHub, Nexus, and CurseForge unless Thunderstore policy fit is separately confirmed.
 
 The repository also contains `.github/workflows/release-build.yml`. That workflow builds on a GitHub-hosted Windows runner, obtains the freely downloadable Valheim Dedicated Server through SteamCMD for compile-time game references, builds the release from the checked-out source, generates SHA-256 checksums, and creates GitHub/Sigstore build-provenance attestations for official GitHub-built artifacts. The Windows PE files remain Authenticode-unsigned unless trusted signing credentials are configured. Optional SignPath submission remains dormant unless such credentials become available.
 
@@ -161,14 +163,14 @@ See `SIGNING.md` for the Authenticode/provenance distinction and `VERIFYING-RELE
 
 ## Release integrity
 
-The current public standalone release is `ValheimAutoModSync-2.6.0.zip`.
+The current public standalone release is `ValheimAutoModSync-2.6.1.zip`.
 
-GitHub Releases is the authoritative source for the standalone installer artifact. The release includes `SHA256SUMS.txt` rather than hard-coding a digest in source documentation. Nexus Mods, CurseForge, and Thunderstore use store-specific packaging variants of the same AutoModSync version. Those variants are not separate GitHub releases. See `DISTRIBUTION.md`.
+GitHub Releases is the authoritative source for the standalone installer artifact. The release includes `SHA256SUMS.txt` rather than hard-coding a digest in source documentation. Nexus Mods and CurseForge use store-specific 2.6.1 packaging variants. Thunderstore/r2modman publication of 2.6.1 is deferred pending separate policy fit. Store variants are not separate GitHub releases. See `DISTRIBUTION.md`.
 
 For official GitHub-built packages, use:
 
 ```powershell
-gh attestation verify .\ValheimAutoModSync-2.6.0.zip -R GordonFreesay/ValheimAutoModSync
+gh attestation verify .\ValheimAutoModSync-2.6.1.zip -R GordonFreesay/ValheimAutoModSync
 ```
 
 The canonical checksum manifest is also attested. See `VERIFYING-RELEASES.md` for exact standalone/store commands, SHA-256 verification, and the distinction between GitHub/Sigstore provenance and Windows Authenticode.
@@ -182,6 +184,16 @@ The client runtime includes third-party BepInEx/Unity Doorstop components as nor
 The MIT license covers AutoModSync-authored code only. It does not license or grant redistribution rights for third-party mods selected by a server operator for synchronization. See `THIRD-PARTY-MOD-REDISTRIBUTION.md`.
 
 ## Release notes (2.4.5+)
+
+### 2.6.1
+
+- Withholds protected synchronization data on password-protected servers until normal Valheim server access is granted for the exact live connection.
+- Uses the negotiated `password-auth2` one-time HMAC challenge for current clients without transmitting Valheim's reusable salted verifier through AMS.
+- Adds a released-2.6.0 migration bridge: successful normal server access creates a short-lived one-use same-platform reconnect grant that permits only the signed 2.6.1 migration path, not gameplay.
+- Quarantines stale third-party compatibility RPCs during AMS preflight so an out-of-date client can synchronize before Jötunn/ServerSync-style checks reject it.
+- Consolidates the old standalone Apply helper into the visible `ValheimAutoModSyncInstaller.exe`; updater mode waits for Valheim to close normally and never force-terminates it.
+- ACL-hardens the persistent server signing private key and retains the existing signed-manifest, path/resource, SHA-256 staging, ownership, and transactional recovery protections.
+- Keeps AMS4 / protocol 4. See `RELEASE-NOTES-2.6.1.md` for the complete release notes and live qualification details.
 
 ### 2.6.0
 

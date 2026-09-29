@@ -37,7 +37,7 @@ Valheim creates outgoing ZNet connection
           verify package + every file
           stage files
           persist reconnect/launch context
-          start apply helper
+          start visible ValheimAutoModSyncInstaller.exe updater mode
           quit Valheim
 ```
 
@@ -67,7 +67,7 @@ The production scheduler policy is intentionally isolated in `AutoModSync.Transf
 
 For Steam-backed dedicated-server peers, the server resolves the transport directly from the active `ZRpc` (rather than depending on an early pre-handshake peer already appearing in `ZNet.GetPeers()`). During the bundle it temporarily tunes that exact Steam connection's send-rate maximum, bounded send-rate minimum, and reliable send buffer, then restores the exact previous values it changed. This keeps the acceleration scoped to synchronization instead of permanently rewriting gameplay networking.
 
-The client hello also advertises `roots1`. That capability means the client/apply helper understand the fixed `P`/ `R`/ `C` destinations. A server only requires it when its signed manifest actually contains patcher or config entries, so ordinary plugin-only AMS4 compatibility remains available.
+The client hello also advertises `roots1`. That capability means the client and installer-linked transaction engine understand the fixed `P`/ `R`/ `C` destinations. A server only requires it when its signed manifest actually contains patcher or config entries, so ordinary plugin-only AMS4 compatibility remains available.
 
 Phase 6 does not add a network capability or protocol version. After the manifest signature and trusted fingerprint have already been validated, the client loads only that fingerprint's ledger under `BepInEx/AutoModSync/ownership/<fingerprint>.txt`. A path becomes server-owned only when AutoModSync must actually install/replace it. If an unowned local file already has the exact signed bytes, it satisfies the manifest but remains local/user-owned.
 
@@ -85,7 +85,7 @@ Server-browser presence is intentionally separate from synchronization discovery
 
 Development builds can consume `BepInEx/AutoModSync/phase7-test-ui-preview.once` and cycle ten deterministic presentation snapshots at the main menu. That path exists only under `AMS_DEV_TESTS`, performs no network/filesystem synchronization action beyond consuming its marker, and is cancelled as soon as a real preflight connection begins. This lets visual layout be qualified independently before a real large-payload run.
 
-The canonical tracked package logo (`Thunderstore/icon.png`) also feeds `build-branding-assets.ps1`, which produces a multi-size Windows ICO. Development/release builds embed that icon into the Apply helper; release builds also embed it into the standalone installer, while packaging/deployment keeps the physical `.ico` beside the corresponding executable. This makes executable branding deterministic instead of relying on a Visual Studio-only project setting.
+The canonical tracked package logo (`Thunderstore/icon.png`) also feeds `build-branding-assets.ps1`, which produces the Windows icon embedded into the single `ValheimAutoModSyncInstaller.exe`. Development/release/store packaging all use that one branded updater executable; no standalone Apply helper/icon is produced.
 
 `verify-no-pii.ps1` is a first-party privacy gate used by both development and release builders. It rejects literal local user-profile/home paths, email addresses, Windows account SIDs, SteamID64-like identifiers, and public IPv4 literals from tracked first-party text. After compilation it also scans printable strings from AutoModSync-authored PE artifacts. Third-party license attribution is excluded so required notices remain verbatim; the public GordonFreesay/AutoModSync project brand, repository URLs, and website URL are intentionally treated as product identity rather than private user data.
 
@@ -131,9 +131,9 @@ The installer supports the same three roles as the fallback BAT file:
 
 It preserves existing BepInEx installations, preserves existing server config/signing identity unless explicitly requested during uninstall, refuses to overwrite an unknown `winhttp.dll`, and removes a legacy packed `version.dll` only when its SHA-256 matches the known historical AutoModSync bootstrap. Normal installer output uses the short server identity verification code rather than printing the complete signing-key fingerprint.
 
-### Source/ValheimAutoModSync.Apply.cs
+### Source/AutoModSync.ApplyEngine.cs + Source/ValheimAutoModSync.Installer.cs
 
-The apply helper runs outside Valheim after a verified download. Its job is intentionally narrow:
+The transaction engine is linked into `ValheimAutoModSyncInstaller.exe` and runs in visible updater mode outside Valheim after a verified download. Its job is intentionally narrow:
 
 - wait for the old Valheim process to exit;
 - recover any prior interrupted apply transaction before starting another one;
@@ -150,9 +150,9 @@ Before PREPARED, the helper independently validates `ownership-next.txt` against
 
 The client no longer performs leftover staging copies from inside a running Valheim process. If startup sees `pending.txt` or `apply-transaction`, it starts the external helper and exits/restarts before attempting any AMS server join.
 
-For maintainer validation, `build-dev.bat` alone defines `AMS_DEV_TESTS` for the Apply helper. That development binary recognizes one-shot local pause markers after PREPARED/before the first live write, after a chosen number of applied files, after rollback, or after COMMITTED, plus a caught-failure marker after a chosen number of applied files. This allows deterministic process termination, rollback inspection, and synchronous error-path testing at exact transaction boundaries. `tests/test-phase2-adversarial.ps1` drives the remaining journal/path-safety cases against an isolated temporary BepInEx tree. The public/release build path does not define this symbol, so none of these fault-injection hooks are part of release binaries.
+For maintainer validation, `AMS_DEV_TESTS` remains available in the shared transaction engine. The adversarial/ownership harnesses compile a disposable test-only entry point around that exact engine and recognize one-shot local pause markers after PREPARED/before the first live write, after a chosen number of applied files, after rollback, or after COMMITTED, plus a caught-failure marker after a chosen number of applied files. This allows deterministic test-process termination, rollback inspection, and synchronous error-path testing at exact transaction boundaries. `tests/test-phase2-adversarial.ps1` drives the remaining journal/path-safety cases against an isolated temporary BepInEx tree. The public/release build path does not define this symbol, so none of these fault-injection hooks are part of release binaries.
 
-This helper does not discover mods, fetch network content, decide server trust, or bypass validation.
+The installer-linked transaction engine does not discover mods, fetch network content, decide server trust, or bypass validation.
 
 ### Source/AutoModSync.BuildTool.cs
 
@@ -173,15 +173,16 @@ verified bundle
   -> durable pending.txt
   -> reconnect.txt
   -> optional launch-context.txt
-  -> ValheimAutoModSync.Apply.exe
-  -> old Valheim exits
+  -> visible ValheimAutoModSyncInstaller.exe --apply-pending
+  -> old Valheim exits normally (never force-killed)
+  -> installer/updater confirms process exit
   -> recover prior journal if present
   -> snapshot old destinations + transaction manifest
   -> durable PREPARED
   -> apply + verify every live destination (staging retained)
   -> durable COMMITTED
   -> remove staging/pending/transaction backups
-  -> helper relaunches Valheim
+  -> installer/updater relaunches Valheim
   -> client consumes reconnect.txt
   -> FejdStartup reconnect
   -> 2.6 preflight runs again
@@ -213,8 +214,8 @@ Trusted Authenticode is currently optional/unavailable, so 2.6 adds a separate p
 A source review of the five C# files shows the following intentional privileged surfaces:
 
 - **No HTTP/WebClient/HttpClient downloader exists in the C# runtime.** Plugin bytes are transferred only over Valheim's existing `ZRpc` connection. The separate build/install scripts may obtain the pinned BepInEx package and verify its fixed SHA-256.
-- **Process launch:** only the client starts `ValheimAutoModSync.Apply.exe`, and the helper starts Steam/Valheim for the requested restart. The installer itself does not launch downloaded code or fetch executables.
-- **Registry access:** BuildTool and the apply helper read Steam install locations; they do not write registry values.
+- **Process launch:** the client starts only the signed/attested `ValheimAutoModSyncInstaller.exe` in visible updater mode. It waits for Valheim to close normally, performs the verified transaction, and relaunches through the saved context/Steam fallback. AMS never force-kills Valheim and the installer does not fetch executable payloads at runtime.
+- **Registry access:** BuildTool and the installer/updater may read Steam install locations for discovery/relaunch; they do not write registry values.
 - **Native Windows imports:** the client imports only `MessageBox`, `GetConsoleWindow`, and `ShowWindow` for first-contact trust UI and console presentation.
 - **Filesystem mutation:** the client/helper write AutoModSync state/staging files and synchronized files only beneath validated BepInEx plugin, patcher, or explicitly allowlisted config roots. Core/game-root/managed-assembly destinations are not manifest targets. The server writes its signing identity/cache files.
 - **Cryptography:** server RSA signs manifests; client RSA verifies those signatures; SHA-256 identifies server keys, bundles, and synchronized files.
@@ -227,7 +228,7 @@ For a security/code review, start with these functions:
 
 - Client: `PreparePreflightGate`, `BeginPreflightProbe`, `ResumeNormalHandshake`, `RPC_ManifestEnd`, `ExtractBundleToStaging`, `EnsureServerTrusted`, `SafeUnder`.
 - Server: `RPC_Hello`, `EnsureManifest`, `ResolveBundleRecord`, `RPC_GetBundle`.
-- Apply helper: `Main`, `SafeUnder`, `TryLaunchSavedContext`.
+- Installer/updater: `TryParseApplyMode`, `ApplyProgressForm`, `AutoModSyncApplyEngine.Run`, `SafeUnder`, `TryLaunchSavedContext`.
 - Build tool: `EnsureIdentity`, `PrintSha256`.
 
 The comments above each function are documentation only; executable behavior remains the source of truth.

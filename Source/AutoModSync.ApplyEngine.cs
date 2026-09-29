@@ -9,14 +9,7 @@ using Microsoft.Win32;
 using System.Reflection;
 using ValheimAutoModSync;
 
-[assembly: AssemblyTitle("Valheim AutoModSync Apply Helper")]
-[assembly: AssemblyDescription("Applies verified staged AutoModSync BepInEx files after Valheim exits, then relaunches Valheim.")]
-[assembly: AssemblyCompany("GordonFreesay")]
-[assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
-
-internal static class Program
+internal static class AutoModSyncApplyEngine
 {
     private const string TransactionDirectoryName = "apply-transaction";
     private const string TransactionManifestName = "manifest.txt";
@@ -44,9 +37,9 @@ internal static class Program
         public string Sha256;
     }
 
-    // Intent: Out-of-process apply/relaunch entry point, started only after the client has downloaded and verified staged files.
-    // Workflow: waits for the old Valheim process to exit, atomically replaces staged plugin/patcher/allowlisted-config files where possible, preserves reconnect state, then relaunches through the saved package-manager context, Steam, or direct executable fallback.
-    private static int Main(string[] args)
+    // Intent: Applies one already-verified durable AMS transaction after Valheim has exited.
+    // Security: this engine never terminates another process and has no standalone executable entry point; the visible installer/updater owns process-lifecycle UI.
+    internal static int Run(string requestedAmsRoot)
     {
         string amsRoot = null;
         string bepinexRoot = null;
@@ -59,43 +52,28 @@ internal static class Program
 
         try
         {
-            int pid = 0;
-            if (args.Length > 0) int.TryParse(args[0], out pid);
-            if (pid > 0)
-            {
-                try
-                {
-                    Process p = Process.GetProcessById(pid);
-                    if (!p.WaitForExit(15000))
-                    {
-                        try { p.Kill(); } catch { }
-                        try { p.WaitForExit(5000); } catch { }
-                    }
-                }
-                catch { }
-            }
+            if (String.IsNullOrEmpty(requestedAmsRoot))
+                throw new ArgumentException("AutoModSync updater requires an explicit AutoModSync state root.");
 
-            // Give Steam and Windows a moment to release the old game's loaded DLLs before the transaction touches live files.
-            Thread.Sleep(1500);
+            amsRoot = Path.GetFullPath(requestedAmsRoot);
+            if (!Directory.Exists(amsRoot))
+                throw new DirectoryNotFoundException("AutoModSync state root does not exist.");
 
-            string self = typeof(Program).Assembly.Location;
-            string helperDir = Path.GetDirectoryName(self);
-            amsRoot = helperDir;
-            if (args.Length > 1 && !String.IsNullOrEmpty(args[1]))
-                amsRoot = Path.GetFullPath(args[1]);
+            DirectoryInfo bepInfo = Directory.GetParent(amsRoot);
+            if (bepInfo == null) throw new InvalidDataException("AutoModSync state root has no BepInEx parent.");
+            bepinexRoot = bepInfo.FullName;
+            DirectoryInfo gameInfo = Directory.GetParent(bepinexRoot);
+            if (gameInfo == null) throw new InvalidDataException("BepInEx root has no game parent.");
+            gameRoot = gameInfo.FullName;
 
-            bepinexRoot = Directory.GetParent(amsRoot).FullName;
-            gameRoot = Directory.GetParent(bepinexRoot).FullName;
             pluginRoot = Path.Combine(bepinexRoot, "plugins");
             patcherRoot = Path.Combine(bepinexRoot, "patchers");
             configRoot = Path.Combine(bepinexRoot, "config");
             stagingRoot = Path.Combine(amsRoot, "staging");
             pending = Path.Combine(amsRoot, "pending.txt");
 
-            AppendApplyLog(amsRoot, "Apply helper started.");
+            AppendApplyLog(amsRoot, "Installer updater started.");
 
-            // If an earlier helper was terminated between PREPARED and COMMITTED, restore the complete old set first.
-            // If COMMITTED already exists, the complete new set won and only idempotent cleanup remains.
             RecoverInterruptedTransaction(amsRoot, pluginRoot, patcherRoot, configRoot, stagingRoot, pending);
 
             if (File.Exists(pending))
@@ -103,8 +81,6 @@ internal static class Program
 
             AppendApplyLog(amsRoot, "Apply state is clean; relaunching Valheim.");
 
-            // reconnect.txt is intentionally left in place. The newly loaded AutoModSync client consumes it once
-            // and performs the reconnect through Valheim's own FejdStartup/ServerJoinData flow after the main menu exists.
             if (TryLaunchSavedContext(amsRoot)) return 0;
 
             string gameExe = Path.Combine(gameRoot, "valheim.exe");
@@ -122,7 +98,6 @@ internal static class Program
                 return 0;
             }
 
-            // Last-resort relaunch if Steam itself cannot be located.
             ProcessStartInfo psi = new ProcessStartInfo();
             psi.FileName = gameExe;
             psi.WorkingDirectory = gameRoot;
@@ -132,8 +107,6 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            // A caught failure during APPLYING is repaired immediately when possible. A process kill/power loss
-            // cannot execute this catch; the next helper invocation follows the same journal and repairs it then.
             try
             {
                 if (!String.IsNullOrEmpty(amsRoot) &&
@@ -153,7 +126,7 @@ internal static class Program
 
             try
             {
-                string dir = !String.IsNullOrEmpty(amsRoot) ? amsRoot : Path.GetDirectoryName(typeof(Program).Assembly.Location);
+                string dir = !String.IsNullOrEmpty(amsRoot) ? amsRoot : Path.GetDirectoryName(typeof(AutoModSyncApplyEngine).Assembly.Location);
                 File.WriteAllText(Path.Combine(dir, "apply-error.txt"), ex.ToString());
                 AppendApplyLog(dir, "Apply failed: " + ex);
             }
@@ -945,7 +918,7 @@ internal static class Program
     // Safety: compiled only by build-dev.bat with AMS_DEV_TESTS; release builds do not contain this fault-injection path.
     private static void DevelopmentFaultPause(string amsRoot, string milestone)
     {
-        AppendApplyLog(amsRoot, "DEV TEST PAUSE " + milestone + ". Terminate ValheimAutoModSync.Apply.exe now; auto-resume in 120 seconds if left running.");
+        AppendApplyLog(amsRoot, "DEV TEST PAUSE " + milestone + ". Terminate the development installer/updater now; auto-resume in 120 seconds if left running.");
         Thread.Sleep(120000);
         AppendApplyLog(amsRoot, "DEV TEST PAUSE expired without termination; continuing.");
     }

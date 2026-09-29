@@ -1,14 +1,14 @@
 param(
-    [string]$Helper = (Join-Path (Split-Path -Parent $PSScriptRoot) 'DevBuild\ValheimAutoModSync.Apply.exe'),
     [switch]$KeepSandbox
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
-# AutoModSync 2.6 Phase 2 adversarial helper validation.
+# AutoModSync 2.6 Phase 2 adversarial transaction-engine validation.
 # This harness uses an isolated temporary BepInEx tree. It never touches the user's real Valheim install,
-# server, trust files, or release artifacts. It requires the development Apply helper built by build-dev.bat.
+# server, trust files, or release artifacts. It compiles a disposable test-only entry point around the exact
+# AutoModSyncApplyEngine source that is linked into ValheimAutoModSyncInstaller.exe; no Apply.exe is built or shipped.
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $crlf = [Environment]::NewLine
@@ -24,6 +24,22 @@ $txRoot = Join-Path $amsRoot 'apply-transaction'
 $logPath = Join-Path $amsRoot 'apply.log'
 $errorPath = Join-Path $amsRoot 'apply-error.txt'
 $pendingPath = Join-Path $amsRoot 'pending.txt'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$sourceRoot = Join-Path $repoRoot 'Source'
+$engineSource = Join-Path $sourceRoot 'AutoModSync.ApplyEngine.cs'
+$pathSource = Join-Path $sourceRoot 'AutoModSync.PathSafety.cs'
+$ownershipSource = Join-Path $sourceRoot 'AutoModSync.OwnershipState.cs'
+$runnerRoot = Join-Path $env:TEMP ('AMS26-Phase2-Runner-' + $PID)
+$runnerSource = Join-Path $runnerRoot 'AutoModSyncApplyEngineHarness.cs'
+$runner = Join-Path $runnerRoot 'AutoModSyncApplyEngineHarness.exe'
+
+$csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if (-not (Test-Path -LiteralPath $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe" }
+if (-not (Test-Path -LiteralPath $csc)) { throw '.NET Framework C# compiler was not found.' }
+foreach ($source in @($engineSource,$pathSource,$ownershipSource)) {
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing transaction-engine source: $source" }
+}
+
 
 function Write-Utf8NoBom([string]$Path, [string]$Text) {
     $parent = Split-Path -Parent $Path
@@ -99,12 +115,12 @@ function Write-Pending($Fixtures) {
     Write-Utf8NoBom $pendingPath (($lines -join $crlf) + $crlf)
 }
 
-function Start-ApplyHelper {
-    return Start-Process -FilePath $Helper -ArgumentList @('0', ('"{0}"' -f $amsRoot)) -WorkingDirectory (Split-Path -Parent $Helper) -WindowStyle Hidden -PassThru
+function Start-TransactionRunner {
+    return Start-Process -FilePath $runner -ArgumentList @(('"{0}"' -f $amsRoot)) -WorkingDirectory $root -WindowStyle Hidden -PassThru
 }
 
-function Invoke-ApplyHelper {
-    $p = Start-ApplyHelper
+function Invoke-TransactionRunner {
+    $p = Start-TransactionRunner
     $p.WaitForExit()
     return $p.ExitCode
 }
@@ -125,7 +141,7 @@ function Wait-ForLog([string]$Needle, [int]$Seconds = 15) {
 
 function Start-And-KillAtPrepared {
     Write-Utf8NoBom (Join-Path $amsRoot 'apply-test-pause-after-prepared.once') ''
-    $p = Start-ApplyHelper
+    $p = Start-TransactionRunner
     try {
         Wait-ForLog 'DEV TEST PAUSE after PREPARED, before first live write'
         Stop-Process -Id $p.Id -Force
@@ -153,12 +169,28 @@ function Restore-Manifest([byte[]]$Bytes) {
     [System.IO.File]::WriteAllBytes((Join-Path $txRoot 'manifest.txt'), $Bytes)
 }
 
-if (-not (Test-Path -LiteralPath $Helper)) {
-    throw "Development Apply helper not found: $Helper. Run .\build-dev.bat first."
+if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+if (Test-Path -LiteralPath $runnerRoot) { Remove-Item -LiteralPath $runnerRoot -Recurse -Force }
+New-Item -ItemType Directory -Path $root -Force | Out-Null
+New-Item -ItemType Directory -Path $runnerRoot -Force | Out-Null
+
+$harnessCode = @'
+using System;
+internal static class AutoModSyncApplyEngineHarness
+{
+    private static int Main(string[] args)
+    {
+        if (args == null || args.Length != 1) return 2;
+        return AutoModSyncApplyEngine.Run(args[0]);
+    }
 }
+'@
+[IO.File]::WriteAllText($runnerSource,$harnessCode,[Text.UTF8Encoding]::new($false))
+& $csc /nologo /target:winexe /optimize+ /langversion:5 /define:AMS_DEV_TESTS /out:$runner $runnerSource $engineSource $pathSource $ownershipSource
+if ($LASTEXITCODE -ne 0) { throw "Disposable transaction-engine harness compilation failed with exit code $LASTEXITCODE." }
 
 Write-Host 'AutoModSync 2.6 Phase 2 adversarial validation'
-Write-Host "Helper:  $Helper"
+Write-Host 'Runtime under test: AutoModSyncApplyEngine linked into the installer/updater'
 Write-Host "Sandbox: $root"
 Write-Host ''
 
@@ -171,7 +203,7 @@ try {
     Write-Pending @($a, $b)
     Write-Utf8NoBom (Join-Path $amsRoot 'apply-test-fail-after-items.once') '1'
 
-    $exitCode = Invoke-ApplyHelper
+    $exitCode = Invoke-TransactionRunner
     Assert-True ($exitCode -eq 1) "Injected caught failure returned unexpected exit code $exitCode."
     Assert-True (([System.IO.File]::ReadAllText($a.Live)) -eq 'OLD-A') 'Fixture A was not rolled back to its exact old content.'
     Assert-True (([System.IO.File]::ReadAllText($b.Live)) -eq 'OLD-B') 'Fixture B was not preserved as its exact old content.'
@@ -194,14 +226,14 @@ try {
     Assert-True ($manifestText.StartsWith('AMSTXN2')) 'Prepared manifest did not use AMSTXN2.'
     Write-Utf8NoBom $manifest ($manifestText.Replace('AMSTXN2', 'AMSTXN999'))
 
-    $exitCode = Invoke-ApplyHelper
+    $exitCode = Invoke-TransactionRunner
     Assert-True ($exitCode -eq 1) "Version-mismatched journal returned unexpected exit code $exitCode."
     Assert-True (([System.IO.File]::ReadAllText($a.Live)) -eq 'OLD-VERSION') 'Malformed-journal recovery changed the live file.'
     Assert-True (Test-Path -LiteralPath $txRoot) 'Malformed journal was discarded instead of being left for operator recovery.'
     Assert-Contains $errorPath 'transaction manifest version/header is invalid' 'Version-mismatched journal was not rejected explicitly.'
 
     Restore-Manifest $goodManifest
-    $null = Invoke-ApplyHelper
+    $null = Invoke-TransactionRunner
     Assert-True (([System.IO.File]::ReadAllText($a.Live)) -eq 'NEW-VERSION') 'Corrected journal did not recover and retry the staged new file.'
     Assert-True (-not (Test-Path -LiteralPath $txRoot)) 'Recovered version-journal transaction was not cleaned up.'
     Assert-True (-not (Test-Path -LiteralPath $pendingPath)) 'Recovered version-journal pending file was not cleaned up.'
@@ -217,14 +249,14 @@ try {
     $goodManifest = [System.IO.File]::ReadAllBytes($manifest)
 
     Replace-ManifestPath 'BepInEx.cfg'
-    $exitCode = Invoke-ApplyHelper
+    $exitCode = Invoke-TransactionRunner
     Assert-True ($exitCode -eq 1) "Protected-config journal returned unexpected exit code $exitCode."
     Assert-True (([System.IO.File]::ReadAllText($a.Live)) -eq 'OLD-CONFIG') 'Protected-config rejection changed the legitimate live file.'
     Assert-Contains $errorPath 'protected BepInEx/AutoModSync config path' 'Protected config path was not rejected.'
 
     Restore-Manifest $goodManifest
     Replace-ManifestPath '..\outside.txt'
-    $exitCode = Invoke-ApplyHelper
+    $exitCode = Invoke-TransactionRunner
     Assert-True ($exitCode -eq 1) "Escaping journal path returned unexpected exit code $exitCode."
     Assert-True (([System.IO.File]::ReadAllText($a.Live)) -eq 'OLD-CONFIG') 'Fixed-root rejection changed the legitimate live file.'
     Assert-Contains $errorPath 'Unsafe AutoModSync transaction path' 'Escaping transaction path was not rejected.'
@@ -240,7 +272,7 @@ try {
     & $env:ComSpec /d /c $mklink | Out-Null
     Assert-True ($LASTEXITCODE -eq 0) 'Could not create the test transaction junction.'
 
-    $exitCode = Invoke-ApplyHelper
+    $exitCode = Invoke-TransactionRunner
     Assert-True ($exitCode -eq 1) "Reparse-point recovery returned unexpected exit code $exitCode."
     Assert-Contains $errorPath 'refuses to traverse a filesystem reparse point' 'Transaction reparse point was not rejected.'
 
@@ -249,7 +281,7 @@ try {
     Assert-True ($LASTEXITCODE -eq 0) 'Could not remove the test transaction junction.'
     Rename-Item -LiteralPath $txReal -NewName 'apply-transaction'
 
-    $null = Invoke-ApplyHelper
+    $null = Invoke-TransactionRunner
     Assert-True (([System.IO.File]::ReadAllText($a.Live)) -eq 'NEW-CONFIG') 'Restored safe transaction did not recover and apply normally.'
     Assert-True (-not (Test-Path -LiteralPath $txRoot)) 'Safe recovery did not clean up the transaction directory.'
     Assert-True (-not (Test-Path -LiteralPath $pendingPath)) 'Safe recovery did not clean up pending.txt.'
@@ -274,7 +306,7 @@ try {
 
     $fixture = [pscustomobject]@{ Kind = [char]'P'; RelativePath = $relative }
     Write-Pending @($fixture)
-    $exitCode = Invoke-ApplyHelper
+    $exitCode = Invoke-TransactionRunner
     Assert-True ($exitCode -eq 1) "Staging reparse-point apply returned unexpected exit code $exitCode."
     Assert-True (([System.IO.File]::ReadAllText($livePath)) -eq 'OLD-STAGING-SAFE') 'Staging reparse rejection changed the legitimate live file.'
     Assert-Contains $errorPath 'refuses to traverse a filesystem reparse point' 'Staging reparse point was not rejected.'
@@ -303,7 +335,7 @@ try {
 
     $fixture = [pscustomobject]@{ Kind = [char]'P'; RelativePath = $relative }
     Write-Pending @($fixture)
-    $exitCode = Invoke-ApplyHelper
+    $exitCode = Invoke-TransactionRunner
     Assert-True ($exitCode -eq 1) "Live reparse-point apply returned unexpected exit code $exitCode."
     Assert-True (([System.IO.File]::ReadAllText($outsideLivePath)) -eq 'OLD-LIVE-OUTSIDE') 'Live reparse rejection changed the redirected outside file.'
     Assert-Contains $errorPath 'refuses to traverse a filesystem reparse point' 'Live destination reparse point was not rejected.'
@@ -314,19 +346,22 @@ try {
     Write-Host '  PASS'
 
     Write-Host ''
-    Write-Host 'PASS: all Phase 2 adversarial helper checks passed.'
+    Write-Host 'PASS: all Phase 2 adversarial installer transaction-engine checks passed.'
     Write-Host 'No real Valheim installation or server files were modified.'
 
     if (-not $KeepSandbox) {
         Remove-Item -LiteralPath $root -Recurse -Force
+        Remove-Item -LiteralPath $runnerRoot -Recurse -Force
     }
     else {
         Write-Host "Sandbox retained: $root"
+        Write-Host "Disposable runner retained: $runnerRoot"
     }
 }
 catch {
     Write-Host ''
     Write-Host ('FAIL: ' + $_.Exception.Message)
     Write-Host "Sandbox retained for inspection: $root"
+    Write-Host "Disposable runner retained for inspection: $runnerRoot"
     exit 1
 }

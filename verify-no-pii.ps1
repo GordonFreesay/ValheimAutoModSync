@@ -21,11 +21,19 @@ if ([String]::IsNullOrWhiteSpace($normalizedRootArgument)) {
 $rootPath = [IO.Path]::GetFullPath($normalizedRootArgument).TrimEnd($separators)
 $failures = New-Object 'System.Collections.Generic.List[string]'
 $projectVersionQuad = ''
+$allowedVersionQuads = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
 $versionFile = Join-Path $rootPath 'VERSION'
 if (Test-Path -LiteralPath $versionFile -PathType Leaf) {
     $projectVersion = ([IO.File]::ReadAllText($versionFile)).Trim()
-    if ($projectVersion -match '^\d+\.\d+\.\d+$') { $projectVersionQuad = $projectVersion + '.0' }
+    if ($projectVersion -match '^\d+\.\d+\.\d+$') {
+        $projectVersionQuad = $projectVersion + '.0'
+        [void]$allowedVersionQuads.Add($projectVersionQuad)
+    }
 }
+
+# 2.6.1 intentionally embeds the exact released 2.6.0 four-part version in the authenticated migration bridge.
+# Treat that specific product-version literal as version metadata, not as a network address; arbitrary dotted quads remain scanned normally.
+[void]$allowedVersionQuads.Add('2.6.0.0')
 
 function Add-Failure([string]$Location,[string]$Kind,[string]$Value) {
     [void]$failures.Add(($Location + ': ' + $Kind + ' -> ' + $Value))
@@ -89,7 +97,7 @@ function Scan-Text([string]$Text,[string]$Location) {
         $context = $Text.Substring($contextStart,$m.Index - $contextStart)
 
         # Four-component assembly/file versions look like IPv4 addresses but are not network identifiers.
-        if (($projectVersionQuad.Length -gt 0 -and $m.Value -eq $projectVersionQuad) -or
+        if ($allowedVersionQuads.Contains($m.Value) -or
             $context -match '(?i)(Assembly(?:File)?Version|ProductVersion|FileVersion|\bversion)\s*[^\r\n]{0,32}$') {
             continue
         }

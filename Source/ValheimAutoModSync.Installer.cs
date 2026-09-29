@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
@@ -7,6 +8,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
+using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using System.Reflection;
@@ -15,28 +17,38 @@ using System.Reflection;
 [assembly: AssemblyDescription("Standalone Windows installer for Valheim AutoModSync client, dedicated-server, and host roles.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+[assembly: AssemblyVersion("2.6.1.0")]
+[assembly: AssemblyFileVersion("2.6.1.0")]
 
 internal static class AutoModSyncInstaller
 {
-    private const string ProductVersion = "2.6.0";
+    private const string ProductVersion = "2.6.1";
     private const string BepInExVersion = "5.4.2350";
     private const string BepInExSha256 = "37a91c000b4e88f2ed7a4bd7d812239852d2e36cbf0ff0a9f5faacfba46b105f";
     private const string LegacyBootstrapSha256 = "e5b15848829648dc97c7f40df2800c33372500e3b8047944ef1c84a2a107c3b8";
 
     [STAThread]
-    // Intent: Starts the visible standalone installer and refuses to write into protected game folders unless Windows has already elevated this process.
-    // Workflow: the EXE is built with a requireAdministrator manifest, so normal launches receive the standard Windows UAC prompt before this code runs.
-    private static int Main()
+    // Intent: Runs either the visible installer UI or the visible non-elevated transactional updater mode used after a verified AMS sync.
+    // Security: updater mode never requests elevation and never terminates Valheim; interactive installation uses the ordinary Windows runas/UAC flow only when needed.
+    private static int Main(string[] args)
     {
         try
         {
-            if (!IsAdministrator())
+            int waitPid;
+            string amsRoot;
+            if (TryParseApplyMode(args, out waitPid, out amsRoot))
             {
-                MessageBox.Show("Administrator access is required to install into a protected Steam game folder.", "Valheim AutoModSync Installer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return 1;
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                using (ApplyProgressForm form = new ApplyProgressForm(waitPid, amsRoot))
+                {
+                    Application.Run(form);
+                    return form.ExitCode;
+                }
             }
+
+            if (!IsAdministrator())
+                return RelaunchElevatedInstaller();
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -49,6 +61,39 @@ internal static class AutoModSyncInstaller
         catch (Exception ex)
         {
             MessageBox.Show(ex.ToString(), "Valheim AutoModSync Installer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
+        }
+    }
+
+    // Intent: Recognizes only the private runtime updater command emitted by Client.dll; arbitrary extra arguments fall back to normal installer behavior.
+    private static bool TryParseApplyMode(string[] args, out int waitPid, out string amsRoot)
+    {
+        waitPid = 0;
+        amsRoot = "";
+        if (args == null || args.Length != 3) return false;
+        if (!String.Equals(args[0], "--apply-pending", StringComparison.Ordinal)) return false;
+        if (!Int32.TryParse(args[1], NumberStyles.None, CultureInfo.InvariantCulture, out waitPid) || waitPid <= 0) return false;
+        if (String.IsNullOrWhiteSpace(args[2])) return false;
+        amsRoot = Path.GetFullPath(args[2]);
+        return true;
+    }
+
+    // Intent: Keeps the executable manifest non-elevating for normal runtime updates while retaining conventional UAC elevation for explicit install/repair/uninstall use.
+    private static int RelaunchElevatedInstaller()
+    {
+        try
+        {
+            ProcessStartInfo psi = new ProcessStartInfo();
+            psi.FileName = Application.ExecutablePath;
+            psi.UseShellExecute = true;
+            psi.Verb = "runas";
+            Process.Start(psi);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Administrator access is required to install or remove AutoModSync.\r\n\r\n" + ex.Message,
+                "Valheim AutoModSync Installer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return 1;
         }
     }
@@ -68,6 +113,140 @@ internal static class AutoModSyncInstaller
     private static string PackageRoot()
     {
         return Path.GetDirectoryName(typeof(AutoModSyncInstaller).Assembly.Location);
+    }
+
+    // Intent: Presents an ordinary visible updater window while waiting for Valheim to close normally, then runs the crash-safe transaction engine.
+    // Safety: closing this window before apply begins simply leaves the durable pending transaction for a later retry; once live writes begin, the window cannot be closed until commit/recovery finishes.
+    private sealed class ApplyProgressForm : Form
+    {
+        private readonly Label _status;
+        private readonly System.Windows.Forms.Timer _waitTimer;
+        private readonly string _amsRoot;
+        private Process _valheimProcess;
+        private bool _applyStarted;
+        private bool _finished;
+
+        internal int ExitCode { get; private set; }
+
+        // Intent: Builds the visible same-user updater window and binds it to the exact Valheim PID and fixed AutoModSync state root supplied by Client.dll.
+        internal ApplyProgressForm(int waitPid, string amsRoot)
+        {
+            Text = "Valheim AutoModSync Updater";
+            StartPosition = FormStartPosition.CenterScreen;
+            ClientSize = new Size(520, 150);
+            MinimumSize = new Size(520, 150);
+            MaximumSize = new Size(520, 150);
+            MaximizeBox = false;
+            MinimizeBox = true;
+            ShowInTaskbar = true;
+            Font = new Font("Segoe UI", 9F);
+            BackColor = Color.FromArgb(18, 20, 22);
+            ForeColor = Color.FromArgb(235, 237, 239);
+            try
+            {
+                Icon executableIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (executableIcon != null) Icon = executableIcon;
+            }
+            catch { }
+
+            Label title = new Label();
+            title.Text = "AutoModSync is applying verified server changes";
+            title.Font = new Font(Font.FontFamily, 12F, FontStyle.Bold);
+            title.AutoSize = true;
+            title.Location = new Point(22, 20);
+            Controls.Add(title);
+
+            _status = new Label();
+            _status.Text = "Waiting for Valheim to close normally. AutoModSync will not force-close the game.";
+            _status.ForeColor = Color.FromArgb(175, 181, 187);
+            _status.Location = new Point(22, 62);
+            _status.Size = new Size(475, 48);
+            Controls.Add(_status);
+
+            _amsRoot = Path.GetFullPath(amsRoot);
+            ExitCode = 1;
+            try { _valheimProcess = Process.GetProcessById(waitPid); } catch { _valheimProcess = null; }
+
+            _waitTimer = new System.Windows.Forms.Timer();
+            _waitTimer.Interval = 250;
+            _waitTimer.Tick += new EventHandler(WaitTick);
+            Shown += new EventHandler(ShownStart);
+            FormClosing += new FormClosingEventHandler(ClosingGuard);
+            FormClosed += new FormClosedEventHandler(DisposeProcess);
+        }
+
+        // Intent: Starts polling only after the updater window is visibly presented to the user.
+        private void ShownStart(object sender, EventArgs e)
+        {
+            _waitTimer.Start();
+            WaitTick(sender, e);
+        }
+
+        // Intent: Waits passively for the exact Valheim process to exit on its own; it never terminates or signals that process.
+        private void WaitTick(object sender, EventArgs e)
+        {
+            if (_applyStarted) return;
+            bool exited = true;
+            try { exited = _valheimProcess == null || _valheimProcess.HasExited; } catch { exited = true; }
+            if (!exited) return;
+
+            _waitTimer.Stop();
+            BeginApply();
+        }
+
+        // Intent: Begins transactional file replacement only after the original Valheim process is confirmed closed.
+        private void BeginApply()
+        {
+            if (_applyStarted) return;
+            _applyStarted = true;
+            ControlBox = false;
+            _status.Text = "Valheim closed normally. Applying verified files with transactional backup and rollback protection...";
+
+            Thread worker = new Thread(delegate()
+            {
+                int result = AutoModSyncApplyEngine.Run(_amsRoot);
+                try
+                {
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        ExitCode = result;
+                        _finished = true;
+                        ControlBox = true;
+                        if (result == 0)
+                        {
+                            _status.Text = "Update complete. Relaunching Valheim...";
+                            Close();
+                        }
+                        else
+                        {
+                            _status.Text = "AutoModSync could not complete the update. The durable transaction was preserved/recovered; see BepInEx\\AutoModSync\\apply-error.txt.";
+                        }
+                    });
+                }
+                catch { }
+            });
+            worker.IsBackground = true;
+            worker.Name = "AutoModSync Transactional Update";
+            worker.Start();
+        }
+
+        // Intent: Prevents user closure only during the short live-write transaction so PREPARED/COMMITTED recovery invariants are not needlessly interrupted.
+        private void ClosingGuard(object sender, FormClosingEventArgs e)
+        {
+            if (_applyStarted && !_finished)
+                e.Cancel = true;
+        }
+
+        // Intent: Releases the read-only process handle and timer when the visible updater window closes.
+        private void DisposeProcess(object sender, FormClosedEventArgs e)
+        {
+            _waitTimer.Stop();
+            if (_valheimProcess != null)
+            {
+                try { _valheimProcess.Dispose(); } catch { }
+                _valheimProcess = null;
+            }
+        }
     }
 
     private sealed class InstallerForm : Form
@@ -270,7 +449,7 @@ internal static class AutoModSyncInstaller
         {
             internal bool BepInEx;
             internal bool ClientPlugin;
-            internal bool ApplyHelper;
+            internal bool InstallerUpdater;
             internal bool ServerPlugin;
             internal bool ServerConfig;
             internal bool ServerPrivateKey;
@@ -279,7 +458,7 @@ internal static class AutoModSyncInstaller
 
             internal bool ClientComplete
             {
-                get { return BepInEx && ClientPlugin && ApplyHelper; }
+                get { return BepInEx && ClientPlugin && InstallerUpdater; }
             }
 
             internal bool ServerComplete
@@ -289,7 +468,7 @@ internal static class AutoModSyncInstaller
 
             internal bool AnyAutoModSync
             {
-                get { return ClientPlugin || ApplyHelper || ServerPlugin || ServerConfig || ServerPrivateKey || ServerPublicKey || ServerReleaseClient; }
+                get { return ClientPlugin || InstallerUpdater || ServerPlugin || ServerConfig || ServerPrivateKey || ServerPublicKey || ServerReleaseClient; }
             }
         }
 
@@ -348,7 +527,7 @@ internal static class AutoModSyncInstaller
             string ams = Path.Combine(bep, "AutoModSync");
             state.BepInEx = File.Exists(Path.Combine(bep, "core", "BepInEx.dll"));
             state.ClientPlugin = File.Exists(Path.Combine(bep, "plugins", "ValheimAutoModSync.Client.dll"));
-            state.ApplyHelper = File.Exists(Path.Combine(ams, "ValheimAutoModSync.Apply.exe"));
+            state.InstallerUpdater = File.Exists(Path.Combine(bep, "plugins", "ValheimAutoModSyncInstaller.exe"));
             state.ServerPlugin = File.Exists(Path.Combine(bep, "plugins", "ValheimAutoModSync.Server.dll"));
             state.ServerConfig = File.Exists(Path.Combine(config, "com.gordonfreesay.valheimautomodsync.server.cfg"));
             state.ServerPrivateKey = File.Exists(Path.Combine(config, "ValheimAutoModSync.private.xml"));
@@ -471,8 +650,19 @@ internal static class AutoModSyncInstaller
 
                 AppendLog("");
                 AppendLog("INSTALL COMPLETE");
+                bool installedServerRole = _serverRole.Checked || _hostRole.Checked;
+                if (installedServerRole)
+                {
+                    AppendLog("SERVER OPERATOR RESPONSIBILITY: AutoModSync does not grant redistribution rights for third-party mods. Confirm that every synchronized third-party file may be provided to connecting clients.");
+                }
+
                 ExitCode = 0;
-                MessageBox.Show(this, "Valheim AutoModSync " + ProductVersion + " installed successfully.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                string completionMessage = "Valheim AutoModSync " + ProductVersion + " installed successfully.";
+                if (installedServerRole)
+                {
+                    completionMessage += "\r\n\r\nServer operator responsibility: AutoModSync does not grant redistribution rights for third-party mods. You are responsible for ensuring every synchronized third-party file may be provided to connecting clients.";
+                }
+                MessageBox.Show(this, completionMessage, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
@@ -580,8 +770,9 @@ internal static class AutoModSyncInstaller
             string bep = Path.Combine(root, "BepInEx");
             string ams = Path.Combine(bep, "AutoModSync");
             DeleteFileIfExists(Path.Combine(bep, "plugins", "ValheimAutoModSync.Client.dll"), "client plugin");
-            DeleteFileIfExists(Path.Combine(ams, "ValheimAutoModSync.Apply.exe"), "apply helper");
-            DeleteFileIfExists(Path.Combine(ams, "ValheimAutoModSync.Apply.ico"), "apply helper icon");
+            DeleteFileIfExists(Path.Combine(bep, "plugins", "ValheimAutoModSyncInstaller.exe"), "installer/updater");
+            DeleteFileIfExists(Path.Combine(ams, "ValheimAutoModSync.Apply.exe"), "legacy apply helper");
+            DeleteFileIfExists(Path.Combine(ams, "ValheimAutoModSync.Apply.ico"), "legacy apply helper icon");
             DeleteFileIfExists(Path.Combine(bep, "config", "com.gordonfreesay.valheimautomodsync.client.cfg"), "client config");
 
             string[] clientFiles = new string[]
@@ -621,6 +812,7 @@ internal static class AutoModSyncInstaller
 
             DeleteFileIfExists(Path.Combine(bep, "plugins", "ValheimAutoModSync.Server.dll"), "server plugin");
             DeleteFileIfExists(Path.Combine(ams, "release", "ValheimAutoModSync.Client.dll"), "server release client payload");
+            DeleteFileIfExists(Path.Combine(ams, "release", "ValheimAutoModSyncInstaller.exe"), "server release installer/updater payload");
             DeleteDirectoryIfExists(Path.Combine(ams, "cache"), "server bundle cache");
             TryDeleteEmptyDirectory(Path.Combine(ams, "release"));
 
@@ -806,20 +998,18 @@ internal static class AutoModSyncInstaller
             if (!File.Exists(Path.Combine(root, exe))) throw new FileNotFoundException(exe + " was not found in the selected folder.");
         }
 
-        // Intent: Installs the client plugin/apply helper and only adds the release-bundled visible BepInEx runtime when BepInEx is absent.
-        // Safety: preserves existing BepInEx and refuses to overwrite an unknown winhttp.dll proxy.
+        // Intent: Installs the client plugin plus the single signed installer/updater executable and only adds the release-bundled visible BepInEx runtime when BepInEx is absent.
+        // Safety: preserves existing BepInEx, refuses to overwrite an unknown winhttp.dll proxy, and retires only the known legacy Apply.exe component during an explicit AMS upgrade.
         private void InstallClientRole(string root)
         {
             AppendLog("Installing AutoModSync client role...");
             string clientDir = Path.Combine(PackageRoot(), "Client");
             string clientDll = Path.Combine(clientDir, "ValheimAutoModSync.Client.dll");
-            string applyExe = Path.Combine(clientDir, "BepInEx", "AutoModSync", "ValheimAutoModSync.Apply.exe");
-            string applyIcon = Path.Combine(clientDir, "BepInEx", "AutoModSync", "ValheimAutoModSync.Apply.ico");
+            string installerUpdater = Path.Combine(PackageRoot(), "ValheimAutoModSyncInstaller.exe");
             string sourceCore = Path.Combine(clientDir, "BepInEx", "core");
 
             RequireFile(clientDll);
-            RequireFile(applyExe);
-            RequireFile(applyIcon);
+            RequireFile(installerUpdater);
             RequireFile(Path.Combine(clientDir, "winhttp.dll"));
             RequireFile(Path.Combine(clientDir, "doorstop_config.ini"));
             RequireFile(Path.Combine(sourceCore, "BepInEx.dll"));
@@ -838,10 +1028,14 @@ internal static class AutoModSyncInstaller
             }
             else AppendLog("Existing BepInEx installation preserved.");
 
-            CopyFile(clientDll, Path.Combine(root, "BepInEx", "plugins", "ValheimAutoModSync.Client.dll"));
-            CopyFile(applyExe, Path.Combine(root, "BepInEx", "AutoModSync", "ValheimAutoModSync.Apply.exe"));
-            CopyFile(applyIcon, Path.Combine(root, "BepInEx", "AutoModSync", "ValheimAutoModSync.Apply.ico"));
-            AppendLog("Installed AutoModSync client plugin, apply helper, and helper icon.");
+            string pluginDir = Path.Combine(root, "BepInEx", "plugins");
+            CopyFile(clientDll, Path.Combine(pluginDir, "ValheimAutoModSync.Client.dll"));
+            CopyFile(installerUpdater, Path.Combine(pluginDir, "ValheimAutoModSyncInstaller.exe"));
+
+            string legacyAms = Path.Combine(root, "BepInEx", "AutoModSync");
+            DeleteFileIfExists(Path.Combine(legacyAms, "ValheimAutoModSync.Apply.exe"), "legacy 2.6.0 apply helper");
+            DeleteFileIfExists(Path.Combine(legacyAms, "ValheimAutoModSync.Apply.ico"), "legacy 2.6.0 apply helper icon");
+            AppendLog("Installed AutoModSync client plugin and signed installer/updater.");
         }
 
         // Intent: Installs the server plugin/config/release payload and preserves an existing BepInEx install, server config, and server signing identity.
@@ -851,9 +1045,11 @@ internal static class AutoModSyncInstaller
             string serverDll = Path.Combine(PackageRoot(), "Server", "ValheimAutoModSync.Server.dll");
             string configTemplate = Path.Combine(PackageRoot(), "Server", "server-config-example.cfg");
             string clientDll = Path.Combine(PackageRoot(), "Client", "ValheimAutoModSync.Client.dll");
+            string installerUpdater = Path.Combine(PackageRoot(), "ValheimAutoModSyncInstaller.exe");
             RequireFile(serverDll);
             RequireFile(configTemplate);
             RequireFile(clientDll);
+            RequireFile(installerUpdater);
 
             if (!File.Exists(Path.Combine(root, "BepInEx", "core", "BepInEx.dll"))) InstallBepInExFromBundle(root);
             else AppendLog("Existing BepInEx installation preserved.");
@@ -872,6 +1068,7 @@ internal static class AutoModSyncInstaller
 
             string releaseDir = Path.Combine(root, "BepInEx", "AutoModSync", "release");
             CopyFile(clientDll, Path.Combine(releaseDir, "ValheimAutoModSync.Client.dll"));
+            CopyFile(installerUpdater, Path.Combine(releaseDir, "ValheimAutoModSyncInstaller.exe"));
             string obsolete = Path.Combine(releaseDir, "version.dll");
             if (File.Exists(obsolete)) File.Delete(obsolete);
             AppendLog("Installed AutoModSync server role.");
@@ -929,19 +1126,39 @@ internal static class AutoModSyncInstaller
             else AppendLog("WARNING: unknown version.dll preserved.");
         }
 
-        // Intent: Creates the server RSA identity only when absent; otherwise reuses the existing private identity and rewrites only its corresponding public-key file.
+        // Intent: Creates the server RSA identity only when absent; a newly created private key is ACL-hardened immediately, while existing identities are left for the actual server runtime account to re-harden on startup.
+        // Compatibility: this avoids an elevated repair/install session accidentally replacing a deliberate service-account ACL before the dedicated server process can assert its real runtime identity.
         private void EnsureIdentity(string privatePath, string publicPath)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(privatePath));
             string publicXml;
+            bool generatedNow = false;
             using (RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048))
             {
                 rsa.PersistKeyInCsp = false;
-                if (File.Exists(privatePath)) rsa.FromXmlString(File.ReadAllText(privatePath).Trim());
-                else File.WriteAllText(privatePath, rsa.ToXmlString(true) + Environment.NewLine, new UTF8Encoding(false));
+                if (File.Exists(privatePath))
+                {
+                    rsa.FromXmlString(File.ReadAllText(privatePath).Trim());
+                }
+                else
+                {
+                    File.WriteAllText(privatePath, rsa.ToXmlString(true) + Environment.NewLine, new UTF8Encoding(false));
+                    generatedNow = true;
+                    try
+                    {
+                        ValheimAutoModSync.AutoModSyncPrivateKeySecurity.HardenPrivateKeyFile(privatePath);
+                    }
+                    catch
+                    {
+                        try { if (File.Exists(privatePath)) File.Delete(privatePath); } catch { }
+                        throw;
+                    }
+                }
                 publicXml = rsa.ToXmlString(false);
             }
             File.WriteAllText(publicPath, publicXml + Environment.NewLine, new UTF8Encoding(false));
+            if (generatedNow) AppendLog("Created server signing identity with restrictive Windows ACL protection.");
+            else AppendLog("Existing server signing identity preserved; the server process will verify/re-harden its ACL for the actual runtime account on startup.");
             using (SHA256 sha = SHA256.Create())
             {
                 string fingerprint = ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(publicXml)));

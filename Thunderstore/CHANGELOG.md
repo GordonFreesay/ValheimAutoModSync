@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.6.1
+- Removed standalone `ValheimAutoModSync.Apply.exe`; the single visible `ValheimAutoModSyncInstaller.exe` now performs the same transactional post-exit apply/recovery work. Official package ZIPs receive GitHub/Sigstore provenance separately from Windows Authenticode.
+- Runtime updates are visible, wait for Valheim to exit normally, never force-kill the game, and do not request elevation; install/repair/uninstall uses normal UAC only when required.
+
+- Defines 2.6.1 as the security/connection-boundary hardening release for the 2.6 line.
+- Password-protected servers expose only AMS presence/version/protocol, server-access-required state, and an opaque one-time random challenge before server access is granted; signing identity, manifest/content metadata, synchronized paths/hashes/sizes/configuration, bundle/cache state, transfer capabilities, and synchronized bytes remain withheld.
+- Replaces reusable password-verifier transmission with negotiated `password-auth2`: the client keeps Valheim's salted verifier local and sends only a random-nonce HMAC-SHA256 challenge response; challenge state is exact-connection scoped, one-use, time-bounded, and revoked on disconnect.
+- Adds generic `preflight-quarantine1` / `AMS4_Ready` coordination so stale third-party compatibility/version RPCs cannot reject an out-of-date client before AMS can update it. Changed-sync connections discard stale queued RPCs; verified current peers release them in original order.
+- Keeps core Valheim server-access/denial control RPCs outside the server quarantine and preserves legacy/non-AMS fail-open/handshake fallback behavior.
+- First-contact trust now explicitly warns that synchronized BepInEx mods are executable code, confirms permission to receive server-provided mods/configuration, and states that AutoModSync does not verify/enforce third-party licensing or redistribution rights.
+- Retains 2.6.0 signed-manifest, fixed-root path/reparse/resource, SHA-256 staging, fingerprint-scoped ownership, and transactional apply/recovery hardening.
+- Public/no-password servers remain AMS4/protocol-4 compatible. Released 2.6.0 clients can migrate across a password-protected 2.6.1 boundary only after normal Valheim server access succeeds and a one-use same-platform reconnect grant is consumed; 2.5.x and earlier clients are not given protected synchronization state on that path.
+
+
 ## 2.6.0
 
 - Adds content-addressed bundle caching, startup prewarming, and single-flight construction so identical fresh-client requests reuse one immutable verified ZIP rather than rebuilding it per client.

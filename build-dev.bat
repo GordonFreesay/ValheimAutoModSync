@@ -72,6 +72,8 @@ set "UNITY_IMGUI=%BEPROOT%\unstripped_corlib\UnityEngine.IMGUIModule.dll"
 if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%MANAGED%\UnityEngine.IMGUIModule.dll"
 set "UNITY_TEXT=%BEPROOT%\unstripped_corlib\UnityEngine.TextRenderingModule.dll"
 if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%MANAGED%\UnityEngine.TextRenderingModule.dll"
+set "UNITY_INPUT=%BEPROOT%\unstripped_corlib\UnityEngine.InputLegacyModule.dll"
+if not exist "%UNITY_INPUT%" set "UNITY_INPUT=%MANAGED%\UnityEngine.InputLegacyModule.dll"
 
 if not exist "%GAME_DLL%" (
   echo ERROR: Valheim managed references were not found under "%MANAGED%".
@@ -90,10 +92,21 @@ if not exist "%BRANDING_SCRIPT%" (
   exit /b 1
 )
 
-if exist "%OUT%" rmdir /s /q "%OUT%"
+if exist "%OUT%" (
+  rmdir /s /q "%OUT%"
+  if exist "%OUT%" (
+    echo ERROR: Could not completely remove the previous DevBuild directory.
+    echo A stale or locked development artifact may still be in use. Close any AMS helper/updater process and retry.
+    exit /b 1
+  )
+)
 mkdir "%OUT%"
-set "APPLYICO=%OUT%\ValheimAutoModSync.Apply.ico"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%BRANDING_SCRIPT%" -SourcePng "%BRANDING_PNG%" -OutputIco "%APPLYICO%"
+if errorlevel 1 (
+  echo ERROR: Could not create a clean DevBuild directory.
+  exit /b 1
+)
+set "INSTALLERICO=%OUT%\ValheimAutoModSyncInstaller.ico"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%BRANDING_SCRIPT%" -SourcePng "%BRANDING_PNG%" -OutputIco "%INSTALLERICO%"
 if errorlevel 1 exit /b 1
 set "REFS=%OUT%\refs.rsp"
 >"%REFS%" echo /nologo
@@ -106,6 +119,7 @@ set "REFS=%OUT%\refs.rsp"
 >>"%REFS%" echo /reference:"%UNITY_CORE%"
 >>"%REFS%" echo /reference:"%UNITY_IMGUI%"
 >>"%REFS%" echo /reference:"%UNITY_TEXT%"
+>>"%REFS%" echo /reference:"%UNITY_INPUT%"
 >>"%REFS%" echo /reference:"%SPLATFORM_DLL%"
 >>"%REFS%" echo /reference:"%STEAMWORKS_DLL%"
 >>"%REFS%" echo /reference:"%NETSTANDARD_DLL%"
@@ -116,22 +130,41 @@ if exist "%ASSEMBLY_UTILS%" >>"%REFS%" echo /reference:"%ASSEMBLY_UTILS%"
 echo.
 echo Compiling AutoModSync 2.6 development runtime only...
 rem AMS_DEV_TESTS enables only local development validation hooks: client transfer interruption,
-rem client/server pre-resume AMS4 compatibility emulation, and Apply transaction boundary tests.
+rem client/server pre-resume AMS4 compatibility emulation, and installer transaction boundary tests.
 rem The release builder never defines this symbol, so public binaries do not contain these test-only paths.
 "%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /out:"%OUT%\ValheimAutoModSync.Client.dll" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.SyncUiState.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ClientResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 exit /b 1
 
-"%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Server.dll" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
+"%CSC%" @"%REFS%" /target:library /define:AMS_DEV_TESTS /out:"%OUT%\ValheimAutoModSync.Server.dll" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PrivateKeySecurity.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
 if errorlevel 1 exit /b 1
 
-rem Apply uses the same AMS_DEV_TESTS symbol for its deterministic transactional interruption markers.
-"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /define:AMS_DEV_TESTS /win32icon:"%APPLYICO%" /out:"%OUT%\ValheimAutoModSync.Apply.exe" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
+rem The single installer/updater carries the same AMS_DEV_TESTS transaction interruption markers used by local apply validation.
+"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /define:AMS_DEV_TESTS /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /win32icon:"%INSTALLERICO%" /out:"%OUT%\ValheimAutoModSyncInstaller.exe" "%SOURCE%\ValheimAutoModSync.Installer.cs" "%SOURCE%\AutoModSync.ApplyEngine.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PrivateKeySecurity.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 exit /b 1
 
 del /q "%REFS%" >nul 2>&1
 
+if exist "%OUT%\ValheimAutoModSync.Apply.exe" (
+  echo ERROR: Legacy ValheimAutoModSync.Apply.exe unexpectedly exists in DevBuild.
+  echo 2.6.1 development output must use only ValheimAutoModSyncInstaller.exe for apply/update work.
+  exit /b 1
+)
+
+if not exist "%OUT%\ValheimAutoModSync.Client.dll" (
+  echo ERROR: Expected client DLL is missing from DevBuild.
+  exit /b 1
+)
+if not exist "%OUT%\ValheimAutoModSync.Server.dll" (
+  echo ERROR: Expected server DLL is missing from DevBuild.
+  exit /b 1
+)
+if not exist "%OUT%\ValheimAutoModSyncInstaller.exe" (
+  echo ERROR: Expected installer/updater is missing from DevBuild.
+  exit /b 1
+)
+
 if exist "%ROOT%verify-no-pii.ps1" (
-  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -ArtifactPaths "%OUT%\ValheimAutoModSync.Client.dll;%OUT%\ValheimAutoModSync.Server.dll;%OUT%\ValheimAutoModSync.Apply.exe"
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -ArtifactPaths "%OUT%\ValheimAutoModSync.Client.dll;%OUT%\ValheimAutoModSync.Server.dll;%OUT%\ValheimAutoModSyncInstaller.exe"
   if errorlevel 1 exit /b 1
 )
 
@@ -142,5 +175,5 @@ echo.
 echo IMPORTANT: build-dev.bat only compiles DevBuild; it does NOT install these binaries into Valheim.
 echo For live validation, close Valheim and stop the dedicated server, then run deploy-dev.ps1 with the client/server BepInEx roots.
 echo.
-echo No installer, release ZIP, store package, tag, or publication artifact was created.
+echo No release ZIP, store package, tag, or publication artifact was created.
 exit /b 0

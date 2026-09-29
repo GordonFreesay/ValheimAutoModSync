@@ -51,7 +51,7 @@ if not exist "%SERVERDIR%" mkdir "%SERVERDIR%" >nul 2>&1
 if not exist "%TOOLSDIR%" mkdir "%TOOLSDIR%" >nul 2>&1
 
 set "BUILDTOOL=%WORK%\AutoModSync.BuildTool.exe"
-"%CSC%" /nologo /target:exe /optimize+ /langversion:5 /out:"%BUILDTOOL%" "%SOURCE%\AutoModSync.BuildTool.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs"
+"%CSC%" /nologo /target:exe /optimize+ /langversion:5 /out:"%BUILDTOOL%" "%SOURCE%\AutoModSync.BuildTool.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PrivateKeySecurity.cs"
 if errorlevel 1 goto :Fail
 copy /y "%BUILDTOOL%" "%TOOLSDIR%\AutoModSync.BuildTool.exe" >nul
 if errorlevel 1 goto :Fail
@@ -91,6 +91,8 @@ set "UNITY_IMGUI=%BEPSOURCE%\unstripped_corlib\UnityEngine.IMGUIModule.dll"
 if not exist "%UNITY_IMGUI%" set "UNITY_IMGUI=%VALHEIMMANAGED%\UnityEngine.IMGUIModule.dll"
 set "UNITY_TEXT=%BEPSOURCE%\unstripped_corlib\UnityEngine.TextRenderingModule.dll"
 if not exist "%UNITY_TEXT%" set "UNITY_TEXT=%VALHEIMMANAGED%\UnityEngine.TextRenderingModule.dll"
+set "UNITY_INPUT=%BEPSOURCE%\unstripped_corlib\UnityEngine.InputLegacyModule.dll"
+if not exist "%UNITY_INPUT%" set "UNITY_INPUT=%VALHEIMMANAGED%\UnityEngine.InputLegacyModule.dll"
 if not exist "%BRANDING_PNG%" (
   echo ERROR: AutoModSync branding PNG was not found at "%BRANDING_PNG%".
   goto :Fail
@@ -100,8 +102,8 @@ if not exist "%BRANDING_SCRIPT%" (
   goto :Fail
 )
 
-set "APPLYICO=%WORK%\ValheimAutoModSync.Apply.ico"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%BRANDING_SCRIPT%" -SourcePng "%BRANDING_PNG%" -OutputIco "%APPLYICO%"
+set "INSTALLERICO=%WORK%\ValheimAutoModSyncInstaller.ico"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%BRANDING_SCRIPT%" -SourcePng "%BRANDING_PNG%" -OutputIco "%INSTALLERICO%"
 if errorlevel 1 goto :Fail
 
 set "REFS=%WORK%\refs.rsp"
@@ -115,6 +117,7 @@ set "REFS=%WORK%\refs.rsp"
 >>"%REFS%" echo /reference:"%UNITY_CORE%"
 >>"%REFS%" echo /reference:"%UNITY_IMGUI%"
 >>"%REFS%" echo /reference:"%UNITY_TEXT%"
+>>"%REFS%" echo /reference:"%UNITY_INPUT%"
 >>"%REFS%" echo /reference:"%SPLATFORM_DLL%"
 >>"%REFS%" echo /reference:"%STEAMWORKS_DLL%"
 >>"%REFS%" echo /reference:"%NETSTANDARD_DLL%"
@@ -124,23 +127,20 @@ if exist "%ASSEMBLY_UTILS%" >>"%REFS%" echo /reference:"%ASSEMBLY_UTILS%"
 
 set "CLIENTDLL=%WORK%\ValheimAutoModSync.Client.dll"
 set "SERVERDLL=%WORK%\ValheimAutoModSync.Server.dll"
-set "APPLYEXE=%WORK%\ValheimAutoModSync.Apply.exe"
 set "INSTALLEREXE=%WORK%\ValheimAutoModSyncInstaller.exe"
 echo Compiling AutoModSync components...
 "%CSC%" @"%REFS%" /target:library /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /out:"%CLIENTDLL%" "%SOURCE%\ValheimAutoModSync.Client.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.SyncUiState.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ClientResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
+"%CSC%" @"%REFS%" /target:library /out:"%SERVERDLL%" "%SOURCE%\ValheimAutoModSync.Server.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PrivateKeySecurity.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.ManifestScanner.cs" "%SOURCE%\AutoModSync.ServerResourceSafety.cs" "%SOURCE%\AutoModSync.ResumeState.cs" "%SOURCE%\AutoModSync.TransferScheduler.cs" "%SOURCE%\AutoModSync.ClientPayload.cs"
 if errorlevel 1 goto :Fail
-"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /win32icon:"%APPLYICO%" /out:"%APPLYEXE%" "%SOURCE%\ValheimAutoModSync.Apply.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
-if errorlevel 1 goto :Fail
-"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /win32icon:"%APPLYICO%" /out:"%INSTALLEREXE%" "%SOURCE%\ValheimAutoModSync.Installer.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
+"%CSC%" /nologo /target:winexe /optimize+ /langversion:5 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /resource:"%BRANDING_PNG%",ValheimAutoModSync.Branding.Logo.png /win32manifest:"%SOURCE%\AutoModSyncInstaller.manifest" /win32icon:"%INSTALLERICO%" /out:"%INSTALLEREXE%" "%SOURCE%\ValheimAutoModSync.Installer.cs" "%SOURCE%\AutoModSync.ApplyEngine.cs" "%SOURCE%\AutoModSync.IdentityDisplay.cs" "%SOURCE%\AutoModSync.PrivateKeySecurity.cs" "%SOURCE%\AutoModSync.PathSafety.cs" "%SOURCE%\AutoModSync.OwnershipState.cs"
 if errorlevel 1 goto :Fail
 
 rem Sign AutoModSync-authored PE files before they are copied or packaged.
 call :SignReleaseBinaries
 if errorlevel 1 goto :Fail
 if exist "%ROOT%verify-no-pii.ps1" (
-  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -ArtifactPaths "%CLIENTDLL%;%SERVERDLL%;%APPLYEXE%;%INSTALLEREXE%;%BUILDTOOL%"
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%verify-no-pii.ps1" -ArtifactPaths "%CLIENTDLL%;%SERVERDLL%;%INSTALLEREXE%;%BUILDTOOL%"
   if errorlevel 1 goto :Fail
 )
 copy /y "%BUILDTOOL%" "%TOOLSDIR%\AutoModSync.BuildTool.exe" >nul
@@ -156,8 +156,7 @@ mkdir "%CLIENTDIR%\BepInEx\core" >nul 2>&1
 mkdir "%CLIENTDIR%\BepInEx\AutoModSync" >nul 2>&1
 xcopy "%BEPSOURCE%\BepInEx\core\*" "%CLIENTDIR%\BepInEx\core\" /E /I /Y /Q >nul
 copy /y "%CLIENTDLL%" "%CLIENTDIR%\ValheimAutoModSync.Client.dll" >nul
-copy /y "%APPLYEXE%" "%CLIENTDIR%\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe" >nul
-copy /y "%APPLYICO%" "%CLIENTDIR%\BepInEx\AutoModSync\ValheimAutoModSync.Apply.ico" >nul
+copy /y "%INSTALLEREXE%" "%CLIENTDIR%\ValheimAutoModSyncInstaller.exe" >nul
 copy /y "%SERVERDLL%" "%SERVERDIR%\ValheimAutoModSync.Server.dll" >nul
 if errorlevel 1 goto :Fail
 
@@ -170,17 +169,18 @@ mkdir "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD_PARTY_LICENSES" >nul 2>&1
 copy /y "%ROOT%README.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\README.md" >nul
 copy /y "%ROOT%VERIFYING-RELEASES.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\VERIFYING-RELEASES.md" >nul
 copy /y "%ROOT%SIGNING.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\SIGNING.md" >nul
-copy /y "%ROOT%RELEASE-NOTES-2.6.0.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\RELEASE-NOTES.md" >nul
+copy /y "%ROOT%RELEASE-NOTES-2.6.1.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\RELEASE-NOTES.md" >nul
 copy /y "%ROOT%VERSION" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\VERSION" >nul
 copy /y "%ROOT%LICENSE" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\LICENSE" >nul
 copy /y "%ROOT%THIRD-PARTY-NOTICES.md" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\THIRD-PARTY-NOTICES.md" >nul
 copy /y "%ROOT%install.bat" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\install.bat" >nul
 copy /y "%INSTALLEREXE%" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\ValheimAutoModSyncInstaller.exe" >nul
-copy /y "%APPLYICO%" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\ValheimAutoModSyncInstaller.ico" >nul
+copy /y "%INSTALLERICO%" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\ValheimAutoModSyncInstaller.ico" >nul
 if errorlevel 1 goto :Fail
 copy /y "%BEPZIP%" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Bundled\BepInExPack_Valheim-%BEPINEX_VERSION%.zip" >nul
 if errorlevel 1 goto :Fail
 copy /y "%CLIENTDIR%\ValheimAutoModSync.Client.dll" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\ValheimAutoModSync.Client.dll" >nul
+copy /y "%CLIENTDIR%\ValheimAutoModSyncInstaller.exe" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\ValheimAutoModSyncInstaller.exe" >nul
 copy /y "%CLIENTDIR%\winhttp.dll" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\winhttp.dll" >nul
 copy /y "%CLIENTDIR%\doorstop_config.ini" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\doorstop_config.ini" >nul
 xcopy "%CLIENTDIR%\BepInEx\*" "%DIST%\ValheimAutoModSync-%AMS_VERSION%\Client\BepInEx\" /E /I /Y /Q >nul
@@ -215,7 +215,7 @@ echo SHA-256 manifest:
 echo   "%DIST%\SHA256SUMS.txt"
 echo GitHub/Sigstore provenance is generated only by official GitHub Actions workflows.
 echo This local build is NOT GitHub-attested.
-echo This build contains no packed AutoModSync version.dll.
+echo This build contains no packed AutoModSync version.dll and no standalone AutoModSync apply helper.
 rmdir /s /q "%WORK%" >nul 2>&1
 if not defined AMS_NO_PAUSE pause
 exit /b 0
@@ -248,7 +248,7 @@ if not defined HAS_SIGNING_CONFIG (
 )
 
 echo Signing AutoModSync-authored binaries...
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT%sign-release.ps1' -Files @('%BUILDTOOL%','%CLIENTDLL%','%SERVERDLL%','%APPLYEXE%','%INSTALLEREXE%')"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT%sign-release.ps1' -Files @('%BUILDTOOL%','%CLIENTDLL%','%SERVERDLL%','%INSTALLEREXE%')"
 if errorlevel 1 exit /b 1
 set "SIGNING_STATUS=SIGNED AND VERIFIED"
 exit /b 0

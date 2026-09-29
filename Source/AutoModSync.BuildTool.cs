@@ -11,8 +11,8 @@ using System.Reflection;
 [assembly: AssemblyDescription("Release-build and server-identity utility for Valheim AutoModSync.")]
 [assembly: AssemblyCompany("GordonFreesay")]
 [assembly: AssemblyProduct("Valheim AutoModSync")]
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+[assembly: AssemblyVersion("2.6.1.0")]
+[assembly: AssemblyFileVersion("2.6.1.0")]
 
 internal static class BuildTool
 {
@@ -182,7 +182,7 @@ internal static class BuildTool
     }
 
     // Intent: Creates or preserves the server RSA signing identity used to authenticate AutoModSync manifests.
-    // Workflow: reuses an existing private key when present, otherwise generates a 2048-bit keypair, writes the public key, and prints its SHA-256 fingerprint.
+    // Security: a newly generated private key receives an explicit protected Windows ACL immediately; existing identity ACLs are preserved here and re-hardened by the actual server runtime account on load.
     private static int EnsureIdentity(string privatePath, string publicPath)
     {
         privatePath = Path.GetFullPath(privatePath);
@@ -190,6 +190,7 @@ internal static class BuildTool
         string parent = Path.GetDirectoryName(privatePath);
         if (!Directory.Exists(parent)) Directory.CreateDirectory(parent);
         string publicXml;
+        bool generatedNow = false;
         using (RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048))
         {
             rsa.PersistKeyInCsp = false;
@@ -205,7 +206,17 @@ internal static class BuildTool
                 string privateXml = rsa.ToXmlString(true);
                 publicXml = rsa.ToXmlString(false);
                 File.WriteAllText(privatePath, privateXml + Environment.NewLine, new UTF8Encoding(false));
-                Console.WriteLine("Generated AutoModSync server identity: " + privatePath);
+                generatedNow = true;
+                try
+                {
+                    ValheimAutoModSync.AutoModSyncPrivateKeySecurity.HardenPrivateKeyFile(privatePath);
+                }
+                catch
+                {
+                    try { if (File.Exists(privatePath)) File.Delete(privatePath); } catch { }
+                    throw;
+                }
+                Console.WriteLine("Generated ACL-protected AutoModSync server identity: " + privatePath);
             }
         }
         File.WriteAllText(publicPath, publicXml + Environment.NewLine, new UTF8Encoding(false));
@@ -218,18 +229,18 @@ internal static class BuildTool
     }
 
     // Intent: Legacy one-file bootstrap packer retained for historical tooling compatibility; current transparent releases do not use the packed version.dll design.
-    // Workflow: embeds only pinned bootstrap/runtime inputs plus AutoModSync files, records offsets/sizes/hashes in a manifest, and appends an AMS package footer.
-    private static int Pack(string templatePath, string outputPath, string bootstrapRoot, string clientDll, string helperExe)
+    // Workflow: embeds only pinned bootstrap/runtime inputs plus the AutoModSync client and installer/updater, records offsets/sizes/hashes in a manifest, and appends an AMS package footer.
+    private static int Pack(string templatePath, string outputPath, string bootstrapRoot, string clientDll, string installerExe)
     {
         templatePath = Path.GetFullPath(templatePath);
         outputPath = Path.GetFullPath(outputPath);
         bootstrapRoot = Path.GetFullPath(bootstrapRoot);
         clientDll = Path.GetFullPath(clientDll);
-        helperExe = Path.GetFullPath(helperExe);
+        installerExe = Path.GetFullPath(installerExe);
 
         if (!File.Exists(templatePath)) throw new FileNotFoundException("version.dll template missing", templatePath);
         if (!File.Exists(clientDll)) throw new FileNotFoundException("client plugin missing", clientDll);
-        if (!File.Exists(helperExe)) throw new FileNotFoundException("apply helper missing", helperExe);
+        if (!File.Exists(installerExe)) throw new FileNotFoundException("installer/updater missing", installerExe);
 
         List<Entry> entries = new List<Entry>();
         // bootstrapRoot must be the verified pinned stock BepInExPack extraction,
@@ -241,7 +252,7 @@ internal static class BuildTool
         // Do not embed BepInEx/patchers. AutoModSync needs no client patcher, and copying
         // a live server patchers directory could accidentally distribute unrelated code.
         AddFile(entries, 'A', clientDll, "BepInEx/plugins/ValheimAutoModSync.Client.dll", true);
-        AddFile(entries, 'A', helperExe, "BepInEx/AutoModSync/ValheimAutoModSync.Apply.exe", true);
+        AddFile(entries, 'A', installerExe, "BepInEx/plugins/ValheimAutoModSyncInstaller.exe", true);
 
         string outDir = Path.GetDirectoryName(outputPath);
         if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);

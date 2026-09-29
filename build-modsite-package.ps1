@@ -21,8 +21,7 @@ if (-not $SkipStandaloneBuild) {
 
 $ClientDll = Join-Path $Root "Client\ValheimAutoModSync.Client.dll"
 $ServerDll = Join-Path $Root "Server\ValheimAutoModSync.Server.dll"
-$ApplyExe = Join-Path $Root "Client\BepInEx\AutoModSync\ValheimAutoModSync.Apply.exe"
-$ApplyIco = Join-Path $Root "Client\BepInEx\AutoModSync\ValheimAutoModSync.Apply.ico"
+$InstallerExe = Join-Path $Root "Client\ValheimAutoModSyncInstaller.exe"
 $Dist = Join-Path $Root "Dist"
 $Package = Join-Path $Dist ("{0}-{1}" -f $Target, $Version)
 $PluginDir = Join-Path $Package "BepInEx\plugins\GordonFreesay-ValheimAutoModSync"
@@ -31,8 +30,7 @@ $DocsDir = Join-Path $Package "docs"
 foreach ($p in @(
     $ClientDll,
     $ServerDll,
-    $ApplyExe,
-    $ApplyIco,
+    $InstallerExe,
     (Join-Path $Root "ModSites\README.md"),
     (Join-Path $Root "LICENSE"),
     (Join-Path $Root "THIRD-PARTY-NOTICES.md"),
@@ -47,8 +45,7 @@ New-Item -ItemType Directory -Force -Path $PluginDir,$DocsDir | Out-Null
 
 Copy-Item $ClientDll (Join-Path $PluginDir "ValheimAutoModSync.Client.dll")
 Copy-Item $ServerDll (Join-Path $PluginDir "ValheimAutoModSync.Server.dll")
-Copy-Item $ApplyExe (Join-Path $PluginDir "ValheimAutoModSync.Apply.exe")
-Copy-Item $ApplyIco (Join-Path $PluginDir "ValheimAutoModSync.Apply.ico")
+Copy-Item $InstallerExe (Join-Path $PluginDir "ValheimAutoModSyncInstaller.exe")
 Copy-Item (Join-Path $Root "ModSites\README.md") (Join-Path $Package "README.md")
 Copy-Item (Join-Path $Root "LICENSE") (Join-Path $Package "LICENSE")
 Copy-Item (Join-Path $Root "THIRD-PARTY-NOTICES.md") (Join-Path $Package "THIRD-PARTY-NOTICES.md")

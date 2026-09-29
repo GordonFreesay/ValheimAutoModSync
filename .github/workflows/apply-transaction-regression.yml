@@ -1,11 +1,13 @@
-name: Apply Transaction Regression
+name: Installer Transaction Regression
 
 on:
   push:
     branches:
       - dev/2.6
+      - release/2.6.1-password-boundary
     paths:
-      - "Source/ValheimAutoModSync.Apply.cs"
+      - "Source/AutoModSync.ApplyEngine.cs"
+      - "Source/ValheimAutoModSync.Installer.cs"
       - "Source/AutoModSync.OwnershipState.cs"
       - "Source/AutoModSync.PathSafety.cs"
       - "tests/test-phase2-adversarial.ps1"
@@ -16,21 +18,13 @@ permissions:
   contents: read
 
 jobs:
-  apply-regression:
+  installer-transaction-regression:
     runs-on: windows-latest
     timeout-minutes: 12
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compile development Apply helper
-        shell: powershell
-        run: |
-          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          if (-not (Test-Path $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe" }
-          & $csc /nologo /target:winexe /optimize+ /langversion:5 /define:AMS_DEV_TESTS /out:".\ValheimAutoModSync.Apply.exe" ".\Source\ValheimAutoModSync.Apply.cs" ".\Source\AutoModSync.PathSafety.cs" ".\Source\AutoModSync.OwnershipState.cs"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Run Phase 2 adversarial regression harness
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-phase2-adversarial.ps1" -Helper ".\ValheimAutoModSync.Apply.exe"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests/test-phase2-adversarial.ps1"

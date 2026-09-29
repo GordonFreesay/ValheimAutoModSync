@@ -6,16 +6,16 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
 # AutoModSync 2.6 Phase 6 ownership/apply validation.
-# Compiles the production Apply helper + ownership/path-safety sources and runs only inside an isolated temporary BepInEx tree.
+# Compiles a disposable test-only entry point around the production AutoModSyncApplyEngine linked into the installer/updater.
 # It never reads or modifies the user's real Valheim installation, trust files, server files, or release artifacts.
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repoRoot 'Source'
-$applySource = Join-Path $sourceRoot 'ValheimAutoModSync.Apply.cs'
+$engineSource = Join-Path $sourceRoot 'AutoModSync.ApplyEngine.cs'
 $pathSource = Join-Path $sourceRoot 'AutoModSync.PathSafety.cs'
 $ownershipSource = Join-Path $sourceRoot 'AutoModSync.OwnershipState.cs'
 
-foreach ($path in @($applySource, $pathSource, $ownershipSource)) {
+foreach ($path in @($engineSource, $pathSource, $ownershipSource)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Missing source: $path" }
 }
 
@@ -27,7 +27,9 @@ if (-not $csc) { throw '.NET Framework C# compiler was not found.' }
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $crlf = [Environment]::NewLine
 $sandbox = Join-Path $env:TEMP ('AMS26-Phase6-Ownership-' + $PID)
-$helper = Join-Path $sandbox 'ValheimAutoModSync.Apply.exe'
+$runnerRoot = Join-Path $env:TEMP ('AMS26-Phase6-Runner-' + $PID)
+$runnerSource = Join-Path $runnerRoot 'AutoModSyncApplyEngineHarness.cs'
+$runner = Join-Path $runnerRoot 'AutoModSyncApplyEngineHarness.exe'
 $pathSmokeSource = Join-Path $sandbox 'PathSafetySmoke.cs'
 $pathSmokeExe = Join-Path $sandbox 'PathSafetySmoke.exe'
 $gameRoot = Join-Path $sandbox 'Game'
@@ -41,10 +43,23 @@ $ownershipRoot = Join-Path $amsRoot 'ownership'
 $logPath = Join-Path $amsRoot 'apply.log'
 
 New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
+New-Item -ItemType Directory -Path $runnerRoot -Force | Out-Null
 
-& $csc /nologo /optimize+ /langversion:5 /target:winexe /define:AMS_DEV_TESTS /out:$helper $applySource $pathSource $ownershipSource
+$runnerCode = @'
+using System;
+internal static class AutoModSyncApplyEngineHarness
+{
+    private static int Main(string[] args)
+    {
+        if (args == null || args.Length != 1) return 2;
+        return AutoModSyncApplyEngine.Run(args[0]);
+    }
+}
+'@
+[IO.File]::WriteAllText($runnerSource, $runnerCode, $utf8NoBom)
+& $csc /nologo /optimize+ /langversion:5 /target:exe /define:AMS_DEV_TESTS /out:$runner $runnerSource $engineSource $pathSource $ownershipSource
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "FAIL: Phase 6 helper compilation failed. Sandbox retained: $sandbox"
+    Write-Host "FAIL: Phase 6 installer transaction-engine harness compilation failed. Sandbox retained: $sandbox"
     exit $LASTEXITCODE
 }
 
@@ -124,14 +139,14 @@ function Write-PendingDelete([string]$Kind, [string]$Rel, [long]$Size, [string]$
     Write-Utf8 $pendingPath ('AMSPENDING2' + $crlf + 'D|' + $Kind + '|' + $Size + '|' + $Sha + '|' + (B64 $Rel) + $crlf)
 }
 
-function Invoke-Helper {
-    $p = Start-Process -FilePath $helper -ArgumentList @('0', ('"{0}"' -f $amsRoot)) -WorkingDirectory $sandbox -WindowStyle Hidden -PassThru
+function Invoke-TransactionRunner {
+    $p = Start-Process -FilePath $runner -ArgumentList @(('"{0}"' -f $amsRoot)) -WorkingDirectory $sandbox -WindowStyle Hidden -PassThru
     $p.WaitForExit()
     return $p.ExitCode
 }
 
-function Start-Helper {
-    return Start-Process -FilePath $helper -ArgumentList @('0', ('"{0}"' -f $amsRoot)) -WorkingDirectory $sandbox -WindowStyle Hidden -PassThru
+function Start-TransactionRunner {
+    return Start-Process -FilePath $runner -ArgumentList @(('"{0}"' -f $amsRoot)) -WorkingDirectory $sandbox -WindowStyle Hidden -PassThru
 }
 
 function Wait-ForLog([string]$Needle, [int]$Seconds = 15) {
@@ -151,7 +166,7 @@ function Wait-ForLog([string]$Needle, [int]$Seconds = 15) {
     throw "Timed out waiting for apply.log text: $Needle"
 }
 
-function Stop-Helper($Process) {
+function Stop-TransactionRunner($Process) {
     if ($Process -and -not $Process.HasExited) {
         Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
         try { $Process.WaitForExit() } catch { }
@@ -191,7 +206,7 @@ try {
     Write-Utf8 $staged $ownedText
     Write-PendingWrite 'P' $rel
     Write-OwnershipPending $fpA @($owned)
-    $exit = Invoke-Helper
+    $exit = Invoke-TransactionRunner
     Assert-True ($exit -eq 3) "Successful isolated apply returned unexpected exit code $exit."
     Assert-True ((Test-Path -LiteralPath $live) -and ([IO.File]::ReadAllText($live) -eq $ownedText)) 'Verified write did not reach the live path.'
     $ledgerA = Join-Path $ownershipRoot ($fpA + '.txt')
@@ -204,7 +219,7 @@ try {
     Write-Host '[2/7] Exact same-server owned bytes can be retired transactionally...'
     Write-PendingDelete 'P' $rel $owned.Size $owned.Sha
     Write-OwnershipPending $fpA @()
-    $exit = Invoke-Helper
+    $exit = Invoke-TransactionRunner
     Assert-True ($exit -eq 3) "Successful isolated delete returned unexpected exit code $exit."
     Assert-True (-not (Test-Path -LiteralPath $live)) 'Exact owned stale file was not deleted.'
     $ledgerText = [IO.File]::ReadAllText($ledgerA)
@@ -218,7 +233,7 @@ try {
     $wrongSha = Get-ShaHex 'NOT-THE-OWNED-BYTES'
     Write-PendingDelete 'P' $rel $owned.Size $wrongSha
     Write-OwnershipPending $fpA @()
-    $exit = Invoke-Helper
+    $exit = Invoke-TransactionRunner
     Assert-True ($exit -eq 1) "Wrong-digest deletion returned unexpected exit code $exit."
     Assert-True ((Test-Path -LiteralPath $live) -and ([IO.File]::ReadAllText($live) -eq $ownedText)) 'Wrong-digest deletion changed the live file.'
     Assert-True (([IO.File]::ReadAllText((Join-Path $ownershipRoot ($fpA + '.txt')))).Contains($owned.Sha)) 'Wrong-digest deletion changed ownership.'
@@ -230,7 +245,7 @@ try {
     Write-Ledger $fpA @($owned)
     Write-PendingDelete 'P' $rel $owned.Size $owned.Sha
     Write-OwnershipPending $fpB @()
-    $exit = Invoke-Helper
+    $exit = Invoke-TransactionRunner
     Assert-True ($exit -eq 1) "Cross-server deletion returned unexpected exit code $exit."
     Assert-True ((Test-Path -LiteralPath $live) -and ([IO.File]::ReadAllText($live) -eq $ownedText)) 'Cross-server deletion changed the live file.'
     Assert-True (([IO.File]::ReadAllText((Join-Path $ownershipRoot ($fpA + '.txt')))).Contains($owned.Sha)) 'Cross-server deletion changed server-A ownership.'
@@ -243,26 +258,26 @@ try {
     Write-PendingDelete 'P' $rel $owned.Size $owned.Sha
     Write-OwnershipPending $fpA @()
     Write-Utf8 (Join-Path $amsRoot 'apply-test-pause-after-items.once') '1'
-    $p = Start-Helper
+    $p = Start-TransactionRunner
     try {
         Wait-ForLog 'DEV TEST PAUSE after 1 applied file(s), before COMMITTED'
         Assert-True (-not (Test-Path -LiteralPath $live)) 'Injected PREPARED deletion did not remove the live file before pause.'
         Assert-True (([IO.File]::ReadAllText((Join-Path $ownershipRoot ($fpA + '.txt')))).Contains($owned.Sha)) 'Ownership changed before COMMITTED.'
-        Stop-Helper $p
+        Stop-TransactionRunner $p
     }
-    finally { Stop-Helper $p }
+    finally { Stop-TransactionRunner $p }
 
     Write-Utf8 (Join-Path $amsRoot 'apply-test-pause-after-rollback.once') ''
-    $p = Start-Helper
+    $p = Start-TransactionRunner
     try {
         Wait-ForLog 'DEV TEST PAUSE after rollback, before retry'
         Assert-True ((Test-Path -LiteralPath $live) -and ([IO.File]::ReadAllText($live) -eq $ownedText)) 'Rollback did not restore the deleted owned file.'
         Assert-True (([IO.File]::ReadAllText((Join-Path $ownershipRoot ($fpA + '.txt')))).Contains($owned.Sha)) 'Rollback changed the old ownership ledger.'
-        Stop-Helper $p
+        Stop-TransactionRunner $p
     }
-    finally { Stop-Helper $p }
+    finally { Stop-TransactionRunner $p }
 
-    $exit = Invoke-Helper
+    $exit = Invoke-TransactionRunner
     Assert-True ($exit -eq 3) "Retry after rollback returned unexpected exit code $exit."
     Assert-True (-not (Test-Path -LiteralPath $live)) 'Retry after rollback did not commit the stale deletion.'
     Assert-True (-not ([IO.File]::ReadAllText((Join-Path $ownershipRoot ($fpA + '.txt'))).Contains($owned.Sha))) 'Retry after rollback did not publish new ownership.'
@@ -274,16 +289,16 @@ try {
     Write-PendingWrite 'P' $rel
     Write-OwnershipPending $fpA @($owned)
     Write-Utf8 (Join-Path $amsRoot 'apply-test-pause-after-committed.once') ''
-    $p = Start-Helper
+    $p = Start-TransactionRunner
     try {
         Wait-ForLog 'DEV TEST PAUSE after COMMITTED'
         Assert-True ((Test-Path -LiteralPath $live) -and ([IO.File]::ReadAllText($live) -eq $ownedText)) 'COMMITTED write did not preserve the complete new live file.'
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $ownershipRoot ($fpA + '.txt')))) 'Ownership was published before committed cleanup/recovery.'
-        Stop-Helper $p
+        Stop-TransactionRunner $p
     }
-    finally { Stop-Helper $p }
+    finally { Stop-TransactionRunner $p }
 
-    $exit = Invoke-Helper
+    $exit = Invoke-TransactionRunner
     Assert-True ($exit -eq 3) "COMMITTED recovery returned unexpected exit code $exit."
     Assert-True ((Test-Path -LiteralPath $live) -and ([IO.File]::ReadAllText($live) -eq $ownedText)) 'COMMITTED recovery changed the winning live state.'
     Assert-True (([IO.File]::ReadAllText((Join-Path $ownershipRoot ($fpA + '.txt')))).Contains($owned.Sha)) 'COMMITTED recovery did not publish ownership.'
@@ -312,7 +327,7 @@ try {
         'D|R|' + $patch.Size + '|' + $patch.Sha + '|' + (B64 $patchRel) + $crlf +
         'D|C|' + $config.Size + '|' + $config.Sha + '|' + (B64 $configRel) + $crlf)
     Write-OwnershipPending $fpA @()
-    $exit = Invoke-Helper
+    $exit = Invoke-TransactionRunner
     Assert-True ($exit -eq 3) "Patcher/config deletion returned unexpected exit code $exit."
     Assert-True (-not (Test-Path -LiteralPath $patchLive)) 'Owned patcher-root file was not retired.'
     Assert-True (-not (Test-Path -LiteralPath $configLive)) 'Owned allowlisted-config-root fixture was not retired.'
@@ -325,22 +340,29 @@ try {
     $protectedSha = Get-ShaHex 'DO-NOT-DELETE'
     Write-Utf8 $pendingPath ('AMSPENDING2' + $crlf + 'D|C|13|' + $protectedSha + '|' + (B64 $protectedRel) + $crlf)
     Write-OwnershipPending $fpA @()
-    $exit = Invoke-Helper
+    $exit = Invoke-TransactionRunner
     Assert-True ($exit -eq 1) "Protected-config deletion returned unexpected exit code $exit."
     Assert-True ((Test-Path -LiteralPath $protectedPath) -and ([IO.File]::ReadAllText($protectedPath) -eq 'DO-NOT-DELETE')) 'Protected config was modified/deleted.'
     Write-Host '  PASS'
 
     Write-Host ''
-    Write-Host 'PASS: all Phase 6 ownership/apply checks passed.'
+    Write-Host 'PASS: all Phase 6 ownership/installer transaction-engine checks passed.'
     Write-Host 'No real Valheim installation, trust store, or server files were modified.'
 
-    if (-not $KeepSandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force }
-    else { Write-Host "Sandbox retained: $sandbox" }
+    if (-not $KeepSandbox) {
+        Remove-Item -LiteralPath $sandbox -Recurse -Force
+        Remove-Item -LiteralPath $runnerRoot -Recurse -Force
+    }
+    else {
+        Write-Host "Sandbox retained: $sandbox"
+        Write-Host "Disposable runner retained: $runnerRoot"
+    }
     exit 0
 }
 catch {
     Write-Host ''
     Write-Host ('FAIL: ' + $_.Exception.Message)
     Write-Host "Sandbox retained for inspection: $sandbox"
+    Write-Host "Disposable runner retained for inspection: $runnerRoot"
     exit 1
 }
