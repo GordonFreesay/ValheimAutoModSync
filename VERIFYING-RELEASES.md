@@ -12,15 +12,15 @@ Starting with the 2.6 release pipeline, official GitHub-built standalone and sto
 Install GitHub CLI, then verify the exact file you downloaded:
 
 ```powershell
-gh attestation verify .\ValheimAutoModSync-2.6.0.zip -R GordonFreesay/ValheimAutoModSync
+gh attestation verify .\ValheimAutoModSync-2.6.1.zip -R GordonFreesay/ValheimAutoModSync
 ```
 
 For store packages, use the downloaded filename instead:
 
 ```powershell
-gh attestation verify .\ValheimAutoModSync-2.6.0-Nexus.zip -R GordonFreesay/ValheimAutoModSync
-gh attestation verify .\ValheimAutoModSync-2.6.0-CurseForge.zip -R GordonFreesay/ValheimAutoModSync
-gh attestation verify .\GordonFreesay-ValheimAutoModSync-2.6.0.zip -R GordonFreesay/ValheimAutoModSync
+gh attestation verify .\ValheimAutoModSync-2.6.1-Nexus.zip -R GordonFreesay/ValheimAutoModSync
+gh attestation verify .\ValheimAutoModSync-2.6.1-CurseForge.zip -R GordonFreesay/ValheimAutoModSync
+gh attestation verify .\GordonFreesay-ValheimAutoModSync-2.6.1.zip -R GordonFreesay/ValheimAutoModSync
 ```
 
 A successful result means GitHub found and cryptographically verified an attestation for the exact artifact digest under this repository.
@@ -32,7 +32,7 @@ The canonical GitHub release includes `SHA256SUMS.txt`.
 Calculate the digest:
 
 ```powershell
-(Get-FileHash -Algorithm SHA256 .\ValheimAutoModSync-2.6.0.zip).Hash.ToLowerInvariant()
+(Get-FileHash -Algorithm SHA256 .\ValheimAutoModSync-2.6.1.zip).Hash.ToLowerInvariant()
 ```
 
 Compare it with the matching line in `SHA256SUMS.txt`.
