@@ -89,7 +89,7 @@ Assert-Before $legacyHandshake 'SendLegacy260JotunnPresenceSentinel(rpc)' 'rpc.I
 Assert-Contains $legacyHandshake 'protected synchronization remains withheld' 'Legacy pre-access withholding'
 Assert-Contains $legacyHandshake 'return false;' 'Original ServerHandshake suppression'
 Assert-NotContains $legacyHandshake 'ReleaseServerPreflightQuarantine' 'Bootstrap compatibility quarantine'
-Assert-Contains $jotunnSentinel 'Legacy260JotunnVersionDataRpc = "RPC_Jotunn_ReceiveVersionData"' 'Jotunn presence RPC name'
+Assert-Contains $server 'Legacy260JotunnVersionDataRpc = "RPC_Jotunn_ReceiveVersionData"' 'Jotunn presence RPC name'
 Assert-Contains $jotunnSentinel 'sentinel.Write(0);' 'Zero-module compatibility sentinel'
 Assert-Contains $jotunnSentinel 'sentinel.Write("");' 'No server version-string disclosure'
 Assert-Contains $jotunnSentinel 'sentinel.Write((uint)0);' 'No server network-version disclosure'
