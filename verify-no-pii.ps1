@@ -21,11 +21,19 @@ if ([String]::IsNullOrWhiteSpace($normalizedRootArgument)) {
 $rootPath = [IO.Path]::GetFullPath($normalizedRootArgument).TrimEnd($separators)
 $failures = New-Object 'System.Collections.Generic.List[string]'
 $projectVersionQuad = ''
+$allowedVersionQuads = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
 $versionFile = Join-Path $rootPath 'VERSION'
 if (Test-Path -LiteralPath $versionFile -PathType Leaf) {
     $projectVersion = ([IO.File]::ReadAllText($versionFile)).Trim()
-    if ($projectVersion -match '^\d+\.\d+\.\d+$') { $projectVersionQuad = $projectVersion + '.0' }
+    if ($projectVersion -match '^\d+\.\d+\.\d+$') {
+        $projectVersionQuad = $projectVersion + '.0'
+        [void]$allowedVersionQuads.Add($projectVersionQuad)
+    }
 }
+
+# 2.6.1 intentionally embeds the exact released 2.6.0 four-part version in the authenticated migration bridge.
+# Treat that specific product-version literal as version metadata, not as a network address; arbitrary dotted quads remain scanned normally.
+[void]$allowedVersionQuads.Add('2.6.0.0')
 
 function Add-Failure([string]$Location,[string]$Kind,[string]$Value) {
     [void]$failures.Add(($Location + ': ' + $Kind + ' -> ' + $Value))
@@ -89,113 +97,8 @@ function Scan-Text([string]$Text,[string]$Location) {
         $context = $Text.Substring($contextStart,$m.Index - $contextStart)
 
         # Four-component assembly/file versions look like IPv4 addresses but are not network identifiers.
-        if (($projectVersionQuad.Length -gt 0 -and $m.Value -eq $projectVersionQuad) -or
-            $m.Value -eq '2.6.0.0' -or
-            $context -match '(?i)(Assembly(?:File)?Version|ProductVersion|FileVersion|\bversion)\s*[^\r\n]{0,32}
-
-        if (Test-PublicIpv4 $m.Value) {
-            Add-Failure $Location 'public IPv4 literal' $m.Value
-        }
-    }
-}
-
-function Get-TrackedFirstPartyFiles {
-    $files = @()
-    try {
-        $raw = & git -C $rootPath ls-files 2>$null
-        if ($LASTEXITCODE -eq 0) { $files = @($raw) }
-    } catch {}
-
-    if ($files.Count -eq 0) {
-        $files = @(Get-ChildItem -LiteralPath $rootPath -File -Recurse | ForEach-Object {
-            $_.FullName.Substring($rootPath.Length).TrimStart($separators).Replace([IO.Path]::DirectorySeparatorChar,'/')
-        })
-    }
-
-    $allowedExtensions = @('.cs','.ps1','.bat','.cmd','.md','.txt','.cfg','.json','.yml','.yaml','.xml','.props','.csproj')
-    $allowedNames = @('.gitignore','.gitattributes')
-
-    foreach ($rel in $files) {
-        $normalized = ($rel -replace '\\','/').TrimStart('/')
-        if ($normalized -match '^(THIRD_PARTY_LICENSES|DevBuild|Dist|\.git)/' -or
-            $normalized -ieq 'THIRD-PARTY-NOTICES.md') { continue }
-
-        $ext = [IO.Path]::GetExtension($normalized).ToLowerInvariant()
-        $name = [IO.Path]::GetFileName($normalized).ToLowerInvariant()
-        if (($allowedExtensions -notcontains $ext) -and ($allowedNames -notcontains $name)) { continue }
-
-        $full = Join-Path $rootPath ($normalized -replace '/', [IO.Path]::DirectorySeparatorChar)
-        if (Test-Path -LiteralPath $full -PathType Leaf) { $full }
-    }
-}
-
-function Get-PrintableBinaryText([string]$Path) {
-    $bytes = [IO.File]::ReadAllBytes($Path)
-    $out = New-Object Text.StringBuilder
-
-    # Extract printable ASCII runs.
-    $run = New-Object Text.StringBuilder
-    foreach ($b in $bytes) {
-        if ($b -ge 32 -and $b -le 126) {
-            [void]$run.Append([char]$b)
-        } else {
-            if ($run.Length -ge 6) { [void]$out.AppendLine($run.ToString()) }
-            [void]$run.Clear()
-        }
-    }
-    if ($run.Length -ge 6) { [void]$out.AppendLine($run.ToString()) }
-
-    # Extract printable UTF-16LE runs independently.
-    [void]$run.Clear()
-    for ($i = 0; $i + 1 -lt $bytes.Length; $i += 2) {
-        $lo = $bytes[$i]
-        $hi = $bytes[$i + 1]
-        if ($hi -eq 0 -and $lo -ge 32 -and $lo -le 126) {
-            [void]$run.Append([char]$lo)
-        } else {
-            if ($run.Length -ge 6) { [void]$out.AppendLine($run.ToString()) }
-            [void]$run.Clear()
-        }
-    }
-    if ($run.Length -ge 6) { [void]$out.AppendLine($run.ToString()) }
-
-    return $out.ToString()
-}
-
-foreach ($file in @(Get-TrackedFirstPartyFiles)) {
-    try {
-        $relative = $file.Substring($rootPath.Length).TrimStart($separators)
-        Scan-Text ([IO.File]::ReadAllText($file)) $relative
-    }
-    catch {
-        throw "PII guard could not inspect tracked file '$file': $($_.Exception.Message)"
-    }
-}
-
-$artifactList = @()
-if (-not [String]::IsNullOrWhiteSpace($ArtifactPaths)) {
-    $artifactList = @($ArtifactPaths.Split(';') | Where-Object { -not [String]::IsNullOrWhiteSpace($_) })
-}
-
-foreach ($artifact in $artifactList) {
-    $full = [IO.Path]::GetFullPath($artifact)
-    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
-        throw "PII guard artifact does not exist: $full"
-    }
-    Scan-Text (Get-PrintableBinaryText $full) ('artifact ' + [IO.Path]::GetFileName($full))
-}
-
-if ($failures.Count -gt 0) {
-    $failures | ForEach-Object { Write-Error $_ }
-    throw ("PII guard failed with " + $failures.Count + " finding(s). Remove machine/user-specific identifiers before building or publishing.")
-}
-
-$suffix = ''
-if ($artifactList.Count -gt 0) {
-    $suffix = ' + ' + $artifactList.Count + ' authored artifact(s)'
-}
-Write-Host ('PII guard passed: first-party tracked text' + $suffix + '.')
-) {
+        if ($allowedVersionQuads.Contains($m.Value) -or
+            $context -match '(?i)(Assembly(?:File)?Version|ProductVersion|FileVersion|\bversion)\s*[^\r\n]{0,32}$') {
             continue
         }
 
