@@ -387,7 +387,7 @@ namespace ValheimAutoModSync
             if (_trustPromptPending && !_trustPromptForegroundEstablished &&
                 (_trustPromptNextForegroundUtc == DateTime.MinValue || DateTime.UtcNow >= _trustPromptNextForegroundUtc))
             {
-                _trustPromptForegroundEstablished = PromoteNativeTrustPrompt();
+                _trustPromptForegroundEstablished = IsLinux() || PromoteNativeTrustPrompt();
                 _trustPromptNextForegroundUtc = DateTime.UtcNow.AddMilliseconds(100.0);
             }
 
@@ -1481,6 +1481,15 @@ namespace ValheimAutoModSync
                 {
                     FileInfo localInfo = new FileInfo(local);
                     needed = localInfo.Length != e.Size || !ConstantEquals(Sha256File(local), e.Sha256);
+                    // Windows tools and several BepInEx mods rewrite text settings/translations as CRLF.
+                    // The server normally stores the same text as LF on Linux. Treat that exact newline-only
+                    // difference as equivalent, but never apply this relaxation to executable/binary payloads.
+                    if (needed && IsWindows() && IsWindowsTextSynchronizedFile(kind, rel)
+                        && ConstantEquals(Sha256FileWithNormalizedLfNewlines(local), e.Sha256))
+                    {
+                        needed = false;
+                        if (_instance != null) _instance.Logger.LogDebug("AutoModSync accepted a Windows CRLF-equivalent text file: " + kind + ":" + rel);
+                    }
                 }
 #if AMS_DEV_TESTS
                 if (devEmulateNearlyBareClient
@@ -2127,16 +2136,7 @@ namespace ValheimAutoModSync
 
                 PersistPackageManagedLaunchContext(amsRoot);
 
-                string updater = FindInstallerUpdater(amsRoot);
-                if (!File.Exists(updater)) throw new FileNotFoundException("AutoModSync installer/updater is missing.", updater);
-
-                ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = updater;
-                psi.Arguments = "--apply-pending " + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
-                psi.UseShellExecute = false;
-                psi.CreateNoWindow = false;
-                psi.WindowStyle = ProcessWindowStyle.Normal;
-                Process.Start(psi);
+                StartLocalApplyHelper(amsRoot);
 
                 ShowSyncOverlay(AutoModSyncUiPhase.Restarting,
                     reconnectAvailable ? "Sync complete. Restarting Valheim..." : "Sync complete. Restarting Valheim...",
@@ -2301,6 +2301,66 @@ namespace ValheimAutoModSync
             catch { }
 
             return "";
+        }
+
+        // Intent: starts only a locally installed, platform-specific apply helper.  The game process
+        // never writes live BepInEx files itself, because its loaded DLLs may be among the files being replaced.
+        private static void StartLocalApplyHelper(string amsRoot)
+        {
+            int pid = Process.GetCurrentProcess().Id;
+            if (IsLinux())
+            {
+                string helper = FindLinuxApplyHelper();
+                if (!File.Exists(helper)) throw new FileNotFoundException("AutoModSync Linux apply helper is missing. Repair or reinstall the Linux client package before joining.", helper);
+                ProcessStartInfo linux = new ProcessStartInfo();
+                linux.FileName = helper;
+                linux.Arguments = "--apply-pending " + pid.ToString(CultureInfo.InvariantCulture) + " " + QuotePosixArgument(amsRoot);
+                linux.UseShellExecute = false;
+                linux.CreateNoWindow = false;
+                Process.Start(linux);
+                return;
+            }
+
+            string updater = FindInstallerUpdater(amsRoot);
+            if (!File.Exists(updater)) throw new FileNotFoundException("AutoModSync installer/updater is missing.", updater);
+            ProcessStartInfo psi = new ProcessStartInfo();
+            psi.FileName = updater;
+            psi.Arguments = "--apply-pending " + pid.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = false;
+            psi.WindowStyle = ProcessWindowStyle.Normal;
+            Process.Start(psi);
+        }
+
+        private static string FindLinuxApplyHelper()
+        {
+            try
+            {
+                string pluginDir = Path.GetDirectoryName(typeof(ClientPlugin).Assembly.Location);
+                if (!String.IsNullOrEmpty(pluginDir)) return Path.Combine(pluginDir, "ValheimAutoModSyncLinuxApply");
+            }
+            catch { }
+            return "";
+        }
+
+        private static bool IsLinux()
+        {
+            PlatformID p = Environment.OSVersion.Platform;
+            return p == PlatformID.Unix || p == PlatformID.MacOSX;
+        }
+
+        private static bool IsWindows()
+        {
+            PlatformID p = Environment.OSVersion.Platform;
+            return p == PlatformID.Win32NT || p == PlatformID.Win32Windows || p == PlatformID.Win32S || p == PlatformID.WinCE;
+        }
+
+        // ProcessStartInfo.Arguments is parsed by Mono directly (no shell is involved). Quote one
+        // argument with the command-line syntax understood by that runtime.
+        private static string QuotePosixArgument(string value)
+        {
+            value = value ?? "";
+            return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
         }
 
         // Intent: Arms the 2.5.0 pre-handshake gate for one outgoing ZRpc before vanilla ServerHandshake is emitted.
@@ -3223,6 +3283,40 @@ namespace ValheimAutoModSync
             using (SHA256 sha = SHA256.Create()) return ToHex(sha.ComputeHash(fs));
         }
 
+        // Intent: compares only recognized text synchronization roots across LF/CRLF differences on Windows.
+        // Security: the returned digest is used solely as a local no-download equivalence check against a
+        // signed server digest; extraction and transactional apply still verify exact raw manifest bytes.
+        private static string Sha256FileWithNormalizedLfNewlines(string path)
+        {
+            byte[] input = File.ReadAllBytes(path);
+            byte[] normalized = new byte[input.Length];
+            int written = 0;
+            int i;
+            for (i = 0; i < input.Length; i++)
+            {
+                byte value = input[i];
+                if (value == 13 && i + 1 < input.Length && input[i + 1] == 10) continue;
+                normalized[written++] = value;
+            }
+            using (SHA256 sha = SHA256.Create()) return ToHex(sha.ComputeHash(normalized, 0, written));
+        }
+
+        private static bool IsWindowsTextSynchronizedFile(char kind, string relative)
+        {
+            string extension = Path.GetExtension(relative ?? "");
+            bool textExtension = String.Equals(extension, ".cfg", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(extension, ".json", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(extension, ".yml", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(extension, ".yaml", StringComparison.OrdinalIgnoreCase);
+            if (!textExtension) return false;
+            if (kind == 'C') return true;
+            if (kind != 'P') return false;
+
+            string path = (relative ?? "").Replace('\\', '/').ToLowerInvariant();
+            return path.IndexOf("/translation", StringComparison.Ordinal) >= 0
+                || path.IndexOf("/localization", StringComparison.Ordinal) >= 0;
+        }
+
         // Intent: Maps a manifest file-kind code to one hardcoded BepInEx destination root and rejects every other kind.
         // Security: the server can choose only a path relative to plugins, patchers, or explicitly allowlisted config; it cannot supply arbitrary filesystem destinations.
         private static string SafeTargetPath(char kind, string relative)
@@ -3347,7 +3441,8 @@ namespace ValheimAutoModSync
             _trustPromptNextForegroundUtc = DateTime.MinValue;
             _uiState.SetServerFingerprint(fingerprint);
             ShowSyncOverlay(AutoModSyncUiPhase.Trust, "Trust this server?",
-                "A Windows confirmation dialog is open. The short security code is for optional out-of-band comparison; the full identity is pinned internally.");
+                IsLinux() ? "A system confirmation dialog is open. The short security code is for optional out-of-band comparison; the full identity is pinned internally."
+                          : "A Windows confirmation dialog is open. The short security code is for optional out-of-band comparison; the full identity is pinned internally.");
 
             StartNativeTrustPrompt(fingerprint, generation);
 
@@ -3385,11 +3480,22 @@ namespace ValheimAutoModSync
             Thread thread = new Thread(delegate()
             {
                 int decision;
-                int nativeThreadId = unchecked((int)GetCurrentThreadId());
-                if (generation == _trustPromptGeneration)
-                    _trustPromptNativeThreadId = nativeThreadId;
+                bool linux = IsLinux();
+                int nativeThreadId = 0;
+                if (!linux)
+                {
+                    nativeThreadId = unchecked((int)GetCurrentThreadId());
+                    if (generation == _trustPromptGeneration)
+                        _trustPromptNativeThreadId = nativeThreadId;
+                }
                 try
                 {
+                    if (linux)
+                    {
+                        decision = ShowLinuxTrustPrompt(message);
+                    }
+                    else
+                    {
                     const uint MB_YESNO = 0x00000004u;
                     const uint MB_ICONWARNING = 0x00000030u;
                     const uint MB_DEFBUTTON2 = 0x00000100u;
@@ -3400,9 +3506,11 @@ namespace ValheimAutoModSync
                     int answer = MessageBox(owner, message, TrustPromptCaption,
                         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST);
                     decision = answer == 6 ? 1 : 2;
+                    }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    if (_instance != null) _instance.Logger.LogError("AutoModSync could not show the first-contact trust prompt: " + ex.Message);
                     decision = -1;
                 }
 
@@ -3419,9 +3527,9 @@ namespace ValheimAutoModSync
                         _trustPromptGeneration.ToString(CultureInfo.InvariantCulture) + ".");
                 }
 #endif
-                if (_trustPromptNativeThreadId == nativeThreadId)
+                if (!linux && _trustPromptNativeThreadId == nativeThreadId)
                     _trustPromptNativeThreadId = 0;
-                if (_staleTrustPromptThreadId == nativeThreadId)
+                if (!linux && _staleTrustPromptThreadId == nativeThreadId)
                 {
                     _staleTrustPromptThreadId = 0;
                     _staleTrustPromptDismissUntilUtc = DateTime.MinValue;
@@ -3432,6 +3540,65 @@ namespace ValheimAutoModSync
             thread.IsBackground = true;
             try { thread.SetApartmentState(ApartmentState.STA); } catch { }
             thread.Start();
+        }
+
+        // Intent: use an ordinary desktop dialog on native Linux without a hard dependency on one
+        // desktop environment.  A non-zero result is always a rejection; a missing tool is not an
+        // invitation to continue an untrusted synchronization.
+        private static int ShowLinuxTrustPrompt(string message)
+        {
+            string[] tools = new string[] { "zenity", "kdialog", "yad", "qarma", "xmessage" };
+            string lastError = "No supported Linux desktop dialog executable was found on PATH.";
+            int i;
+            for (i = 0; i < tools.Length; i++)
+            {
+                string executable = FindExecutableOnPath(tools[i]);
+                if (String.IsNullOrEmpty(executable)) continue;
+                try
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo();
+                    psi.FileName = executable;
+                    psi.UseShellExecute = false;
+                    psi.CreateNoWindow = false;
+                    if (tools[i] == "kdialog")
+                        psi.Arguments = "--warningyesno " + QuotePosixArgument(message) + " --title " + QuotePosixArgument(TrustPromptCaption);
+                    else if (tools[i] == "xmessage")
+                        psi.Arguments = "-center -buttons " + QuotePosixArgument("Yes:0,No:1") + " -default No " + QuotePosixArgument(message);
+                    else
+                        psi.Arguments = "--question --title " + QuotePosixArgument(TrustPromptCaption) + " --text " + QuotePosixArgument(message) + " --ok-label Yes --cancel-label No";
+
+                    using (Process prompt = Process.Start(psi))
+                    {
+                        if (prompt == null) continue;
+                        prompt.WaitForExit();
+                        return prompt.ExitCode == 0 ? 1 : 2;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = tools[i] + ": " + ex.Message;
+                }
+            }
+            if (_instance != null) _instance.Logger.LogError("AutoModSync could not open a Linux first-contact trust dialog. " + lastError);
+            return -1;
+        }
+
+        private static string FindExecutableOnPath(string name)
+        {
+            if (String.IsNullOrEmpty(name)) return "";
+            try
+            {
+                string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+                string[] dirs = path.Split(new char[] { ':' }, StringSplitOptions.RemoveEmptyEntries);
+                int i;
+                for (i = 0; i < dirs.Length; i++)
+                {
+                    string candidate = Path.Combine(dirs[i], name);
+                    if (File.Exists(candidate)) return candidate;
+                }
+            }
+            catch { }
+            return "";
         }
 
         // Intent: Brings the native trust dialog above Valheim once Windows has created it, including fullscreen/borderless cases where MB_TOPMOST alone may not win z-order immediately.
@@ -4819,16 +4986,7 @@ namespace ValheimAutoModSync
         private static void ScheduleRecoveredStagingRestart()
         {
             string amsRoot = GetAutoModSyncRoot();
-            string updater = FindInstallerUpdater(amsRoot);
-            if (!File.Exists(updater)) throw new FileNotFoundException("AutoModSync installer/updater is missing during staged-file recovery.", updater);
-
-            ProcessStartInfo psi = new ProcessStartInfo();
-            psi.FileName = updater;
-            psi.Arguments = "--apply-pending " + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) + " \"" + amsRoot.Replace("\"", "") + "\"";
-            psi.UseShellExecute = false;
-            psi.CreateNoWindow = false;
-            psi.WindowStyle = ProcessWindowStyle.Normal;
-            Process.Start(psi);
+            StartLocalApplyHelper(amsRoot);
 
             _restartRequested = true;
             _quitAfterUtc = DateTime.UtcNow.AddMilliseconds(900.0);

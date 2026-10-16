@@ -55,6 +55,7 @@ namespace ValheimAutoModSync
         private static ConfigEntry<string> _serverOnlyPatterns;
         private static ConfigEntry<string> _clientRequiredPatterns;
         private static ConfigEntry<string> _syncConfigPatterns;
+        private static ConfigEntry<string> _configSourcePath;
         private static ConfigEntry<bool> _syncPatchers;
         private static ConfigEntry<int> _manifestCacheSeconds;
         private static ConfigEntry<int> _chunkBytes;
@@ -76,10 +77,14 @@ namespace ValheimAutoModSync
         private static ConfigEntry<bool> _advertiseAutoModSync;
 
         private static readonly object ManifestLock = new object();
+        private static readonly object ManifestBuildLock = new object();
+        private const int ManifestBackgroundRefreshLeadSeconds = 60;
         private static readonly HashSet<ZRpc> Registered = new HashSet<ZRpc>();
         private static DateTime _manifestBuiltUtc = DateTime.MinValue;
         private static string _manifestText = "";
         private static string _manifestSignature = "";
+        private static int _manifestBackgroundRefreshActive;
+        private static bool _dedicatedManifestRefreshEnabled;
         private static string _publicKeyXml = "";
         private static string _publicFingerprint = "";
         private static RSACryptoServiceProvider _signer;
@@ -254,6 +259,8 @@ namespace ValheimAutoModSync
                 "Synchronize BepInEx\\patchers recursively. Disable only if this server's patchers are known to be server-only; ServerOnlyPatterns can exclude individual patchers.");
             _syncConfigPatterns = Config.Bind("Compatibility", "SyncConfigPatterns", "",
                 "Explicit semicolon-separated allowlist for BepInEx\\config files that clients must receive. Empty disables config synchronization. Never use '*' unless every server config is intentionally client-safe.");
+            _configSourcePath = Config.Bind("Compatibility", "ConfigSourcePath", "",
+                "Optional physical directory used as the source for synchronized config files. Empty uses BepInEx\\config. Set this when a container manager makes BepInEx\\config a symlink; the selected directory itself and all descendants must not be symlinks/reparse points.");
             _manifestCacheSeconds = Config.Bind("General", "ManifestCacheSeconds", 5, "How long the server caches synchronized-root hashes before rescanning.");
             _chunkBytes = Config.Bind("Transfer", "ChunkBytes", 24576, "Raw file bytes per RPC chunk before Base64 encoding. 24576 is conservative for Valheim's RPC transport.");
             _maxFileMiB = Config.Bind("Transfer", "MaxFileMiB", 128, "Refuse to transfer a single file larger than this many MiB.");
@@ -313,6 +320,7 @@ namespace ValheimAutoModSync
             DateTime now = DateTime.UtcNow;
             TryPublishServerBrowserPresence(now);
             ServiceLegacy260DeferredAuthorizedPreflights(now);
+            TryRefreshManifestInBackground(now);
             DrainPreparedBundleResults();
             ServiceTransferScheduler(now);
 
@@ -685,6 +693,7 @@ namespace ValheimAutoModSync
                     _instance.Logger.LogInfo("AutoModSync dedicated-server startup manifest ready: files=" +
                         _files.Count.ToString(CultureInfo.InvariantCulture) +
                         ", hashAndSign=" + manifestWatch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s.");
+                _dedicatedManifestRefreshEnabled = true;
             }
             catch (Exception ex)
             {
@@ -707,6 +716,52 @@ namespace ValheimAutoModSync
             catch (Exception ex)
             {
                 Logger.LogWarning("AutoModSync fresh-client bundle prewarm failed; normal on-demand bundle construction remains available: " + ex);
+            }
+        }
+
+        // Intent: starts the expensive hash/sign pass before the published manifest expires. The old complete,
+        // signed snapshot remains available to joining clients until the replacement has been fully built.
+        private static void TryRefreshManifestInBackground(DateTime now)
+        {
+            if (!_dedicatedManifestRefreshEnabled) return;
+            int seconds = _manifestCacheSeconds == null ? 5 : Math.Max(0, _manifestCacheSeconds.Value);
+            if (seconds <= 0) return;
+
+            DateTime built;
+            lock (ManifestLock) built = _manifestBuiltUtc;
+            if (built == DateTime.MinValue) return;
+
+            int lead = Math.Min(ManifestBackgroundRefreshLeadSeconds, Math.Max(1, seconds / 10));
+            if ((now - built).TotalSeconds < Math.Max(0, seconds - lead)) return;
+            if (Interlocked.CompareExchange(ref _manifestBackgroundRefreshActive, 1, 0) != 0) return;
+
+            try
+            {
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    Stopwatch watch = Stopwatch.StartNew();
+                    try
+                    {
+                        EnsureManifest(true);
+                        watch.Stop();
+                        if (_instance != null)
+                            _instance.Logger.LogInfo("AutoModSync background manifest refresh ready: files=" +
+                                _files.Count.ToString(CultureInfo.InvariantCulture) +
+                                ", hashAndSign=" + watch.Elapsed.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s.");
+                    }
+                    catch (Exception ex)
+                    {
+                        if (_instance != null) _instance.Logger.LogWarning("AutoModSync background manifest refresh failed; retaining the prior signed manifest: " + ex);
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _manifestBackgroundRefreshActive, 0);
+                    }
+                });
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _manifestBackgroundRefreshActive, 0);
             }
         }
 
@@ -1157,7 +1212,7 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Loads or creates the persistent RSA server identity used to sign manifests.
-        // Security: the private key is ACL-hardened to the actual server runtime identity + SYSTEM + Administrators before AMS reads or uses it; failure is fail-closed.
+        // Security: the private key is hardened by the active platform implementation before AMS reads or uses it; failure is fail-closed.
         private static void LoadIdentity()
         {
             string path = Path.Combine(Paths.ConfigPath, "ValheimAutoModSync.private.xml");
@@ -1174,7 +1229,7 @@ namespace ValheimAutoModSync
                     generated.PersistKeyInCsp = false;
                     string privateXml = generated.ToXmlString(true);
                     string generatedPublicXml = generated.ToXmlString(false);
-                    File.WriteAllText(path, privateXml + Environment.NewLine, new UTF8Encoding(false));
+                    AutoModSyncPrivateKeySecurity.WriteNewPrivateKeyFile(path, privateXml + Environment.NewLine);
                     File.WriteAllText(publicPath, generatedPublicXml + Environment.NewLine, new UTF8Encoding(false));
                     generatedNow = true;
                 }
@@ -1195,11 +1250,14 @@ namespace ValheimAutoModSync
             }
 
             if (generatedNow && _instance != null)
-                _instance.Logger.LogInfo("Generated a new ACL-protected AutoModSync server signing identity at " + path + ". Back up this private identity securely to preserve the server fingerprint.");
+                _instance.Logger.LogInfo("Generated a new protected AutoModSync server signing identity at " + path + ". Back up this private identity securely to preserve the server fingerprint.");
             else if (_instance != null)
-                _instance.Logger.LogDebug("AutoModSync verified restrictive ACL protection on the server private signing identity.");
+                _instance.Logger.LogDebug("AutoModSync verified restrictive filesystem protection on the server private signing identity.");
 
-            string xml = File.ReadAllText(path).Trim();
+            if (Environment.OSVersion.Platform == PlatformID.Unix && _instance != null)
+                _instance.Logger.LogInfo("AutoModSync Linux x86_64 server support active: private-key protection verified; AMS4 protocol retained.");
+
+            string xml = AutoModSyncPrivateKeySecurity.ReadPrivateKeyFile(path).Trim();
             RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048);
             rsa.PersistKeyInCsp = false;
             rsa.FromXmlString(xml);
@@ -2081,15 +2139,23 @@ namespace ValheimAutoModSync
 #endif
 
             EnsureManifest(false);
-            if (ManifestRequiresRootSync() && clientCapabilities.IndexOf("roots1", StringComparison.Ordinal) < 0)
+            string manifestText;
+            string manifestSignature;
+            Dictionary<string, FileRecord> manifestFiles;
+            lock (ManifestLock)
+            {
+                manifestText = _manifestText;
+                manifestSignature = _manifestSignature;
+                manifestFiles = _files;
+            }
+            if (ManifestRequiresRootSync(manifestFiles) && clientCapabilities.IndexOf("roots1", StringComparison.Ordinal) < 0)
             {
                 SendError(rpc, "This server requires AutoModSync root synchronization support (patchers/config). Update the AutoModSync client to 2.5.0 or newer.");
                 return;
             }
-            byte[] bytes = Encoding.UTF8.GetBytes(_manifestText);
+            byte[] bytes = Encoding.UTF8.GetBytes(manifestText);
             int partChars = 24000;
-            int totalParts = Math.Max(1, (_manifestText.Length + partChars - 1) / partChars);
-            string manifestSignature = _manifestSignature;
+            int totalParts = Math.Max(1, (manifestText.Length + partChars - 1) / partChars);
 #if AMS_DEV_TESTS
             if (String.Equals(failClosedMode, "missing-manifest-part", StringComparison.Ordinal))
                 totalParts = 2;
@@ -2118,7 +2184,7 @@ namespace ValheimAutoModSync
             {
                 ZPackage partial = new ZPackage();
                 partial.Write(0);
-                partial.Write(_manifestText);
+                partial.Write(manifestText);
                 rpc.Invoke(RpcManifestChunk, new object[] { partial });
                 ZPackage incompleteEnd = new ZPackage();
                 incompleteEnd.Write(2);
@@ -2132,8 +2198,8 @@ namespace ValheimAutoModSync
             for (part = 0; part < totalParts; part++)
             {
                 int partStart = part * partChars;
-                int len = Math.Min(partChars, _manifestText.Length - partStart);
-                string text = len > 0 ? _manifestText.Substring(partStart, len) : "";
+                int len = Math.Min(partChars, manifestText.Length - partStart);
+                string text = len > 0 ? manifestText.Substring(partStart, len) : "";
                 ZPackage chunk = new ZPackage();
                 chunk.Write(part);
                 chunk.Write(text);
@@ -3169,9 +3235,10 @@ namespace ValheimAutoModSync
                     throw new FileNotFoundException("Requested synchronized file is not available: " + relative);
             }
 
-            string sourceRelative = NormalizeRelative(MakeRelative(Paths.BepInExRootPath, record.FullPath));
-            if (sourceRelative.Length == 0) throw new InvalidDataException("Requested source escaped the BepInEx root.");
-            string safeSource = AutoModSyncPathSafety.SafeUnderRoot(Paths.BepInExRootPath, sourceRelative, true);
+            string sourceRoot = record.Kind == 'C' ? GetConfigSourceRoot() : Paths.BepInExRootPath;
+            string sourceRelative = NormalizeRelative(MakeRelative(sourceRoot, record.FullPath));
+            if (sourceRelative.Length == 0) throw new InvalidDataException("Requested source escaped its fixed synchronization root.");
+            string safeSource = AutoModSyncPathSafety.SafeUnderRoot(sourceRoot, sourceRelative, true);
             if (!String.Equals(Path.GetFullPath(record.FullPath), safeSource, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Requested source path changed during bundle preparation.");
 
@@ -3483,13 +3550,25 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Scans BepInEx/plugins, hashes eligible files, builds the canonical manifest text/file map, and signs that exact text.
-        // Workflow: honors the short cache interval unless forced, excludes configured/non-distributable files, substitutes the release client payload for standalone installs, sorts paths deterministically, and publishes map/text/signature atomically under a lock.
+        // Workflow: a background refresh builds outside the publication lock, so a joining client can use the last
+        // complete signed snapshot instead of waiting for disk hashing. Publication remains atomic.
         private static void EnsureManifest(bool force)
         {
-            lock (ManifestLock)
+            if (!force && Interlocked.CompareExchange(ref _manifestBackgroundRefreshActive, 0, 0) != 0)
             {
-                int seconds = _manifestCacheSeconds == null ? 5 : Math.Max(0, _manifestCacheSeconds.Value);
-                if (!force && _manifestBuiltUtc != DateTime.MinValue && (DateTime.UtcNow - _manifestBuiltUtc).TotalSeconds <= seconds) return;
+                lock (ManifestLock)
+                {
+                    if (_manifestBuiltUtc != DateTime.MinValue) return;
+                }
+            }
+
+            lock (ManifestBuildLock)
+            {
+                lock (ManifestLock)
+                {
+                    int cachedSeconds = _manifestCacheSeconds == null ? 5 : Math.Max(0, _manifestCacheSeconds.Value);
+                    if (!force && _manifestBuiltUtc != DateTime.MinValue && (DateTime.UtcNow - _manifestBuiltUtc).TotalSeconds <= cachedSeconds) return;
+                }
 
                 List<FileRecord> records = new List<FileRecord>();
                 AddManifestRoot(records, 'P', Paths.PluginPath, false);
@@ -3503,7 +3582,15 @@ namespace ValheimAutoModSync
                 if (_syncPatchers == null || _syncPatchers.Value) AddManifestRoot(records, 'R', patcherRoot, false);
 
                 string configPatterns = _syncConfigPatterns == null ? "" : (_syncConfigPatterns.Value ?? "");
-                if (!String.IsNullOrWhiteSpace(configPatterns)) AddManifestRoot(records, 'C', Paths.ConfigPath, true);
+                if (!String.IsNullOrWhiteSpace(configPatterns))
+                {
+                    string configSourceRoot = GetConfigSourceRoot();
+                    if (!String.Equals(Path.GetFullPath(configSourceRoot), Path.GetFullPath(Paths.ConfigPath), StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (_instance != null) _instance.Logger.LogInfo("AutoModSync synchronized config source: " + configSourceRoot + ".");
+                    }
+                    AddManifestRoot(records, 'C', configSourceRoot, true);
+                }
 
                 // 2.4.5+: no packed game-root bootstrap is distributed or synchronized.
 
@@ -3569,12 +3656,34 @@ namespace ValheimAutoModSync
                     sb.Append(r.Kind).Append('\t').Append(r.Sha256).Append('\t').Append(r.Size.ToString(CultureInfo.InvariantCulture)).Append('\t').Append(r.RelativePath).Append('\n');
                 }
 
-                _files = map;
-                _manifestText = sb.ToString();
-                _manifestSignature = SignManifest(Encoding.UTF8.GetBytes(_manifestText));
-                _manifestBuiltUtc = DateTime.UtcNow;
+                string manifestText = sb.ToString();
+                string manifestSignature = SignManifest(Encoding.UTF8.GetBytes(manifestText));
+                lock (ManifestLock)
+                {
+                    _files = map;
+                    _manifestText = manifestText;
+                    _manifestSignature = manifestSignature;
+                    _manifestBuiltUtc = DateTime.UtcNow;
+                }
                 if (_instance != null) _instance.Logger.LogDebug("AutoModSync manifest: " + map.Count + " files.");
             }
+        }
+
+        // Intent: Selects the explicit config source root. Container images may intentionally make BepInEx/config
+        // a symlink to a mounted configuration volume; opt-in ConfigSourcePath avoids traversing that link while
+        // retaining the same allowlist and child reparse-point protections.
+        private static string GetConfigSourceRoot()
+        {
+            string configured = _configSourcePath == null ? "" : (_configSourcePath.Value ?? "");
+            if (String.IsNullOrWhiteSpace(configured)) return Paths.ConfigPath;
+
+            string root = Path.GetFullPath(configured);
+            if (!Directory.Exists(root))
+                throw new DirectoryNotFoundException("AutoModSync ConfigSourcePath does not exist: " + root);
+            if (AutoModSyncPathSafety.IsReparsePoint(root))
+                throw new InvalidDataException("AutoModSync ConfigSourcePath must be a physical directory, not a filesystem reparse point: " + root);
+            AutoModSyncPathSafety.EnsureNoReparsePoints(root, root, true);
+            return root;
         }
 
         // Intent: Adds one permitted BepInEx subtree to the signed manifest while preserving paths relative to that subtree.
@@ -3671,9 +3780,10 @@ namespace ValheimAutoModSync
         }
 
         // Intent: Reports whether the current signed manifest contains roots that legacy AMS4 clients cannot install safely.
-        private static bool ManifestRequiresRootSync()
+        private static bool ManifestRequiresRootSync(Dictionary<string, FileRecord> files)
         {
-            foreach (FileRecord record in _files.Values)
+            if (files == null) return false;
+            foreach (FileRecord record in files.Values)
                 if (record != null && record.Kind != 'P') return true;
             return false;
         }

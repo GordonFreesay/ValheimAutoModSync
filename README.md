@@ -8,6 +8,10 @@
 
 AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim over the game's existing network connection. Players connect normally; AutoModSync compares the server's signed manifest with the client's synchronized BepInEx files, transfers only missing or changed files, verifies them, restarts Valheim when required, and reconnects.
 
+## Native Linux client (2.6.x maintenance patch)
+
+The native Linux client uses a local `ValheimAutoModSyncLinuxApply` helper after Valheim closes; it applies the already verified staging transaction and relaunches through `steam -applaunch 892970`. It never executes the Windows installer `.exe`. First-contact trust uses the first installed system dialog provider in this order: Zenity, KDialog, YAD, Qarma, then xmessage. If no provider can return an explicit **Yes**, synchronization is rejected. Linux x86_64 dedicated servers are supported by the platform-specific private-key implementation; Host & Play is supported wherever the underlying Valheim runtime supports it.
+
 - Website: https://gordonfreesay.com/AutoModSync
 - Repository: https://github.com/gordonfreesay/ValheimAutoModSync
 - Releases: https://github.com/gordonfreesay/ValheimAutoModSync/releases
@@ -23,6 +27,8 @@ AutoModSync provides server-driven BepInEx mod-file synchronization for Valheim 
 - Uses Valheim's existing game connection; no separate AutoModSync sync port is required.
 - Transfers only missing or changed synchronized files.
 - Content-addressed bundle caching, startup prewarming, bounded concurrent scheduling, and exact-artifact interrupted-download resume for large public-server payloads.
+- Dedicated servers refresh the signed manifest in the background shortly before its configured cache TTL expires, so joins continue to receive the last complete signed manifest while the replacement is hashed and signed.
+- On Windows, explicitly synchronized config files and plugin translation/localization text (`.cfg`, `.json`, `.yml`, `.yaml`) compare LF and CRLF line endings as equivalent; DLLs and all other binary payloads always require exact signed bytes.
 - Signed server manifest and SHA-256 file verification.
 - Durable transactional apply/recovery plus fingerprint-scoped ownership-safe stale cleanup.
 - Branded in-game synchronization UI with queue state, current/average throughput, ETA, verification, restart/reconnect, and resume-retained-byte telemetry.
@@ -231,7 +237,7 @@ The MIT license covers AutoModSync-authored code only. It does not license or gr
 - Retries the early `AMS4_Hello` inside the fail-open preflight window to cover startup races before the server has finished registering handlers.
 - Extends synchronization beyond `BepInEx/plugins`: required `BepInEx/patchers` files can now be synchronized to the patcher root, and selected `BepInEx/config` files can be synchronized through an explicit server allowlist.
 - Adds `ServerOnlyPatterns` and optional `ClientRequiredPatterns` compatibility classification so dedicated-server-only files do not have to be advertised to clients.
-- Keeps config synchronization opt-in and hard-blocks the AutoModSync signing identity files and loader-wide `BepInEx.cfg` from synchronized config manifests.
+- Keeps config synchronization opt-in and hard-blocks the AutoModSync signing identity files and loader-wide `BepInEx.cfg` from synchronized config manifests. Container installations whose `BepInEx/config` is a symlink can opt into a physical `ConfigSourcePath` (for example `/config/valheimplus`) without weakening reparse-point protection for its contents.
 - Keeps protocol version 4 / AMS4 for backward compatibility with 2.4.x peers.
 - Adds the Windows GUI standalone installer, Authenticode signing/verification tooling for AutoModSync-authored binaries, and source-level intent/workflow documentation.
 
